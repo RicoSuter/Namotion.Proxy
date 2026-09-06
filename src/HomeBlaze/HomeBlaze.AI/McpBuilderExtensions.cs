@@ -44,7 +44,7 @@ public static class McpBuilderExtensions
         params Func<McpToolProviderContext, IMcpToolProvider>[] additionalToolProviders)
     {
         return builder.WithSubjectRegistryTools(
-            sp => sp.GetRequiredService<RootManager>().Root!,
+            GetLoadedRoot,
             sp =>
             {
                 var typeRegistry = sp.GetRequiredService<SubjectTypeRegistry>();
@@ -59,7 +59,7 @@ public static class McpBuilderExtensions
                     .Where(type => type.GetCustomAttributes(typeof(ExcludeFromBrowsingAttribute), true).Length > 0)
                     .ToArray();
 
-                var rootSubjectProvider = () => sp.GetRequiredService<RootManager>().Root!;
+                var rootSubjectProvider = () => GetLoadedRoot(sp);
                 var configuration = new McpServerConfiguration
                 {
                     PathProvider = pathProvider,
@@ -86,5 +86,21 @@ public static class McpBuilderExtensions
 
                 return configuration;
             });
+    }
+
+    /// <summary>
+    /// Resolves the root subject for a request. The root is loaded by a background service, so a
+    /// request arriving before it exists gets a diagnosable error rather than a null reference,
+    /// and a failed load surfaces its own exception.
+    /// </summary>
+    private static IInterceptorSubject GetLoadedRoot(IServiceProvider serviceProvider)
+    {
+        var rootLoaded = serviceProvider.GetRequiredService<RootManager>().RootLoaded;
+        if (!rootLoaded.IsCompleted)
+        {
+            throw new InvalidOperationException("The root subject is still loading, try again shortly.");
+        }
+
+        return rootLoaded.GetAwaiter().GetResult();
     }
 }

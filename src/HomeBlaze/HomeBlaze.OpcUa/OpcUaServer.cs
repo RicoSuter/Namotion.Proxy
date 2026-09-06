@@ -223,13 +223,14 @@ public partial class OpcUaServer : BackgroundService, IConfigurable, ITitleProvi
                 return;
             }
 
-            // Wait for root to be loaded
-            while (!_rootManager.IsLoaded && !cancellationToken.IsCancellationRequested)
+            try
             {
-                await Task.Delay(100, cancellationToken);
+                // WaitAsync does not observe the token when the task is already complete, so the
+                // caller's cancellation has to be checked in its own right.
+                cancellationToken.ThrowIfCancellationRequested();
+                await _rootManager.RootLoaded.WaitAsync(cancellationToken);
             }
-
-            if (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested || _rootManager.RootLoaded.IsCanceled)
             {
                 Status = ServiceStatus.Stopped;
                 return;
