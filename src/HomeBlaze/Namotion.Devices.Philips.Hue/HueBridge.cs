@@ -306,10 +306,10 @@ public partial class HueBridge : BackgroundService,
                 IsConnected = true;
                 StatusMessage = null;
 
-                // Initial poll
-                await PollDevicesAsync(client, linkedCts.Token);
-
-                // Run event stream + periodic poll in parallel
+                // The polling loop reconciles before its first delay, so the first poll is covered by
+                // the same tolerance as every later one. Its failure counter is per connection, so
+                // leaving the first poll outside meant a bridge that rejected every poll reconnected
+                // forever without the tolerance ever running.
                 var eventStreamTask = RunEventStreamAsync(client, linkedCts.Token);
                 var pollingTask = RunPollingLoopAsync(client, linkedCts.Token);
 
@@ -430,8 +430,6 @@ public partial class HueBridge : BackgroundService,
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            await Task.Delay(EffectivePollingInterval, cancellationToken);
-
             try
             {
                 await PollDevicesAsync(client, cancellationToken);
@@ -457,6 +455,8 @@ public partial class HueBridge : BackgroundService,
                     "Keeping the connection and reconciling at the next interval.",
                     consecutiveFailures, MaxConsecutivePollFailures);
             }
+
+            await Task.Delay(EffectivePollingInterval, cancellationToken);
         }
     }
 

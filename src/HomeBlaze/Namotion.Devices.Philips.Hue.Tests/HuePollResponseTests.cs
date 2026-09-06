@@ -39,6 +39,24 @@ public class HuePollResponseTests
     }
 
     [Fact]
+    public void WhenTheBridgeReturnsDataAlongsideErrors_ThenTheResponseIsAccepted()
+    {
+        // Arrange - the SDK fills Errors from the body on the success path too, so a non-empty error
+        // list is not on its own a reason to discard a poll that carried usable data.
+        var response = new HueResponse<Device>
+        {
+            Data = [TestHelpers.CreateDevice("TEST001")],
+            Errors = [new HueError { Description = "Partial failure" }]
+        };
+
+        // Act
+        var result = response.ThrowOnError("device");
+
+        // Assert
+        Assert.Same(response, result);
+    }
+
+    [Fact]
     public void WhenTheBridgeReturnsNeitherDataNorErrors_ThenTheEmptyResponseIsAccepted()
     {
         // Arrange - a bridge with nothing of a given resource type is a legitimate answer, so an
