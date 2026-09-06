@@ -451,9 +451,14 @@ public partial class HueBridge : BackgroundService,
                 // Status stays Running because the connection and its event stream are live, so the
                 // message is the only signal that the device set is not being reconciled. Without it a
                 // bridge whose first poll failed would look healthy while exposing nothing at all.
-                StatusMessage = Devices.Length == 0
-                    ? $"No device list yet, reconciliation poll failed ({consecutiveFailures} of {MaxConsecutivePollFailures})."
-                    : $"Device list may be stale, reconciliation poll failed ({consecutiveFailures} of {MaxConsecutivePollFailures}).";
+                // LastUpdated rather than an empty device set, which is also what a bridge that owns
+                // nothing reports. The cause is appended because this message is the only one a caller
+                // sees while the failure is tolerated, and GetOrCreateClient splices it into its refusal.
+                StatusMessage =
+                    (LastUpdated is null
+                        ? $"No device list yet, reconciliation poll failed ({consecutiveFailures} of {MaxConsecutivePollFailures}): "
+                        : $"Device list may be stale, reconciliation poll failed ({consecutiveFailures} of {MaxConsecutivePollFailures}): ")
+                    + exception.Message;
 
                 // A teardown takes the event stream with it, and that stream carries the state
                 // changes; this poll only reconciles the device set.
