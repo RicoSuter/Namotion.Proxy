@@ -23,4 +23,23 @@ internal static class HueCommandResult
             "The Hue bridge rejected the command: " +
             string.Join("; ", response.Errors.Select(error => error.Description)));
     }
+
+    /// <summary>
+    /// Returns the response, or throws when the bridge answered with errors instead of data. A
+    /// non-success status carrying a JSON body is not an exception in the SDK: it yields an empty
+    /// Data list, which reads downstream as "the bridge has no devices" and empties the model.
+    /// A response that carries data is kept even when errors accompany it, because the SDK fills
+    /// Errors from the body on the success path too.
+    /// </summary>
+    public static HueResponse<T> ThrowOnError<T>(this HueResponse<T> response, string resource)
+    {
+        if (response.Errors.Count == 0 || response.Data.Count > 0)
+        {
+            return response;
+        }
+
+        throw new InvalidOperationException(
+            $"The Hue bridge returned errors instead of {resource}: " +
+            string.Join("; ", response.Errors.Select(error => error.Description)));
+    }
 }
