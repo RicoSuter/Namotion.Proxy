@@ -434,6 +434,7 @@ public partial class HueBridge : BackgroundService,
             {
                 await PollDevicesAsync(client, cancellationToken);
                 consecutiveFailures = 0;
+                StatusMessage = null;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -446,6 +447,13 @@ public partial class HueBridge : BackgroundService,
                 {
                     throw;
                 }
+
+                // Status stays Running because the connection and its event stream are live, so the
+                // message is the only signal that the device set is not being reconciled. Without it a
+                // bridge whose first poll failed would look healthy while exposing nothing at all.
+                StatusMessage = Devices.Length == 0
+                    ? $"No device list yet, reconciliation poll failed ({consecutiveFailures} of {MaxConsecutivePollFailures})."
+                    : $"Device list may be stale, reconciliation poll failed ({consecutiveFailures} of {MaxConsecutivePollFailures}).";
 
                 // A teardown takes the event stream with it, and that stream carries the state
                 // changes; this poll only reconciles the device set.
