@@ -9,6 +9,7 @@ using HomeBlaze.Abstractions.Networking;
 using HomeBlaze.Abstractions.Sensors;
 using HueApi;
 using HueApi.BridgeLocator;
+using HueApi.Models;
 using HueApi.Models.Responses;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -40,6 +41,8 @@ public partial class HueBridge : BackgroundService,
     /// so the brightness is remembered for the next time the light is turned on.
     /// </summary>
     internal const int SetBrightnessWhileOffDelayMs = 3000;
+
+    private const int MaxConsecutivePollFailures = 3;
 
     private readonly ILogger<HueBridge> _logger;
     private readonly SemaphoreSlim _configChangedSignal = new(0, 1);
@@ -181,11 +184,16 @@ public partial class HueBridge : BackgroundService,
                 throw new InvalidOperationException("Bridge is not configured or not discovered.");
             }
 
+            // The SDK passes no timeout, leaving HttpClient's 100s default. A poll is 11 sequential
+            // requests, so an unresponsive bridge would otherwise stall one for nearly twenty minutes.
             var httpClient = new HttpClient(new HttpClientHandler
             {
                 ServerCertificateCustomValidationCallback =
                     HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-            });
+            })
+            {
+                Timeout = TimeSpan.FromSeconds(10)
+            };
 
             try
             {
@@ -272,10 +280,7 @@ public partial class HueBridge : BackgroundService,
                 }
 
                 // Discovery
-                var bridges = await HueBridgeDiscovery.FastDiscoveryWithNetworkScanFallbackAsync(
-                    TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30));
-
-                var bridge = bridges.FirstOrDefault(locatedBridge => locatedBridge.BridgeId == BridgeId);
+                var bridge = await DiscoverBridgeAsync(stoppingToken);
                 if (bridge == null)
                 {
                     StatusMessage = "Bridge not found on network";
@@ -352,6 +357,55 @@ public partial class HueBridge : BackgroundService,
         StatusMessage = null;
     }
 
+    /// <summary>
+    /// Finds the configured bridge, keeping a failure local to the locator that caused it: the SDK's
+    /// aggregate helpers let one locator's exception abandon the whole discovery.
+    /// </summary>
+    private async Task<LocatedBridge?> DiscoverBridgeAsync(CancellationToken cancellationToken)
+    {
+        IBridgeLocator[] locators =
+        [
+            new HttpBridgeLocator(),
+            new MdnsBridgeLocator(),
+            new SsdpBridgeLocator(),
+            new LocalNetworkScanBridgeLocator()
+        ];
+
+        foreach (var locator in locators)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // The network scan probes the whole subnet, so it gets the longer budget and goes last.
+            var timeout = locator is LocalNetworkScanBridgeLocator
+                ? TimeSpan.FromSeconds(30)
+                : TimeSpan.FromSeconds(5);
+
+            using var locatorCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            locatorCancellation.CancelAfter(timeout);
+
+            LocatedBridge? bridge;
+            try
+            {
+                // Enumerated inside the try: the interface returns IEnumerable, so a lazy locator
+                // would otherwise throw past the catch that exists to contain it.
+                var bridges = await locator.LocateBridgesAsync(locatorCancellation.Token);
+                bridge = bridges.FirstOrDefault(locatedBridge => locatedBridge.BridgeId == BridgeId);
+            }
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning(exception, "Hue locator {Locator} failed.", locator.GetType().Name);
+                continue;
+            }
+
+            if (bridge is not null)
+            {
+                return bridge;
+            }
+        }
+
+        return null;
+    }
+
     private async Task RunEventStreamAsync(LocalHueApi client, CancellationToken cancellationToken)
     {
         client.OnEventStreamMessage += OnEventStreamMessage;
@@ -372,45 +426,63 @@ public partial class HueBridge : BackgroundService,
 
     private async Task RunPollingLoopAsync(LocalHueApi client, CancellationToken cancellationToken)
     {
+        var consecutiveFailures = 0;
+
         while (!cancellationToken.IsCancellationRequested)
         {
             await Task.Delay(EffectivePollingInterval, cancellationToken);
-            await PollDevicesAsync(client, cancellationToken);
+
+            try
+            {
+                await PollDevicesAsync(client, cancellationToken);
+                consecutiveFailures = 0;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                consecutiveFailures++;
+                if (consecutiveFailures >= MaxConsecutivePollFailures)
+                {
+                    throw;
+                }
+
+                // A teardown takes the event stream with it, and that stream carries the state
+                // changes; this poll only reconciles the device set.
+                _logger.LogWarning(
+                    exception,
+                    "Hue poll failed ({FailureCount} in a row, connection dropped after {MaxFailureCount}). " +
+                    "Keeping the connection and reconciling at the next interval.",
+                    consecutiveFailures, MaxConsecutivePollFailures);
+            }
         }
     }
 
     private async Task PollDevicesAsync(LocalHueApi client, CancellationToken cancellationToken)
     {
-        var zigbeeConnectivitiesTask = client.ZigbeeConnectivity.GetAllAsync();
-        var devicePowersTask = client.DevicePower.GetAllAsync();
-        var devicesTask = client.Device.GetAllAsync();
-        var roomsTask = client.Room.GetAllAsync();
-        var zonesTask = client.Zone.GetAllAsync();
-        var lightsTask = client.Light.GetAllAsync();
-        var buttonsTask = client.Button.GetAllAsync();
-        var motionsTask = client.Motion.GetAllAsync();
-        var groupedLightsTask = client.GroupedLight.GetAllAsync();
-        var temperaturesTask = client.Temperature.GetAllAsync();
-        var lightLevelsTask = client.LightLevel.GetAllAsync();
+        // Issued one at a time: 11 at once trips the bridge's rate limiter, which answers 429 with an
+        // HTML error page that the SDK then fails to parse as JSON.
+        async Task<HueResponse<T>> PollAsync<T>(Func<Task<HueResponse<T>>> request, string resource)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return (await request()).ThrowOnError(resource);
+        }
 
-        await Task.WhenAll(
-            zigbeeConnectivitiesTask, devicePowersTask, devicesTask, roomsTask, zonesTask,
-            lightsTask, buttonsTask, motionsTask, groupedLightsTask, temperaturesTask, lightLevelsTask);
-
-        var zigbeeConnectivities = zigbeeConnectivitiesTask.Result;
-        var devicePowers = devicePowersTask.Result;
-        var devices = devicesTask.Result;
-        var rooms = roomsTask.Result;
-        var zones = zonesTask.Result;
-        var lights = lightsTask.Result;
-        var buttons = buttonsTask.Result;
-        var motions = motionsTask.Result;
-        var groupedLights = groupedLightsTask.Result;
-        var temperatures = temperaturesTask.Result;
-        var lightLevels = lightLevelsTask.Result;
+        var zigbeeConnectivities = await PollAsync(() => client.ZigbeeConnectivity.GetAllAsync(), "zigbee_connectivity");
+        var devicePowers = await PollAsync(() => client.DevicePower.GetAllAsync(), "device_power");
+        var devices = await PollAsync(() => client.Device.GetAllAsync(), "device");
+        var rooms = await PollAsync(() => client.Room.GetAllAsync(), "room");
+        var zones = await PollAsync(() => client.Zone.GetAllAsync(), "zone");
+        var lights = await PollAsync(() => client.Light.GetAllAsync(), "light");
+        var buttons = await PollAsync(() => client.Button.GetAllAsync(), "button");
+        var motions = await PollAsync(() => client.Motion.GetAllAsync(), "motion");
+        var groupedLights = await PollAsync(() => client.GroupedLight.GetAllAsync(), "grouped_light");
+        var temperatures = await PollAsync(() => client.Temperature.GetAllAsync(), "temperature");
+        var lightLevels = await PollAsync(() => client.LightLevel.GetAllAsync(), "light_level");
 
         var existingDevices = Devices;
-
         var allDevices = devices.Data
             .Select(device =>
             {
@@ -733,7 +805,7 @@ public partial class HueBridge : BackgroundService,
         // pair a snapshot. Reading the client and then closing the door separately let an operation
         // racing the shutdown install a replacement in between, and nothing was left to release it.
         // Cancel first. base.Dispose() is what cancels the stopping token, and running it last let the
-        // loop start a fresh iteration after the door was closed: it would spend up to half a minute
+        // loop start a fresh iteration after the door was closed: it would spend the discovery budget
         // rediscovering the bridge, then fail on the disposed check and overwrite the Stopped status
         // written above with an Error one.
         base.Dispose();
