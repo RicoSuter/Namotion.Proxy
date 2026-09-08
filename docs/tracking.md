@@ -469,7 +469,7 @@ What the rule does not cover:
 - **Same-thread re-entry.** The gate is reentrant, so re-entering the same context on the same thread stays legal.
 - **Fetching in parallel.** Fetch on as many threads as you like, then assign on the thread already inside the operation, or after it returns. Parallelising the assignments themselves never bought anything anyway: they serialize on the gate whichever thread runs them.
 
-A waiter whose gate holder stays blocked, never once seen running, throws `LifecycleContractViolationException` naming the pattern and the alternative. A holder that keeps running is never reported however long it takes, so a large attach is waited out rather than cut short. Behind that sits a last-resort bound of a few minutes for a holder nothing can observe at all, one that spins, polls or waits inside unmanaged code, with a different message saying it cannot tell which cause it was. Older versions hang silently instead.
+A waiter throws `LifecycleContractViolationException` after observing the same gate holder continuously blocked for 30 seconds. This is a timeout heuristic, not proof of a deadlock: the runtime cannot identify what the holder is waiting for. Observing the holder running, or observing a different holder or outer transaction, resets that blocked window. A separate 300-second total wait bound applies regardless of holder activity or changes. Either threshold ends the waiting operation before it enters the gate; it does not abort the holder or roll back that holder's work. Older versions can wait indefinitely.
 
 ```csharp
 // Wrong: the assignment inside Task.Run needs the gate this interceptor is holding, so the
@@ -627,7 +627,7 @@ public partial class Car
 }
 ```
 
-This shape is unsupported, and it fails silently: there is no exception and no diagnostic. Declare the property `partial` and fill it in the constructor instead:
+This computed property is valid, but it establishes no ownership for the tires it returns. To attach and track those tires automatically, declare the property `partial` and fill it in the constructor instead:
 
 ```csharp
 [InterceptorSubject]
@@ -644,7 +644,7 @@ public partial class Car
 
 A generated `partial` property cannot be lazy in the first place, because the generator writes the getter. Two shapes do supply a getter of their own and can therefore be lazy: a hand-written `IInterceptorSubject` that builds its own `SubjectPropertyMetadata` (see [hand-written base classes](generator.md#hand-written-base-classes-and-subclasses)) and a dynamic property registered through [`AddProperty`](registry.md#add-properties).
 
-**Where a lazy structural getter is supported, `??=` is required rather than merely allowed.** Discovery, seeding, and reconciliation can read structural getters repeatedly. Reentry, retained claims, resurrection, and retry can change which reads occur; callers must not depend on an exact count. A getter that answers with a fresh graph each call is a contract violation.
+**A lazy structural getter must cache a stable answer, for example with `??=`.** Discovery, seeding, and reconciliation can read structural getters repeatedly. Reentry, retained claims, resurrection, and retry can change which reads occur; callers must not depend on an exact count. A getter that answers with a fresh graph each call is a contract violation.
 
 ```csharp
 // Correct: the same instance on every read.
@@ -660,7 +660,7 @@ registered.AddProperty("Tires", typeof(Tire[]),
 
 Caching from inside the getter is supported, including when it writes its value back through the property's own intercepted setter. Discovery of an unattached subject reads before claiming it, so a store at that point is invisible to interception. Retained claims, resurrection, and retry can instead reach seeding while attached. A setter invoked from its own active seeding getter stores the value and defers that property's reconciliation until the getter returns.
 
-An unstable getter costs a discarded subject. Discovery claims the first value and seeding commits the second, so the first never joins the graph: it is unregistered, has a reference count of 0, and its claim is handed back at the end of the attach, which leaves it unattached and reusable rather than stranded on the context. No exception is raised, so the wasted work is invisible.
+A getter that returns a fresh graph on each read is outside this stable-getter contract. Unused discovery claims are released, so discarded values remain unattached and reusable. This cleanup does not make an unstable getter safe: ownership reflects the captured value, and a later read can return a different, unowned graph without an exception.
 
 A same-context lifecycle callback may initialize a child through an intercepted structural setter. Replacing a child delivers detach callbacks before attach callbacks. The nested setter settles ownership, while its callbacks and Registry updates wait for the queued drain. A callback exception is a post-commit notification failure, not a veto of the assignment. Nested structural work in a different context remains prohibited. See the [callback contract](design/tracking-lifecycle.md#callback-contract) for notification ordering and error behavior.
 

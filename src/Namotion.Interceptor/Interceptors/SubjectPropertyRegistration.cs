@@ -6,7 +6,7 @@ namespace Namotion.Interceptor.Interceptors;
 /// One <see cref="IInterceptorSubject.AddProperties"/> call in flight: the subject, the caller's
 /// metadata sequence, and the continuation that publishes the complete property lookup. Core owns
 /// the input contract (the sequence is materialized exactly once and duplicate names reject the
-/// whole batch before anything publishes); the admitting side decides when to force
+/// outer batch before its publication); the admitting side decides when to force
 /// materialization and when to publish, so it can reject the batch before any state escapes.
 /// </summary>
 /// <remarks>
@@ -48,7 +48,8 @@ public sealed class SubjectPropertyRegistration
     /// <summary>
     /// Materializes the input sequence, on the first call only, and validates that no name in the
     /// batch collides with an existing property or with another batch entry. A duplicate rejects
-    /// the whole batch before any getter runs and before anything is published.
+    /// the outer batch before its structural getters run or its lookup is published. Side effects
+    /// performed by the input iterator are not rolled back.
     /// </summary>
     /// <exception cref="InvalidOperationException">A property name is already defined on the
     /// subject or appears twice in the batch.</exception>
@@ -70,7 +71,7 @@ public sealed class SubjectPropertyRegistration
                 throw new InvalidOperationException(
                     $"A property named '{metadata.Name}' is already defined on the subject " +
                     $"'{Subject.GetType().Name}' or appears twice in the batch. The whole batch " +
-                    "was rejected and nothing was published.");
+                    "was rejected and its lookup was not published.");
             }
         }
 
@@ -106,10 +107,8 @@ public sealed class SubjectPropertyRegistration
             merged.Add(pair.Key, pair.Value);
         }
 
-        // Recheck rather than assign blindly: GetProperties validated the names against the state
-        // it materialized from, so a collision here means an unsupported reentrant mutation (for
-        // example a getter that added properties) and must fail loudly rather than silently
-        // replace a property.
+        // Another admission may have published since materialization; reject a collision instead
+        // of replacing metadata that the subject has already exposed.
         for (var index = 0; index < batch.Count; index++)
         {
             var metadata = batch[index];
@@ -117,8 +116,8 @@ public sealed class SubjectPropertyRegistration
             {
                 throw new InvalidOperationException(
                     $"A property named '{metadata.Name}' was added to the subject " +
-                    $"'{Subject.GetType().Name}' while this batch was being admitted, which the " +
-                    "input contract forbids. The batch was not published.");
+                    $"'{Subject.GetType().Name}' while this batch was being admitted. " +
+                    "The batch was not published.");
             }
 
             merged.Add(metadata.Name, metadata);

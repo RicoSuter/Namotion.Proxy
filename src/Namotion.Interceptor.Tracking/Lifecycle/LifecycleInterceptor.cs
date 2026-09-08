@@ -44,25 +44,9 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     // one-transaction-per-thread rule below sees every acquisition.
     private readonly Lock _gate = new();
 
-    // The one deadlock this design cannot prevent is a gate holder waiting for topology work it
-    // dispatched to another thread: it cannot release the gate until that work finishes and that
-    // work cannot start until the gate is released. Only a thread holding no gate at all ever waits
-    // here, because the rule above rejects a second transaction and a reentrant acquisition never
-    // blocks, so a wait that never ends is that deadlock rather than a lock-ordering one, and is
-    // turned into an exception instead of a hang.
-    //
-    // A waiter tells the deadlock from ordinary contention by looking at the holder rather than at
-    // the clock: a holder that is running is making progress, however long it takes, while a holder
-    // that never runs again can only be one that waits for work needing this gate. So a holder seen
-    // running resets the verdict and no amount of elapsed time alone convicts. Only continuous
-    // blocking does, over a threshold far above any lock a holder legitimately waits on and far
-    // below the point an operator calls the process hung.
-    //
-    // The runtime offers no way to ask what a thread waits on, and a dispatch through a task, a
-    // queue or a pool thread carries no link back to its origin, so sampling the holder's state is
-    // the only in-process signal that exists. It costs nothing on any normal path: a waiter reaches
-    // this only after failing to take the gate within HolderSampleIntervalMilliseconds, and it
-    // parks in the same wait it would have parked in anyway.
+    // The runtime cannot identify what a gate holder is waiting for. Continuous blocked-state
+    // observations are only a timeout heuristic; holder or transaction changes reset that window.
+    // Sampling occurs only on the contended path, after a timed gate acquisition fails.
     private const int HolderSampleIntervalMilliseconds = 20;
     private const int DefaultBlockedHolderThresholdMilliseconds = 30_000;
 
@@ -71,13 +55,8 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     // shorten each other's threshold. Read only by a thread already waiting on a contended gate.
     internal int BlockedHolderThresholdMilliseconds { get; set; } = DefaultBlockedHolderThresholdMilliseconds;
 
-    // The last resort for what the holder check cannot see at all: a holder looping forever, one
-    // spinning, one blocked inside unmanaged code, and one polling so it never blocks for the whole
-    // threshold above. None of those is distinguishable from work, so this cannot be a judgement
-    // about the holder and is only a bound past which a process is stuck by any reasonable measure.
-    // Sized far above the longest legitimate hold rather than near it: attaching a quarter of a
-    // million subjects measures in seconds, so this keeps two orders of magnitude of room and still
-    // reports before a test harness or an operator calls the process hung.
+    // A total bound also covers holders that keep running or whose blocking is not observable.
+    // Unlike the blocked window, it does not reset when the holder or transaction changes.
     private const int DefaultGateWaitTimeoutMilliseconds = 300_000;
 
     // Settable for the same reason as the threshold above, and more sharply: at its real size
@@ -259,11 +238,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 return;
             }
 
-            // The holder check above sees only a thread the runtime reports as blocked, so it
-            // cannot see a holder looping forever, spinning, blocked inside unmanaged code, or
-            // polling in a way that never blocks for the whole threshold. Those hang without this,
-            // so the last resort is a plain bound: nothing legitimate comes near it, and a process
-            // that reaches it is already stuck.
+            // End this wait even if no single holder met the blocked-state threshold.
             if (Environment.TickCount64 >= deadline)
             {
                 ThrowGateWaitTimedOut(GateWaitTimeoutMilliseconds);
@@ -277,20 +252,13 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         throw new LifecycleContractViolationException(
             "The thread holding the topology gate of this context has been blocked, never once seen " +
             $"running, for {TimeSpan.FromMilliseconds(thresholdMilliseconds).TotalSeconds:0.##} seconds. " +
-            "A holder that makes progress is never reported here however long it takes, so this is " +
-            "one of two things, " +
-            "and both break the contract that a gate holder is fast and waits on nothing. The first " +
-            "is the deadlock this framework cannot prevent: the thread inside the topology " +
-            "transaction dispatched structural work to another thread and waits for it, so it cannot " +
-            "release the gate until that work finishes and that work cannot start until the gate is " +
-            "released. A dispatch through Task.Run, the thread pool or a queue carries no link back " +
-            "to its origin, so watching the holder is the only way this can be seen at all. Never " +
-            "wait for structural work on another thread from inside a structural write, a lifecycle " +
-            "callback or an interceptor: complete the enclosing operation first and run the work " +
-            "after it returns, or hand it off without waiting. Dispatching a read, a scalar write or " +
-            "input and output and waiting for it is safe and is not this. The second is a holder " +
-            "blocked that long on a sleep, on input or output, or on a lock of its own. Nothing was " +
-            "read and nothing was changed.");
+            "This observation does not identify what the holder is waiting for. It may have " +
+            "dispatched structural work to another thread and be waiting for that work, which " +
+            "cannot acquire this gate until the enclosing operation returns. Never wait for " +
+            "structural work on another thread from inside a structural write, lifecycle callback " +
+            "or interceptor. Complete the enclosing operation first or hand off without waiting. " +
+            "The holder may also be blocked on unrelated work. Nothing was read and nothing was changed " +
+            "by this waiting operation; the holder was not aborted.");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -298,13 +266,9 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     {
         throw new LifecycleContractViolationException(
             $"Timed out after {TimeSpan.FromMilliseconds(timeoutMilliseconds).TotalSeconds:0.##} seconds waiting for the topology " +
-            "gate of this context, which another thread has held for that whole time without ever " +
-            "being seen blocked. Nothing here can tell which it is, because none of the causes is " +
-            "distinguishable from work: a lifecycle callback or an interceptor genuinely running that " +
-            "long, a loop spinning or polling instead of blocking, or a holder waiting inside " +
-            "unmanaged code for topology work it dispatched to another thread. All of them break the " +
-            "contract that a gate holder is fast and waits on nothing. Nothing was read and nothing " +
-            "was changed.");
+            "gate of this context. This total wait bound applies regardless of holder activity " +
+            "or changes of holder and cannot diagnose the cause of contention. Nothing was read " +
+            "and nothing was changed by this waiting operation; the holder was not aborted.");
     }
 
     /// <summary>Releases what <see cref="EnterGate"/> took. A struct, so the using costs nothing.</summary>
@@ -329,14 +293,11 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     /// terminal actually stored is claimed as well, because a normalizing or hand-written terminal
     /// can store a graph the caller never proposed.
     ///
-    /// A terminal that stores a subject the write never proposed is a contract violation, and the
-    /// guarantee has one boundary there: the graph is left untouched, but the backing field holds
-    /// whatever that terminal stored. The framework can only invoke the terminal it was given, and a
-    /// terminal that is not a function of its argument cannot be replayed to restore the prior
-    /// value: replaying it with the pre-write value re-stores the same subject and fails again, and
-    /// going through <c>SetValue</c> is worse, being full chain re-entry with the same substitution
-    /// and therefore unbounded recursion. A terminal that stores what it was given, which is every
-    /// terminal the source generator emits, never reaches the boundary and skips the second claim.
+    /// A terminal may normalize its input or create a new subject. If the stored component cannot
+    /// be claimed, such as a subject owned by another context, reconciliation fails without
+    /// committing new graph edges. The framework cannot restore arbitrary terminal storage, so
+    /// the backing field retains the rejected value. Terminals emitted by the source generator
+    /// store the proposed value and skip this second claim.
     /// </remarks>
     public void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next)
     {

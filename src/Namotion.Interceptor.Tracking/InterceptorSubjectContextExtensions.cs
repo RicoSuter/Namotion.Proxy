@@ -152,9 +152,8 @@ public static class InterceptorSubjectContextExtensions
     ///
     /// Registering the lifecycle behind an attach is rejected. A subject anchored while the context
     /// had no lifecycle never enters the ownership graph the lifecycle brings, and nothing later
-    /// puts it there, so the graph would treat that root as unowned forever and let every structural
-    /// write on it through without a claim, without validating the subjects it pulls in and without
-    /// reconciling any edge. The check reads a flag the lifecycle-free attach path sets, so it sees
+    /// puts it there, so structural writes would not establish ownership edges for that root.
+    /// Service registration checks a flag the lifecycle-free attach path sets, so it sees
     /// an attach that has already landed; an attach still in flight on another thread is not
     /// ordered against this call and is not caught, which is the concurrent-configuration case
     /// documented in docs/design/tracking-lifecycle.md.
