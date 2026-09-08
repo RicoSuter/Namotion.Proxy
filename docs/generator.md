@@ -51,7 +51,7 @@ public Person(IInterceptorSubjectContext context) : this()
 
 If a non-obsolete parameterless constructor already exists, only the context constructor is generated. Selection is independent of declaration order, including across partial declarations. The context-only overload is public even when the parameterless constructor is private; an explicitly declared context-only constructor takes precedence.
 
-Every other declared constructor is mirrored by one that appends an `IInterceptorSubjectContext` parameter, chains to the original and attaches the subject provisionally:
+Primary constructors follow the same rules as ordinary constructors, including a parameterless primary constructor and a primary constructor in another partial declaration. Every other declared constructor is mirrored by one that appends an `IInterceptorSubjectContext` parameter, chains to the original and attaches the subject provisionally:
 
 ```csharp
 public Person(string name, IInterceptorSubjectContext context) : this(name)
@@ -62,7 +62,7 @@ public Person(string name, IInterceptorSubjectContext context) : this(name)
 
 Without it, a subject whose only constructor takes dependencies has no context-taking constructor at all, and dependency injection hands back a permanently detached subject that reports nothing and does nothing.
 
-A constructor you declare yourself always wins: the mirror is skipped when its exact signature already exists. It is also skipped for a constructor that is `static`, carries `[Obsolete]`, already ends in a context parameter, or takes a pointer or a `ref`, `out`, `in`, `params` or `scoped` parameter. The mirror carries parameter types and names only, so optional defaults, parameter attributes and nullable reference annotations are not reproduced on it. In every skipped case there is no diagnostic, so a subject built through that constructor stays detached.
+A constructor you declare yourself always wins: the mirror is skipped when its exact signature already exists. It is also skipped for a constructor that is `static`, carries `[Obsolete]`, already ends in a context parameter, or takes a pointer or a `ref`, `out`, `in`, `params` or `scoped` parameter. For primary constructors, constructor attributes use the `method:` target; `[method: Obsolete]` suppresses its mirror and `[method: SetsRequiredMembers]` is copied to its mirror. The mirror carries parameter types and names only, so optional defaults, parameter attributes and nullable reference annotations are not reproduced on it. In every skipped case there is no diagnostic, so a subject built through that constructor stays detached.
 
 ### Property Implementations
 

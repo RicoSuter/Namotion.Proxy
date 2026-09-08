@@ -829,10 +829,9 @@ internal static class SubjectMetadataExtractor
     {
         // Unsupported instance signatures still suppress an implicit parameterless constructor;
         // static constructors do not. Only eligible parameterless targets enable the context form.
-        var needsGeneratedParameterlessConstructor = !allTypeDeclarations
-            .SelectMany(declaration => declaration.Members)
-            .OfType<ConstructorDeclarationSyntax>()
-            .Any(constructor => !constructor.Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.StaticKeyword)));
+        var needsGeneratedParameterlessConstructor = !allTypeDeclarations.Any(declaration =>
+            declaration.ParameterList is not null || declaration.Members.OfType<ConstructorDeclarationSyntax>()
+                .Any(constructor => !constructor.Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.StaticKeyword))));
         var hasOrWillHaveParameterlessConstructor = needsGeneratedParameterlessConstructor ||
             constructors.Any(constructor => constructor.Parameters.Count == 0 && !constructor.IsObsolete);
 
@@ -902,6 +901,20 @@ internal static class SubjectMetadataExtractor
         {
             var declarationModel = semanticModel.Compilation.GetSemanticModel(typeDeclaration.SyntaxTree);
 
+            if (typeDeclaration.ParameterList is { } primaryParameters &&
+                CollectConstructorParameters(primaryParameters, declarationModel) is { } primaryConstructorParameters)
+            {
+                var primaryConstructor = declarationModel.GetDeclaredSymbol(typeDeclaration, cancellationToken)!
+                    .InstanceConstructors.First(constructor => constructor.DeclaringSyntaxReferences.Any(reference =>
+                        reference.SyntaxTree == typeDeclaration.SyntaxTree && reference.Span == typeDeclaration.Span));
+                var attributes = primaryConstructor.GetAttributes();
+                constructors.Add(new SubjectConstructor(
+                    GetAccessModifierFromAccessibility(primaryConstructor.DeclaredAccessibility),
+                    primaryConstructorParameters,
+                    attributes.Any(attribute => SymbolExtensions.IsTypeOrInheritsFrom(attribute.AttributeClass, KnownTypes.ObsoleteAttribute)),
+                    attributes.Any(attribute => SymbolExtensions.IsTypeOrInheritsFrom(attribute.AttributeClass, KnownTypes.SetsRequiredMembersAttribute))));
+            }
+
             foreach (var constructor in typeDeclaration.Members.OfType<ConstructorDeclarationSyntax>())
             {
                 // A static constructor has no accessibility and cannot be chained to.
@@ -921,7 +934,7 @@ internal static class SubjectMetadataExtractor
                 var isObsolete = SymbolExtensions.HasAttribute(
                     constructor.AttributeLists, KnownTypes.ObsoleteAttribute, declarationModel, cancellationToken);
 
-                var parameters = CollectConstructorParameters(constructor, declarationModel);
+                var parameters = CollectConstructorParameters(constructor.ParameterList, declarationModel);
                 if (parameters is null)
                 {
                     continue;
@@ -944,12 +957,12 @@ internal static class SubjectMetadataExtractor
     }
 
     private static IReadOnlyList<SubjectConstructorParameter>? CollectConstructorParameters(
-        ConstructorDeclarationSyntax constructor,
+        ParameterListSyntax parameterList,
         SemanticModel declarationModel)
     {
-        var parameters = new List<SubjectConstructorParameter>(constructor.ParameterList.Parameters.Count);
+        var parameters = new List<SubjectConstructorParameter>(parameterList.Parameters.Count);
 
-        foreach (var parameter in constructor.ParameterList.Parameters)
+        foreach (var parameter in parameterList.Parameters)
         {
             // ref, out, in, params or scoped: the metadata carries no parameter modifier, so a
             // mirror would either not compile or silently change the calling convention. Such a
