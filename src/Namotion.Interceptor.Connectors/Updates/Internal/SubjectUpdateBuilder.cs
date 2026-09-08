@@ -9,7 +9,7 @@ namespace Namotion.Interceptor.Connectors.Updates.Internal;
 internal sealed class SubjectUpdateBuilder
 {
     private int _nextId;
-    private readonly Dictionary<IInterceptorSubject, string> _subjectToId = new();
+    private readonly Dictionary<IInterceptorSubject, string> _subjectToId = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<SubjectPropertyUpdate, (RegisteredSubjectProperty Property, IDictionary<string, SubjectPropertyUpdate> Parent)> _propertyUpdates = new();
 
     public bool HasUnregisteredSubjects { get; set; }
@@ -18,9 +18,9 @@ internal sealed class SubjectUpdateBuilder
     
     public Dictionary<string, Dictionary<string, SubjectPropertyUpdate>> Subjects { get; private set; } = new();
 
-    public HashSet<IInterceptorSubject> ProcessedSubjects { get; } = [];
+    public HashSet<IInterceptorSubject> ProcessedSubjects { get; } = new(ReferenceEqualityComparer.Instance);
 
-    public HashSet<IInterceptorSubject> PathVisited { get; } = [];
+    public HashSet<IInterceptorSubject> PathVisited { get; } = new(ReferenceEqualityComparer.Instance);
 
     public void Initialize(IInterceptorSubject rootSubject, ISubjectUpdateProcessor[] processors)
     {
