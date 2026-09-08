@@ -49,7 +49,7 @@ public Person(IInterceptorSubjectContext context) : this()
 }
 ```
 
-If a parameterless constructor already exists, only the context constructor is generated.
+If a non-obsolete parameterless constructor already exists, only the context constructor is generated. Selection is independent of declaration order, including across partial declarations. The context-only overload is public even when the parameterless constructor is private; an explicitly declared context-only constructor takes precedence.
 
 Every other declared constructor is mirrored by one that appends an `IInterceptorSubjectContext` parameter, chains to the original and attaches the subject provisionally:
 
