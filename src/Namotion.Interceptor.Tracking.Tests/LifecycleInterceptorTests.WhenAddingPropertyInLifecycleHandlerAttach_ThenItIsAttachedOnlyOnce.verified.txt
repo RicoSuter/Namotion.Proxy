@@ -1,6 +1,5 @@
 ﻿[
   + NA (attached, refs: 0),
-  prop+ NA.FooBar,
   prop+ NA.Id,
   prop+ NA.FirstName,
   prop+ NA.LastName,
@@ -8,5 +7,6 @@
   prop+ NA.FullNameWithPrefix,
   prop+ NA.Father,
   prop+ NA.Mother,
-  prop+ NA.Children
+  prop+ NA.Children,
+  prop+ NA.FooBar
 ]

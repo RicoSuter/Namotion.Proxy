@@ -1,5 +1,6 @@
 using System.Collections;
 using Namotion.Interceptor.Interceptors;
+using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Tracking.Lifecycle;
 
 namespace Namotion.Interceptor.Tracking.Tests.Lifecycle;
@@ -7,18 +8,17 @@ namespace Namotion.Interceptor.Tracking.Tests.Lifecycle;
 public class CallbackSupportGetterRemainingLimitTests
 {
     [Fact]
-    public void WhenUnpublishedRootEnumerableRewritesItsProperty_ThenOwnershipMatchesTheStoredValue()
+    public void WhenAnAttachedRootEnumerableRewritesItsProperty_ThenOwnershipMatchesTheStoredValue()
     {
         // Arrange
-        var context = InterceptorSubjectContext.Create().WithLifecycle();
+        var context = InterceptorSubjectContext.Create().WithRegistry();
         var root = new CallbackSpikeNode();
         var stale = new CallbackSpikeNode();
         var replacement = new CallbackSpikeNode();
-        var lifecycle = (LifecycleInterceptor)context.TryGetService<ILifecycleInterceptor>()!;
         var reentered = false;
         root.Payload = new HookEnumerable([stale], () =>
         {
-            if (!reentered && root.TryGetContext() is not null && !lifecycle.Graph.IsOwned(root))
+            if (!reentered && root.TryGetContext() is not null)
             {
                 reentered = true;
                 root.Payload = replacement;
@@ -34,6 +34,9 @@ public class CallbackSupportGetterRemainingLimitTests
         Assert.Same(context, replacement.TryGetContext());
         Assert.Equal(1, replacement.GetReferenceCount());
         Assert.Null(stale.TryGetContext());
+        SupportContractAssertions.Settled(context, [root], root, stale, replacement);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], root, stale, replacement);
     }
 
     [Fact]

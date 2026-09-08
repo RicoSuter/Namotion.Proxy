@@ -1,28 +1,21 @@
 using System.Collections;
 using Namotion.Interceptor.Interceptors;
+using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Tracking.Lifecycle;
 using Namotion.Interceptor.Tracking.Parent;
 using Namotion.Interceptor.Tracking.Tests.Models;
 
 namespace Namotion.Interceptor.Tracking.Tests.Lifecycle;
 
-/// <summary>
-/// Adversarial review probe for RollbackRejectedAttach: it removes the root's committed edges while
-/// the root still carries its anchor, so a back edge that already attached the root reports the root
-/// as "still held" and survives the drain. The anchor is only cleared afterwards, and the final
-/// claim hand-back skips anything the graph still owns.
-/// </summary>
 public class AdversarialRollbackTests
 {
     [Fact]
-    public void WhenAnAttachIsRejectedAfterABackEdgeAttachedTheRoot_ThenTheRootIsFullyRolledBack()
+    public void WhenAnAttachCallbackFailsAfterABackEdgeAttachedTheRoot_ThenTheCommittedComponentRemainsDetachable()
     {
-        // Arrange: root -> childA -> root is the everyday back reference, and childB is what the
-        // attach callback refuses. The refusal happens after the back edge already published the
-        // root into the graph.
+        // Arrange
         var context = InterceptorSubjectContext
             .Create()
-            .WithLifecycle();
+            .WithRegistry();
 
         var root = new Person { FirstName = "root" };
         var childA = new Person { FirstName = "A" };
@@ -43,18 +36,13 @@ public class AdversarialRollbackTests
         // Act
         var exception = Record.Exception(() => ((IInterceptorSubject)root).AttachToContext(context));
 
-        // Assert: the attach was rejected...
-        Assert.NotNull(exception);
-
-        // ...so nothing it touched may stay behind. The root is the one the rollback exists for.
-        var graph = ((LifecycleInterceptor)context.TryGetService<ILifecycleInterceptor>()!).Graph;
-        var rootSubject = (IInterceptorSubject)root;
-
-        Assert.False(graph.IsOwned(root),
-            "the root is still owned by the graph after a rejected attach");
-        Assert.Null(rootSubject.TryGetContext());
-        Assert.Null(((IInterceptorSubject)childA).TryGetContext());
-        Assert.Null(((IInterceptorSubject)childB).TryGetContext());
+        // Assert
+        Assert.IsType<InvalidOperationException>(exception);
+        Assert.Equal("callback refuses childB", exception.Message);
+        Assert.Equal(SubjectAttachmentAnchorKind.Explicit, ((IInterceptorSubject)root).Executor.AttachmentAnchor);
+        SupportContractAssertions.Settled(context, [root], root, childA, childB);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], root, childA, childB);
     }
 
     [Fact]
@@ -98,15 +86,12 @@ public class AdversarialRollbackTests
     }
 
     [Fact]
-    public void WhenARejectedAttachConsumedAProvisionalAnchor_ThenTheAnchoredSubjectAndItsSubtreeStayAttached()
+    public void WhenAnAttachCallbackFailsAfterConsumingAProvisionalAnchor_ThenTheAdoptedSubtreeRemainsCommitted()
     {
-        // Arrange: a subject constructed with the context is a provisional root, and it holds a
-        // grandchild through an ordinary edge. A separate graph references that root through a
-        // property seeded ahead of the one holding the subject the attach callback refuses, so the
-        // attach consumes the provisional anchor first and is rejected afterwards.
+        // Arrange
         var context = InterceptorSubjectContext
             .Create()
-            .WithLifecycle();
+            .WithRegistry();
 
         var provisionalRoot = new Person(context) { FirstName = "P" };
         var grandchild = new Person { FirstName = "G" };
@@ -130,45 +115,30 @@ public class AdversarialRollbackTests
             }
         };
 
-        var graph = lifecycle.Graph;
-        var before = Describe(graph, provisionalSubject) + "; grandchild " + Describe(graph, grandchildSubject);
         Assert.Equal(SubjectAttachmentAnchorKind.Provisional, provisionalSubject.Executor.AttachmentAnchor);
         Assert.Same(context, grandchildSubject.TryGetContext());
 
         // Act
         var exception = Record.Exception(() => ((IInterceptorSubject)root).AttachToContext(context));
 
-        // Assert: the attach was rejected after it had consumed the anchor, and what was attached
-        // before it began is exactly as it was. The provisional root keeps its anchor and its
-        // ownership record, the grandchild is still held through it, and neither saw a detach.
-        Assert.NotNull(exception);
+        // Assert
+        Assert.IsType<InvalidOperationException>(exception);
+        Assert.Equal("callback refuses X", exception.Message);
         Assert.Equal(SubjectAttachmentAnchorKind.None, anchorAtRefusal);
-        var after = Describe(graph, provisionalSubject) + "; grandchild " + Describe(graph, grandchildSubject);
-        Assert.True(ReferenceEquals(context, provisionalSubject.TryGetContext()),
-            $"the rejected attach evicted the provisional root: before [{before}], after [{after}]");
-        Assert.Equal(SubjectAttachmentAnchorKind.Provisional, provisionalSubject.Executor.AttachmentAnchor);
-        Assert.True(graph.IsOwned(provisionalRoot));
-        Assert.Equal(0, provisionalSubject.GetReferenceCount());
-        Assert.DoesNotContain(provisionalSubject, detached);
-
-        Assert.True(ReferenceEquals(context, grandchildSubject.TryGetContext()),
-            $"the eviction cascaded to the grandchild: before [{before}], after [{after}]");
-        Assert.True(graph.IsOwned(grandchild));
-        Assert.Equal(1, grandchildSubject.GetReferenceCount());
-        Assert.DoesNotContain(grandchildSubject, detached);
-
-        Assert.Null(((IInterceptorSubject)root).TryGetContext());
-        Assert.Null(((IInterceptorSubject)refused).TryGetContext());
+        Assert.Equal(SubjectAttachmentAnchorKind.None, provisionalSubject.Executor.AttachmentAnchor);
+        Assert.Empty(detached);
+        SupportContractAssertions.Settled(context, [root], root, provisionalRoot, grandchild, refused);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], root, provisionalRoot, grandchild, refused);
     }
 
     [Fact]
-    public void WhenARejectedAttachConsumedSeveralProvisionalAnchors_ThenEveryOneIsHandedBack()
+    public void WhenAnAttachCallbackFailsAfterConsumingSeveralProvisionalAnchors_ThenEverySubtreeRemainsCommitted()
     {
-        // Arrange: two provisional roots, each holding a grandchild, are referenced ahead of the
-        // subject the callback refuses, so the attach consumes both anchors before it is rejected.
+        // Arrange
         var context = InterceptorSubjectContext
             .Create()
-            .WithLifecycle();
+            .WithRegistry();
 
         var first = new Person(context) { FirstName = "P1", Father = new Person { FirstName = "G1" } };
         var second = new Person(context) { FirstName = "P2", Father = new Person { FirstName = "G2" } };
@@ -190,31 +160,24 @@ public class AdversarialRollbackTests
         var exception = Record.Exception(() => ((IInterceptorSubject)root).AttachToContext(context));
 
         // Assert
-        Assert.NotNull(exception);
+        Assert.IsType<InvalidOperationException>(exception);
+        Assert.Equal("callback refuses X", exception.Message);
         Assert.Equal([SubjectAttachmentAnchorKind.None, SubjectAttachmentAnchorKind.None], anchorsAtRefusal);
-        foreach (var provisionalRoot in new[] { first, second })
-        {
-            var subject = (IInterceptorSubject)provisionalRoot;
-            Assert.Same(context, subject.TryGetContext());
-            Assert.Equal(SubjectAttachmentAnchorKind.Provisional, subject.Executor.AttachmentAnchor);
-            Assert.Equal(0, subject.GetReferenceCount());
-            Assert.Same(context, ((IInterceptorSubject)provisionalRoot.Father!).TryGetContext());
-        }
-
-        Assert.Null(((IInterceptorSubject)root).TryGetContext());
-        Assert.Null(((IInterceptorSubject)refused).TryGetContext());
+        Assert.Equal(SubjectAttachmentAnchorKind.None, ((IInterceptorSubject)first).Executor.AttachmentAnchor);
+        Assert.Equal(SubjectAttachmentAnchorKind.None, ((IInterceptorSubject)second).Executor.AttachmentAnchor);
+        IInterceptorSubject[] subjects = [root, first, second, first.Father!, second.Father!, refused];
+        SupportContractAssertions.Settled(context, [root], subjects);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], subjects);
     }
 
     [Fact]
-    public void WhenARejectedAttachNestsInsideAnAcceptedOne_ThenEachHandsBackOnlyItsOwnAnchors()
+    public void WhenANestedAttachCallbackFails_ThenBothRootsCommitBeforeTheOuterDrainThrows()
     {
-        // Arrange: the outer root's user collection attaches a second root while the outer seed
-        // scans it, which is the callback-depth-zero window an explicit attach has. The inner
-        // attach consumes one provisional anchor and is refused; the outer consumes another and
-        // is accepted.
+        // Arrange
         var context = InterceptorSubjectContext
             .Create()
-            .WithLifecycle();
+            .WithRegistry();
 
         var innerProvisional = new Person(context) { FirstName = "PI", Father = new Person { FirstName = "GI" } };
         var outerProvisional = new Person(context) { FirstName = "PO" };
@@ -239,36 +202,29 @@ public class AdversarialRollbackTests
         // Act
         var outerException = Record.Exception(() => ((IInterceptorSubject)outerRoot).AttachToContext(context));
 
-        // Assert: the inner attach was the one refused and the outer one landed
-        Assert.Null(outerException);
-        Assert.NotNull(innerException);
-
-        var innerSubject = (IInterceptorSubject)innerProvisional;
-        Assert.Same(context, innerSubject.TryGetContext());
-        Assert.Equal(SubjectAttachmentAnchorKind.Provisional, innerSubject.Executor.AttachmentAnchor);
-        Assert.Equal(0, innerSubject.GetReferenceCount());
-        Assert.Same(context, ((IInterceptorSubject)innerProvisional.Father!).TryGetContext());
-        Assert.Null(((IInterceptorSubject)innerRoot).TryGetContext());
-        Assert.Null(((IInterceptorSubject)refused).TryGetContext());
-
-        var outerSubject = (IInterceptorSubject)outerProvisional;
-        Assert.Same(context, outerSubject.TryGetContext());
-        Assert.Equal(SubjectAttachmentAnchorKind.None, outerSubject.Executor.AttachmentAnchor);
-        Assert.Equal(1, outerSubject.GetReferenceCount());
+        // Assert
+        Assert.Null(innerException);
+        Assert.IsType<InvalidOperationException>(outerException);
+        Assert.Equal("callback refuses X", outerException.Message);
+        Assert.Equal(SubjectAttachmentAnchorKind.Explicit, ((IInterceptorSubject)innerRoot).Executor.AttachmentAnchor);
         Assert.Equal(SubjectAttachmentAnchorKind.Explicit, ((IInterceptorSubject)outerRoot).Executor.AttachmentAnchor);
+        Assert.Equal(SubjectAttachmentAnchorKind.None, ((IInterceptorSubject)innerProvisional).Executor.AttachmentAnchor);
+        Assert.Equal(SubjectAttachmentAnchorKind.None, ((IInterceptorSubject)outerProvisional).Executor.AttachmentAnchor);
+        IInterceptorSubject[] subjects = [innerRoot, outerRoot, innerProvisional, outerProvisional, innerProvisional.Father!, refused];
+        SupportContractAssertions.Settled(context, [innerRoot, outerRoot], subjects);
+        innerRoot.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [outerRoot], subjects);
+        outerRoot.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], subjects);
     }
 
     [Fact]
-    public void WhenAnEdgeFromOutsideTheRejectedComponentConsumedTheAnchor_ThenTheAnchorStaysConsumed()
+    public void WhenAnAttachCallbackFailsWithOutsideSupport_ThenBothIncomingEdgesRemainCommitted()
     {
-        // Arrange: while the root's seed scans its user collection, that collection gives an
-        // explicit root of its own an edge to the provisional subject. That edge is not part of
-        // the rejected component, so it survives the rollback and supports the subject exactly as
-        // the consuming edge would have; an anchor handed back over it would make the subject a
-        // root that the explicit root's own edge removal never releases.
+        // Arrange
         var context = InterceptorSubjectContext
             .Create()
-            .WithLifecycle();
+            .WithRegistry();
 
         var provisional = new Person(context) { FirstName = "P" };
         var outside = new Person { FirstName = "E" };
@@ -299,47 +255,43 @@ public class AdversarialRollbackTests
         // Act
         var exception = Record.Exception(() => ((IInterceptorSubject)root).AttachToContext(context));
 
-        // Assert: the outside edge consumed the anchor mid-attach, and after the rollback the
-        // subject is held by that edge alone
-        Assert.NotNull(exception);
+        // Assert
+        Assert.IsType<InvalidOperationException>(exception);
+        Assert.Equal("callback refuses X", exception.Message);
         Assert.Equal([SubjectAttachmentAnchorKind.Provisional, SubjectAttachmentAnchorKind.None], anchorsAroundTheOutsideEdge);
-        Assert.Same(context, provisionalSubject.TryGetContext());
         Assert.Equal(SubjectAttachmentAnchorKind.None, provisionalSubject.Executor.AttachmentAnchor);
+        Assert.Equal(2, provisionalSubject.GetReferenceCount());
+        SupportContractAssertions.Settled(context, [root, outside], root, outside, provisional, refused);
+        root.DetachFromContext(context);
         Assert.Equal(1, provisionalSubject.GetReferenceCount());
-        Assert.Null(((IInterceptorSubject)root).TryGetContext());
-        Assert.Null(((IInterceptorSubject)refused).TryGetContext());
-
-        // ...so removing that edge releases it, as it would have without the rejected attach
+        SupportContractAssertions.Settled(context, [outside], root, outside, provisional, refused);
         outside.Father = null;
-        Assert.Null(provisionalSubject.TryGetContext());
+        SupportContractAssertions.Settled(context, [outside], root, outside, provisional, refused);
+        outside.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], root, outside, provisional, refused);
     }
 
     [Fact]
-    public void WhenTheProvisionalRootIsPromotedWhileTheRollbackDrains_ThenTheExplicitAnchorSurvives()
+    public void WhenAnAttachCallbackPromotesAProvisionalRootBeforeFailing_ThenTheExplicitAnchorSurvivesParentRemoval()
     {
-        // Arrange: the root's user collection promotes the provisional subject to an explicit root
-        // the first time it is scanned after the refusal, which is the rollback's own scan of the
-        // committed baselines. The rollback hands the provisional anchor back before that scan,
-        // and an anchor that turned explicit afterwards must stay explicit.
+        // Arrange
         var context = InterceptorSubjectContext
             .Create()
-            .WithLifecycle();
+            .WithRegistry();
 
         var provisional = new Person(context) { FirstName = "P", Father = new Person { FirstName = "G" } };
         var refused = new Person { FirstName = "X" };
-        var refusalHappened = false;
+        var promotionReturned = false;
 
         var root = new EnumerableChildrenHolder();
-        root.Children = new PhaseHookEnumerable(
-            [provisional, refused],
-            shouldRun: () => refusalHappened,
-            onRun: () => ((IInterceptorSubject)provisional).AttachToContext(context));
+        root.Children = new Person[] { provisional, refused };
 
         context.TryGetLifecycleInterceptor()!.SubjectAttached += change =>
         {
             if (ReferenceEquals(change.Subject, refused))
             {
-                refusalHappened = true;
+                provisional.AttachToContext(context);
+                promotionReturned = true;
                 throw new InvalidOperationException("callback refuses X");
             }
         };
@@ -348,19 +300,23 @@ public class AdversarialRollbackTests
         var exception = Record.Exception(() => ((IInterceptorSubject)root).AttachToContext(context));
 
         // Assert
-        Assert.NotNull(exception);
-        var provisionalSubject = (IInterceptorSubject)provisional;
-        Assert.Same(context, provisionalSubject.TryGetContext());
-        Assert.Equal(SubjectAttachmentAnchorKind.Explicit, provisionalSubject.Executor.AttachmentAnchor);
-        Assert.Equal(0, provisionalSubject.GetReferenceCount());
-        Assert.Same(context, ((IInterceptorSubject)provisional.Father!).TryGetContext());
-        Assert.Null(((IInterceptorSubject)root).TryGetContext());
+        Assert.IsType<InvalidOperationException>(exception);
+        Assert.Equal("callback refuses X", exception.Message);
+        Assert.True(promotionReturned);
+        Assert.Equal(SubjectAttachmentAnchorKind.Explicit, ((IInterceptorSubject)provisional).Executor.AttachmentAnchor);
+        IInterceptorSubject[] subjects = [root, provisional, provisional.Father!, refused];
+        SupportContractAssertions.Settled(context, [root, provisional], subjects);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [provisional], subjects);
+        Assert.Equal(0, provisional.GetReferenceCount());
+        provisional.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], subjects);
     }
 
     /// <summary>
     /// A user enumerable that runs one action the first time it is scanned while the condition
     /// holds. The condition names the phase the test needs (the seed's scan once the root is
-    /// claimed, or the rollback's scan after the refusal) rather than an enumeration ordinal,
+    /// claimed, or a callback after the attachment) rather than an enumeration ordinal,
     /// because how often a value is scanned is an implementation detail.
     /// </summary>
     private sealed class PhaseHookEnumerable(Person[] items, Func<bool> shouldRun, Action onRun) : IEnumerable<Person>
@@ -379,12 +335,5 @@ public class AdversarialRollbackTests
         }
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
-    }
-
-    private static string Describe(OwnershipGraph graph, IInterceptorSubject subject)
-    {
-        subject.Executor.TryGetAttachment(out var attachedContext, out var anchor, out _);
-        return $"attached={attachedContext is not null}, anchor={anchor}, owned={graph.IsOwned(subject)}, " +
-               $"referenceCount={subject.GetReferenceCount()}";
     }
 }

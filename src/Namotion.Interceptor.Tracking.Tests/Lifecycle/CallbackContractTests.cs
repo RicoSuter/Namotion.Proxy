@@ -1,3 +1,4 @@
+using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Tracking.Change;
 using Namotion.Interceptor.Tracking.Lifecycle;
 using Namotion.Interceptor.Tracking.Tests.Models;
@@ -14,13 +15,10 @@ public class CallbackContractTests
     }
 
     [Fact]
-    public void WhenAPropertyCallbackWritesStructuralPropertyAtTopLevel_ThenItThrows()
+    public void WhenAPropertyCallbackWritesStructuralPropertyAtTopLevel_ThenBothRootsSettle()
     {
         // Arrange
-        // The one-shot flag is load-bearing twice over. The handler also fires during stranger's
-        // OWN construction, while the local is still null, which would record a
-        // NullReferenceException and gate out every later invocation. And pre-fix the write
-        // succeeds, so without the flag each attempt publishes another attach and recurses.
+        // Construction also publishes callbacks before the local receives the constructed subject.
         Exception? callbackException = null;
         var attempted = false;
         Person? stranger = null;
@@ -35,22 +33,29 @@ public class CallbackContractTests
             callbackException = Record.Exception(() => stranger.Father = new Person());
         });
 
-        var context = CreateContext().WithService(() => handler, _ => false);
+        var context = CreateContext().WithRegistry().WithService(() => handler, _ => false);
         stranger = new Person(context) { FirstName = "S" };
 
         // Act
         var root = new Person(context) { FirstName = "R" };
 
         // Assert
-        Assert.IsType<LifecycleContractViolationException>(callbackException);
-        Assert.NotNull(root);
+        Assert.True(attempted);
+        Assert.Null(callbackException);
+        var child = Assert.IsType<Person>(stranger.Father);
+        SupportContractAssertions.Settled(context, [stranger, root], stranger, root, child);
+        stranger.AttachToContext(context);
+        root.AttachToContext(context);
+        stranger.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [root], stranger, root, child);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], stranger, root, child);
     }
 
     [Fact]
-    public void WhenAPropertyCallbackWritesStructuralPropertyBelowTheFirstLevel_ThenItThrows()
+    public void WhenAPropertyCallbackWritesStructuralPropertyBelowTheFirstLevel_ThenBothSubtreesSettle()
     {
-        // Arrange: three levels, so the callback for the deepest subject runs inside the
-        // descent's own callback scope. This is the case a single-level test cannot see.
+        // Arrange
         Exception? deepException = null;
         var attempted = false;
         Person? stranger = null;
@@ -65,7 +70,7 @@ public class CallbackContractTests
             deepException = Record.Exception(() => stranger.Father = new Person());
         });
 
-        var context = CreateContext().WithService(() => handler, _ => false);
+        var context = CreateContext().WithRegistry().WithService(() => handler, _ => false);
         stranger = new Person(context) { FirstName = "S" };
 
         var top = new Person(context) { FirstName = "top" };
@@ -77,20 +82,27 @@ public class CallbackContractTests
         top.Father = mid;
 
         // Assert
-        Assert.IsType<LifecycleContractViolationException>(deepException);
+        Assert.True(attempted);
+        Assert.Null(deepException);
+        var child = Assert.IsType<Person>(stranger.Father);
+        SupportContractAssertions.Settled(context, [stranger, top], stranger, top, mid, leaf, child);
+        stranger.AttachToContext(context);
+        top.AttachToContext(context);
+        stranger.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [top], stranger, top, mid, leaf, child);
+        top.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], stranger, top, mid, leaf, child);
     }
 
     [Fact]
-    public void WhenALifecycleCallbackAttachesASubject_ThenItThrows()
+    public void WhenALifecycleCallbackAttachesASubject_ThenBothRootsRemainIndependentlyDetachable()
     {
         // Arrange
-        // The flag must be set BEFORE the attempt. Pre-fix the attach succeeds and publishes
-        // another attach, which re-enters this handler before callbackException is assigned, and
-        // the recursion ends in a stack overflow that kills the whole assembly rather than
-        // failing one test.
+        // Nested attachment queues further callbacks, so the handler runs only once.
         Exception? callbackException = null;
         var attempted = false;
-        var context = CreateContext()
+        var introduced = new Person { FirstName = "X" };
+        var context = CreateContext().WithRegistry()
             .WithService(() => new DelegateLifecycleHandler(change =>
             {
                 if (attempted)
@@ -100,30 +112,40 @@ public class CallbackContractTests
 
                 attempted = true;
                 callbackException = Record.Exception(
-                    () => new Person { FirstName = "X" }.AttachToContext(change.Subject.GetContext()));
+                    () => introduced.AttachToContext(change.Subject.GetContext()));
             }), _ => false);
 
         // Act
-        _ = new Person(context) { FirstName = "R" };
+        var root = new Person(context) { FirstName = "R" };
 
         // Assert
-        Assert.IsType<LifecycleContractViolationException>(callbackException);
+        Assert.True(attempted);
+        Assert.Null(callbackException);
+        Assert.Equal(SubjectAttachmentAnchorKind.Explicit, ((IInterceptorSubject)introduced).Executor.AttachmentAnchor);
+        SupportContractAssertions.Settled(context, [root, introduced], root, introduced);
+        introduced.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [root], root, introduced);
+        root.AttachToContext(context);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], root, introduced);
     }
 
     [Fact]
-    public void WhenALifecycleCallbackDetachesASubject_ThenItThrows()
+    public void WhenALifecycleCallbackDetachesASubject_ThenTheExplicitRootIsReleased()
     {
         // Arrange
         Exception? callbackException = null;
         Person? pinned = null;
-        var context = CreateContext()
+        var attempted = false;
+        var context = CreateContext().WithRegistry()
             .WithService(() => new DelegateLifecycleHandler(change =>
             {
-                if (callbackException is not null || pinned is null || ReferenceEquals(change.Subject, pinned))
+                if (attempted || pinned is null || ReferenceEquals(change.Subject, pinned))
                 {
                     return;
                 }
 
+                attempted = true;
                 callbackException = Record.Exception(() => pinned.DetachFromContext(pinned.GetContext()));
             }), _ => false);
 
@@ -134,11 +156,15 @@ public class CallbackContractTests
         pinned.AttachToContext(context);
 
         // Act
-        _ = new Person(context) { FirstName = "R" };
+        var root = new Person(context) { FirstName = "R" };
 
         // Assert
-        Assert.IsType<LifecycleContractViolationException>(callbackException);
-        Assert.NotNull(pinned.TryGetContext());
+        Assert.True(attempted);
+        Assert.Null(callbackException);
+        SupportContractAssertions.Settled(context, [root], root, pinned);
+        root.AttachToContext(context);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], root, pinned);
     }
 
     [Fact]

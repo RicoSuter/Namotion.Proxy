@@ -1,3 +1,4 @@
+using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Tracking.Lifecycle;
 using Namotion.Interceptor.Tracking.Parent;
 using Namotion.Interceptor.Tracking.Tests.Models;
@@ -526,17 +527,14 @@ public class GraphOwnershipTests
     }
 
     [Fact]
-    public void WhenLifecycleCallbackWritesStructuralProperty_ThenTheGuardRejectsIt()
+    public void WhenLifecycleCallbackWritesStructuralProperty_ThenTheReleasedSubtreeSettles()
     {
-        // Arrange: a handler reacting to b's removal writes another structural property of the
-        // same graph. Subject lifecycle callbacks must not write structural properties, and the
-        // guard is live in every build, so the write is rejected before its backing writer runs
-        // rather than re-entering the reconciler on half-updated state.
+        // Arrange
         var callbackObserved = false;
         Exception? callbackException = null;
         Person? root = null;
         Person? b = null;
-        var context = CreateContext()
+        var context = CreateContext().WithRegistry()
             .WithService(() => new DelegateLifecycleHandler(change =>
             {
                 if (callbackObserved || !change.IsPropertyReferenceRemoved || !ReferenceEquals(change.Subject, b))
@@ -555,33 +553,28 @@ public class GraphOwnershipTests
         root.Father = parent;
         parent.Children = [b, a];
 
-        // Act: the removal of b publishes the callback; the callback's write is rejected, so the
-        // outer write itself completes normally.
+        // Act
         parent.Children = [a];
 
         // Assert
         Assert.True(callbackObserved);
-        Assert.IsType<LifecycleContractViolationException>(callbackException);
-        Assert.Contains("lifecycle callback must not change graph topology", callbackException.Message);
-        Assert.Same(context, root.TryGetContext());
-        Assert.Same(context, parent.TryGetContext());
-        Assert.Equal(1, a.GetReferenceCount());
-        Assert.Equal(0, b.GetReferenceCount());
-        Assert.Null(b.TryGetContext());
+        Assert.Null(callbackException);
+        Assert.Null(root.Father);
+        SupportContractAssertions.Settled(context, [root], root, parent, a, b);
+        root.AttachToContext(context);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], root, parent, a, b);
     }
 
     [Fact]
-    public void WhenPropertyDetachCallbackReleasesTheWritingParent_ThenTheGuardRejectsIt()
+    public void WhenPropertyDetachCallbackReleasesTheWritingParent_ThenTheEntireSubtreeIsReleased()
     {
-        // Arrange: a detach property callback reacting to b's release tries to release the
-        // writing parent itself. Property lifecycle callbacks are not exempt from the callback
-        // contract, so the write is rejected mid-reconcile and the outer write completes on a
-        // consistent graph instead of descending from a released parent.
+        // Arrange
         var callbackObserved = false;
         Exception? callbackException = null;
         Person? root = null;
         Person? b = null;
-        var context = CreateContext()
+        var context = CreateContext().WithRegistry()
             .WithService(() => new DelegatePropertyDetachHandler(change =>
             {
                 if (!callbackObserved && ReferenceEquals(change.Subject, b))
@@ -601,16 +594,14 @@ public class GraphOwnershipTests
         // Act
         parent.Children = [a];
 
-        // Assert: the reentrant release was rejected, so the subtree stays attached and settled.
+        // Assert
         Assert.True(callbackObserved);
-        Assert.IsType<LifecycleContractViolationException>(callbackException);
-        Assert.Same(parent, root.Father);
-        Assert.Same(context, parent.TryGetContext());
-        Assert.Same(context, a.TryGetContext());
-        Assert.Equal(1, a.GetReferenceCount());
-        Assert.Single(a.GetParents());
-        Assert.Equal(0, b.GetReferenceCount());
-        Assert.Null(b.TryGetContext());
+        Assert.Null(callbackException);
+        Assert.Null(root.Father);
+        SupportContractAssertions.Settled(context, [root], root, parent, a, b);
+        root.AttachToContext(context);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], root, parent, a, b);
     }
 
     [Fact]
