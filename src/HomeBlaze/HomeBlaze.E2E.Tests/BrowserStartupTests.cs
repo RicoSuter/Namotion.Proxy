@@ -47,12 +47,15 @@ public class BrowserStartupTests(PlaywrightFixture fixture, ITestOutputHelper ou
             factory.ReleaseAttachments();
 
             // Assert
-            // The constructor pause can leave storage disconnected while its hosted service races
-            // configuration population. Browsing must still expose its state and operations.
             await Assertions.Expect(page.Locator("#scrollContainer strong:text-is('Status:')")).ToBeVisibleAsync(
                 new() { Timeout = 15000 });
+            await Assertions.Expect(page.Locator("#scrollContainer a:has(strong:text-is('Status:'))"))
+                .ToHaveTextAsync("Status: Connected", new() { Timeout = 15000 });
             await Assertions.Expect(page.GetByRole(AriaRole.Button, new() { Name = "Create", Exact = true })).ToBeVisibleAsync(
                 new() { Timeout = 15000 });
+            await page.Locator("#scrollContainer span:text-is('Demo')").ClickAsync();
+            await Assertions.Expect(page.Locator("#scrollContainer span:text-is('Test Motor')"))
+                .ToBeVisibleAsync(new() { Timeout = 15000 });
             await Assertions.Expect(page.Locator("#blazor-error-ui")).ToBeHiddenAsync();
         }
         catch
