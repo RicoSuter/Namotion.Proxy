@@ -47,7 +47,7 @@ var json = JsonSerializer.Serialize(update);
 
 ### Partial Update (Changes Only)
 
-Use for incremental synchronization based on tracked property changes:
+Use for incremental synchronization based on tracked property changes. Repeated changes to a property are merged before constructing the update, preserving the earliest old value and latest new value and timestamp. Committed changes are ordered by revision; if any change to that property has no revision, arrival order is used. Callers do not need to merge the batch first:
 
 ```csharp
 // Collect changes from the tracking system

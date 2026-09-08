@@ -48,6 +48,7 @@ internal static class SubjectUpdateFactory
         try
         {
             builder.Initialize(rootSubject, processors);
+            propertyChanges = builder.MergeChanges(propertyChanges);
 
             for (var i = 0; i < propertyChanges.Length; i++)
             {
