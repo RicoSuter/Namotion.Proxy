@@ -18,5 +18,4 @@ internal sealed record PropertyMetadata(
     string? GetterAccessModifier,
     string? SetterAccessModifier,
     string? InterfaceTypeName = null,
-    string? ExplicitInterfaceTypeName = null,
-    bool NeedsBackingFieldSnapshot = false);
+    string? ExplicitInterfaceTypeName = null);

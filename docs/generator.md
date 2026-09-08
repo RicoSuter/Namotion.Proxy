@@ -127,7 +127,7 @@ public partial class Person
 }
 ```
 
-Generated setters copy non-atomic backing values for the old value and `On...Changed` argument under the executor's terminal lock, without invoking read interceptors or recording a dependency read. The snapshots are coherent, but concurrent writers can supersede them: the old value need not immediately precede this commit, and the changed hook can observe a later committed value. Reference and guaranteed atomic primitive fields keep direct copies. `long`, `ulong` and `double` use the snapshot helper so 32-bit runtimes lock their copies; on 64-bit runtimes the helper reads them directly. This additional helper cost has not been benchmarked.
+Generated property accessors do not provide whole-accessor synchronization. See [Thread Safety](tracking.md#thread-safety) for consumer responsibilities when accessing non-atomic values or implementing hooks.
 
 ### Derived Properties
 
@@ -622,9 +622,6 @@ public class TrackedEntityBase : IInterceptorSubject, INotifyPropertyChanged, IR
 
     protected IReadOnlyDictionary<string, SubjectPropertyMetadata>? GetInstanceProperties() => _properties;
 
-    protected TProperty GetPropertyValue<TProperty>(Func<IInterceptorSubject, TProperty> readValue)
-        => _executor is not null ? InterceptorExecutor.ReadBackingField(this, readValue) : readValue(this);
-
     protected TProperty GetPropertyValue<TProperty>(string propertyName, Func<IInterceptorSubject, TProperty> readValue)
         => _executor is not null ? _executor.GetPropertyValue(propertyName, readValue)! : readValue(this)!;
 
@@ -651,8 +648,6 @@ public partial class Machine : TrackedEntityBase
     public partial string SerialNumber { get; set; }
 }
 ```
-
-The one-argument `GetPropertyValue<TProperty>(Func<IInterceptorSubject, TProperty>)` overload is optional. Generated setters use it to copy non-atomic backing values for their old-value snapshot and changed-hook argument without read interception. It keeps an unmaterialized executor unmaterialized during detached initialization. An older compiled base or handwritten base without this overload remains supported through `InterceptorExecutor.ReadBackingField`; that fallback can initialize the executor before a detached write and therefore produce write-state data where the old lazy setter produced none. Rebuild a generated base or add the optional overload to a handwritten base to preserve lazy detached initialization.
 
 ### Three things the compiler cannot check for you
 

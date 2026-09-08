@@ -56,7 +56,6 @@ internal enum AccessorHelperReturnKind
 /// </param>
 /// <param name="RequiresLeadingString">Whether the first parameter must be a string.</param>
 /// <param name="Declaration">How the member is named in the NI0011 message.</param>
-/// <param name="IsOptional">Whether a handwritten or older compiled base may omit this helper.</param>
 internal sealed record AccessorHelperShape(
     string Name,
     int TypeParameterCount,
@@ -64,8 +63,7 @@ internal sealed record AccessorHelperShape(
     bool RequiresParameterArray,
     AccessorHelperReturnKind ReturnKind,
     bool RequiresLeadingString,
-    string Declaration,
-    bool IsOptional = false);
+    string Declaration);
 
 /// <summary>
 /// What the generator emits into a subject's generated half, read from this table rather than from
@@ -73,23 +71,8 @@ internal sealed record AccessorHelperShape(
 /// </summary>
 internal static class GeneratedMemberTable
 {
-    public static readonly AccessorHelperShape BackingFieldReader = new(
-        MemberNames.GetPropertyValue, TypeParameterCount: 1, ParameterCount: 1, RequiresParameterArray: false,
-        AccessorHelperReturnKind.OwnTypeParameter, RequiresLeadingString: false,
-        "protected TProperty GetPropertyValue<TProperty>(Func<IInterceptorSubject, TProperty>)", IsOptional: true);
-
-    public static bool HasBackingFieldReaderParameters(IMethodSymbol method) =>
-        method.TypeParameters.Length == 1 && method.Parameters.Length == 1 &&
-        method.Parameters[0].RefKind == RefKind.None &&
-        method.Parameters[0].Type is INamedTypeSymbol { Arity: 2 } parameterType &&
-        parameterType.OriginalDefinition.MetadataName == "Func`2" &&
-        parameterType.ContainingNamespace.ToDisplayString() == "System" &&
-        parameterType.TypeArguments[0].ToDisplayString() == KnownTypes.IInterceptorSubject &&
-        SymbolEqualityComparer.Default.Equals(parameterType.TypeArguments[1], method.TypeParameters[0]);
-
     public static readonly AccessorHelperShape[] AccessorHelpers =
     [
-        BackingFieldReader,
         new AccessorHelperShape(
             MemberNames.GetPropertyValue, TypeParameterCount: 1, ParameterCount: 2, RequiresParameterArray: false,
             AccessorHelperReturnKind.OwnTypeParameter, RequiresLeadingString: true,
@@ -128,7 +111,7 @@ internal static class GeneratedMemberTable
     /// cannot be contract-checked and silently escape the hiding rule.
     /// </summary>
     public static readonly string[] GeneratedMemberNames =
-        AccessorHelpers.Select(shape => shape.Name).Distinct().ToArray();
+        AccessorHelpers.Select(shape => shape.Name).ToArray();
 
     /// <summary>
     /// Every member root mode emits that a generated copy further up the chain would hide, the two

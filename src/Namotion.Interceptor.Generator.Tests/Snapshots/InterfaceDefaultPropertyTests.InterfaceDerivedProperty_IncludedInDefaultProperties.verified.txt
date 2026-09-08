@@ -87,9 +87,9 @@ using System.Text.Json.Serialization;
                 var newValue = value;
                 var cancel = false;
                 OnCelsiusChanging(ref newValue, ref cancel);
-                if (!cancel && SetPropertyValue(nameof(Celsius), newValue, GetPropertyValue(static o => ((TemperatureSensor)o)._Celsius), static (o, v) => ((TemperatureSensor)o)._Celsius = v))
+                if (!cancel && SetPropertyValue(nameof(Celsius), newValue, _Celsius, static (o, v) => ((TemperatureSensor)o)._Celsius = v))
                 {
-                    OnCelsiusChanged(GetPropertyValue(static o => ((TemperatureSensor)o)._Celsius));
+                    OnCelsiusChanged(_Celsius);
                     RaisePropertyChanged(nameof(Celsius));
                 }
             }
@@ -101,12 +101,6 @@ using System.Text.Json.Serialization;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         protected IReadOnlyDictionary<string, SubjectPropertyMetadata>? GetInstanceProperties() => _properties;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        protected TProperty GetPropertyValue<TProperty>(Func<IInterceptorSubject, TProperty> readValue)
-        {
-            return _executor is not null ? InterceptorExecutor.ReadBackingField(this, readValue) : readValue(this);
-        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         protected TProperty GetPropertyValue<TProperty>(string propertyName, Func<IInterceptorSubject, TProperty> readValue)

@@ -128,12 +128,6 @@ using System.Text.Json.Serialization;
         protected IReadOnlyDictionary<string, SubjectPropertyMetadata>? GetInstanceProperties() => _properties;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        protected TProperty GetPropertyValue<TProperty>(Func<IInterceptorSubject, TProperty> readValue)
-        {
-            return _executor is not null ? InterceptorExecutor.ReadBackingField(this, readValue) : readValue(this);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         protected TProperty GetPropertyValue<TProperty>(string propertyName, Func<IInterceptorSubject, TProperty> readValue)
         {
             return _executor is not null ? _executor.GetPropertyValue(propertyName, readValue)! : readValue(this)!;
@@ -223,9 +217,9 @@ using System.Text.Json.Serialization;
                 var newValue = value;
                 var cancel = false;
                 OnBrightnessChanging(ref newValue, ref cancel);
-                if (!cancel && SetPropertyValue(nameof(Brightness), newValue, GetPropertyValue(static o => ((DimmableLight)o)._Brightness), static (o, v) => ((DimmableLight)o)._Brightness = v))
+                if (!cancel && SetPropertyValue(nameof(Brightness), newValue, _Brightness, static (o, v) => ((DimmableLight)o)._Brightness = v))
                 {
-                    OnBrightnessChanged(GetPropertyValue(static o => ((DimmableLight)o)._Brightness));
+                    OnBrightnessChanged(_Brightness);
                     RaisePropertyChanged(nameof(Brightness));
                 }
             }

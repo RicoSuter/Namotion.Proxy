@@ -101,12 +101,6 @@ namespace TestNamespace
         protected IReadOnlyDictionary<string, SubjectPropertyMetadata>? GetInstanceProperties() => _properties;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        protected TProperty GetPropertyValue<TProperty>(Func<IInterceptorSubject, TProperty> readValue)
-        {
-            return _executor is not null ? InterceptorExecutor.ReadBackingField(this, readValue) : readValue(this);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         protected TProperty GetPropertyValue<TProperty>(string propertyName, Func<IInterceptorSubject, TProperty> readValue)
         {
             return _executor is not null ? _executor.GetPropertyValue(propertyName, readValue)! : readValue(this)!;

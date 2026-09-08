@@ -24,7 +24,7 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
     /// The terminal lock that serializes backing-field access of the subject, taken by the chain
     /// terminals in <see cref="ReadInterceptorFactory{TProperty}"/> and
     /// <see cref="WriteInterceptorFactory{TProperty}"/>. One executor is published per subject, so
-    /// this is a per-subject lock; without it a wide value type could be read while half written.
+    /// this per-subject lock serializes terminal writes and their commit bookkeeping with intercepted reads.
     /// The innermost lock of the structural write order (see the note on <see cref="_attachmentLock"/>).
     /// </summary>
     internal readonly object SyncRoot = new();
@@ -168,31 +168,14 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
 
     /// <summary>
     /// The chain an unattached subject's scalar write runs: nothing intercepts, so this is the
-    /// zero-interceptor chain, the terminal write with its commit bookkeeping. Unattached reads and method
-    /// invocations call their delegates directly.
+    /// zero-interceptor chain, the terminal write with its commit bookkeeping. Reads and method
+    /// invocations need no counterpart because their zero-interceptor chains are the plain
+    /// operations.
     /// </summary>
     private static class UninterceptedChain<TProperty>
     {
         internal static readonly WriteAction<TProperty> Write =
             WriteInterceptorFactory<TProperty>.Create(ImmutableArray<IWriteInterceptor>.Empty);
-    }
-
-    /// <summary>
-    /// Copies a backing field without read interception, sharing the subject's terminal lock for non-atomic or potentially boxed values.
-    /// </summary>
-    /// <remarks>
-    /// The delegate must only read the backing field. This operation can initialize the subject's executor.
-    /// The snapshot can become stale immediately after return; it does not order a subsequent write.
-    /// </remarks>
-    public static TProperty ReadBackingField<TProperty>(IInterceptorSubject subject, Func<IInterceptorSubject, TProperty> readValue)
-    {
-        if (!ReadInterceptorFactory<TProperty>.RequiresTerminalLock && !ReadInterceptorFactory<TProperty>.CanBoxValueTypes)
-            return readValue(subject);
-        var executor = (InterceptorExecutor)subject.Executor;
-        lock (executor.SyncRoot)
-        {
-            return readValue(subject);
-        }
     }
 
     /// <inheritdoc />
@@ -202,8 +185,8 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
         var attachedContext = _attachment.Context;
         if (attachedContext is null)
         {
-            // Unattached access has ordinary CLR field semantics; attached reads select the
-            // terminal synchronization required by their value type.
+            // The zero-interceptor read chain is the plain read, no terminal lock; see
+            // ReadInterceptorFactory.
             return readValue(_subject);
         }
 

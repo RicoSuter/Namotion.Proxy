@@ -1152,56 +1152,6 @@ public class SubjectBaseShapeTests
         Assert.Contains("protected void RaisePropertyChanged(string propertyName)", generated);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void WhenAManualBaseHasAnOptionalSnapshotHelper_ThenWideDetachedWritesPreserveLazyState(bool omitOptionalHelper)
-    {
-        // Arrange
-        var source = ReadDocumentedConformingBaseFixture().Replace(
-            "public partial string SerialNumber { get; set; }",
-            "public partial decimal Amount { get; set; }\n    public Machine() => Amount = 5;");
-        if (omitOptionalHelper)
-        {
-            source = source.Replace(
-                "    protected TProperty GetPropertyValue<TProperty>(Func<IInterceptorSubject, TProperty> readValue)\n" +
-                "        => _executor is not null ? InterceptorExecutor.ReadBackingField(this, readValue) : readValue(this);\n", "");
-        }
-
-        // Act
-        var result = GeneratorTestHost.RunForExecution(source);
-        var subject = (IInterceptorSubject)result.CreateInstance("Machine");
-
-        // Assert
-        Assert.Empty(result.CompilationErrors);
-        Assert.Equal(omitOptionalHelper, subject.Data.Count > 0);
-        Assert.Equal(5m, subject.Properties["Amount"].GetValue!(subject));
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void WhenAnOptionalSnapshotOverloadIsNotCallableForAllValues_ThenTheStaticFallbackIsUsed(bool constrained)
-    {
-        // Arrange
-        var source = ReadDocumentedConformingBaseFixture().Replace(
-            "public partial string SerialNumber { get; set; }",
-            "public partial decimal Amount { get; set; }\n    public Machine() => Amount = 5;");
-        const string signature = "GetPropertyValue<TProperty>(Func<IInterceptorSubject, TProperty> readValue)";
-        source = source.Replace(signature, constrained ? signature + " where TProperty : class" :
-            "GetPropertyValue<TProperty>(ref Func<IInterceptorSubject, TProperty> readValue)");
-
-        // Act
-        var result = GeneratorTestHost.RunForExecution(source);
-
-        // Assert
-        Assert.Empty(result.CompilationErrors);
-        Assert.Empty(result.CompilationWarnings);
-        Assert.Contains("InterceptorExecutor.ReadBackingField(this", result.SingleSource());
-        var subject = (IInterceptorSubject)result.CreateInstance("Machine");
-        Assert.Equal(5m, subject.Properties["Amount"].GetValue!(subject));
-    }
-
     /// <summary>
     /// The single fenced code block in docs/generator.md that holds the base class
     /// satisfying the whole contract, together with the generated subclass it hosts.

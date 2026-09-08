@@ -13,14 +13,10 @@ namespace Namotion.Interceptor.Generator.Models;
 /// <param name="HasCallableRaisePropertyChanged">Whether an unqualified RaisePropertyChanged(name) call from the subject binds to an inherited member. False for a chain that only implements IRaisePropertyChanged explicitly, where the interface form is the only one that compiles.</param>
 /// <param name="EmitsInterceptionMembers">True in root mode, where the subject itself, not the base class, emits the whole IInterceptorSubject block.</param>
 /// <param name="HiddenMemberNames">Root mode members that need a 'new' modifier because the ancestor already exposes that name.</param>
-/// <param name="HasInheritedBackingFieldReader">Whether the optional raw snapshot overload is inherited.</param>
-/// <param name="HidesBackingFieldReader">Whether an emitted raw snapshot overload needs the new modifier.</param>
 internal sealed record SubjectBaseClass(
     string? TypeName,
     bool HasInterceptorSubject,
     bool HasInpc,
     bool HasCallableRaisePropertyChanged,
     bool EmitsInterceptionMembers,
-    IReadOnlyList<string> HiddenMemberNames,
-    bool HasInheritedBackingFieldReader,
-    bool HidesBackingFieldReader);
+    IReadOnlyList<string> HiddenMemberNames);
