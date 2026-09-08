@@ -397,6 +397,9 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
             var lifecycle = attachedContext?.TryGetService<ILifecycleInterceptor>();
             if (lifecycle is null)
             {
+                // Enumeration may attach the subject, so it precedes the monitor and the
+                // attachment check that decides whether this call must route through lifecycle.
+                registration.GetProperties();
                 lock (_attachmentLock)
                 {
                     if (ReferenceEquals(_attachment.Context, attachedContext))

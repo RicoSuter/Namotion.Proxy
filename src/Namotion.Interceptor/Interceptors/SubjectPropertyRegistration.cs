@@ -10,10 +10,10 @@ namespace Namotion.Interceptor.Interceptors;
 /// materialization and when to publish, so it can reject the batch before any state escapes.
 /// </summary>
 /// <remarks>
-/// The input sequence must be synchronous, stable, and free of topology and metadata side effects:
-/// it is enumerated exactly once, after callback admission, and enumerating it must not add or
-/// remove properties, change ownership, or re-enter the subject. An iterator that violates this
-/// receives no replay and no rollback. The publication continuation is invoked zero times (the
+/// The input sequence must be synchronous and stable. It is enumerated exactly once, after callback
+/// admission. Same-context topology changes and nested metadata additions from the iterator are
+/// supported; ownership is checked again afterward, and iterator side effects receive no rollback.
+/// The publication continuation is invoked zero times (the
 /// batch was rejected) or exactly once, synchronously, with the complete merged lookup; it must
 /// be exception-free and only assign the lookup. A continuation that mutates other state and then
 /// throws violates the publication contract and no rollback is attempted.

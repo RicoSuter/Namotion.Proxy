@@ -531,6 +531,12 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 return false;
             }
 
+            registration.GetProperties();
+            if (!ReferenceEquals(subject.Executor.AttachedContext, _context))
+            {
+                return false;
+            }
+
             if (_graph.IsOwned(subject))
             {
                 _admission.Admit(registration);
