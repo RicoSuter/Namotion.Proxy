@@ -113,6 +113,12 @@ internal static class SubjectValueConvert
 
         if (value is not string && value is IEnumerable enumerable)
         {
+            if (value.GetType().IsSubjectDictionaryType())
+            {
+                throw new NotSupportedException(
+                    "A dictionary cannot be encoded as a positional subject collection. Declare the property as a dictionary type to preserve its keys and values.");
+            }
+
             foreach (var item in enumerable)
             {
                 if (item is IInterceptorSubject subjectItem)

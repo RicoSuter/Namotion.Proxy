@@ -136,7 +136,7 @@ internal static class SubjectItemsUpdateApplier
         SubjectPropertyUpdate propertyUpdate,
         SubjectUpdateApplyContext context)
     {
-        var targetKeyType = property.Type.GenericTypeArguments[0];
+        var targetKeyType = SubjectFactoryExtensions.GetCollectionTypes(property.Type, dictionary: true).Key!;
         var workingDictionary = new Dictionary<object, IInterceptorSubject>();
         var structureChanged = false;
         List<PendingItem>? pendingItems = null;
