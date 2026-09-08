@@ -80,6 +80,52 @@ public class RuntimeCollectionShapeTests
         AssertIndices(root, replacement, [replacementKey], propertyName);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void WhenAReadOnlyDictionaryAlsoImplementsCollection_ThenItsKeyedChildrenAreTracked(bool declaredDictionary, bool seed)
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithRegistry();
+        var root = new RuntimeCollectionRoot();
+        var child = new RuntimeCollectionRoot();
+        var replacement = new RuntimeCollectionRoot();
+        var initial = new CollectionDictionaryView(new Dictionary<object, RuntimeCollectionRoot> { ["original"] = child });
+        if (!seed) root.AttachToContext(context);
+
+        // Act
+        if (declaredDictionary) root.ByKey = initial;
+        else root.Payload = initial;
+        if (seed) root.AttachToContext(context);
+
+        // Assert
+        var propertyName = declaredDictionary ? nameof(root.ByKey) : nameof(root.Payload);
+        AssertIndices(root, child, ["original"], propertyName);
+
+        // Act
+        var updated = new CollectionDictionaryView(new Dictionary<object, RuntimeCollectionRoot>
+        {
+            ["moved"] = child, ["added"] = replacement
+        });
+        if (declaredDictionary) root.ByKey = updated;
+        else root.Payload = updated;
+
+        // Assert
+        AssertIndices(root, child, ["moved"], propertyName);
+        AssertIndices(root, replacement, ["added"], propertyName);
+
+        // Act
+        if (declaredDictionary) root.ByKey = null;
+        else root.Payload = null;
+
+        // Assert
+        Assert.Null(child.TryGetContext());
+        Assert.Null(replacement.TryGetContext());
+        Assert.Empty(root.TryGetRegisteredProperty(propertyName)!.Children);
+    }
+
     private static void AssertIndices(RuntimeCollectionRoot root, RuntimeCollectionRoot child, object[] expected, string propertyName = nameof(RuntimeCollectionRoot.Payload))
     {
         var property = root.TryGetRegisteredSubject()!.TryGetProperty(propertyName)!;
@@ -96,7 +142,7 @@ public class RuntimeCollectionShapeTests
         foreach (var index in expected) Assert.Single(indices, candidate => Equals(candidate, index));
     }
 
-    private sealed class DictionaryView(Dictionary<object, RuntimeCollectionRoot> entries) : IReadOnlyDictionary<object, RuntimeCollectionRoot>
+    private class DictionaryView(Dictionary<object, RuntimeCollectionRoot> entries) : IReadOnlyDictionary<object, RuntimeCollectionRoot>
     {
         public RuntimeCollectionRoot this[object key] => entries[key];
         public IEnumerable<object> Keys => entries.Keys;
@@ -107,6 +153,14 @@ public class RuntimeCollectionShapeTests
         public IEnumerator<KeyValuePair<object, RuntimeCollectionRoot>> GetEnumerator() => entries.GetEnumerator();
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
+    private sealed class CollectionDictionaryView(Dictionary<object, RuntimeCollectionRoot> entries)
+        : DictionaryView(entries), ICollection
+    {
+        public bool IsSynchronized => false;
+        public object SyncRoot => this;
+        public void CopyTo(Array array, int index) => this.ToArray().CopyTo(array, index);
+    }
+
 }
 
 [InterceptorSubject]

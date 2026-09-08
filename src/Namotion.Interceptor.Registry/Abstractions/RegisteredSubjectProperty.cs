@@ -392,11 +392,9 @@ public class RegisteredSubjectProperty
         if (collectionValue is null or IInterceptorSubject or string)
             return;
 
-        // Match structural scanning: dictionary keys win before ICollection positions; only the
-        // remaining enumerable shapes consult declared/runtime dictionary metadata.
+        // Match structural scanning: dictionary keys win even when the value implements ICollection.
         if (collectionValue is IDictionary ||
-            collectionValue is not ICollection &&
-            (Type.IsSubjectDictionaryType() || collectionValue.GetType().IsSubjectDictionaryType()))
+            Type.IsSubjectDictionaryType() || collectionValue.GetType().IsSubjectDictionaryType())
         {
             RefreshOccurrenceIndices(collectionValue, registry);
             return;
@@ -490,8 +488,7 @@ public class RegisteredSubjectProperty
                 }
                 else if (keyedValue is IEnumerable enumerable and not string)
                 {
-                    var isKeyed = keyedValue is not ICollection &&
-                        (Type.IsSubjectDictionaryType() || keyedValue.GetType().IsSubjectDictionaryType());
+                    var isKeyed = Type.IsSubjectDictionaryType() || keyedValue.GetType().IsSubjectDictionaryType();
                     var index = 0;
                     foreach (var item in enumerable)
                     {

@@ -21,11 +21,9 @@ internal static class StructuralValueScanner
     /// that identifies it.
     /// </summary>
     /// <remarks>
-    /// Hot paths (<see cref="IDictionary"/>, <see cref="ICollection"/>) come before the
-    /// string/<see cref="IEnumerable"/> arms so common writes do not pay extra type checks; the
-    /// trailing arm handles read-only wrappers that implement neither. The declared type is a
-    /// parameter rather than a metadata lookup so the scan also works during AddProperties
-    /// admission, where the property's metadata is not published yet.
+    /// Dictionary values retain their keys even when they also implement <see cref="ICollection"/>.
+    /// The declared type is supplied separately so scans during AddProperties admission can run
+    /// before the property's metadata is published.
     /// </remarks>
     public static void CollectOccurrences(Type declaredType, object? value, List<SubjectOccurrence> occurrences)
     {
@@ -49,7 +47,7 @@ internal static class StructuralValueScanner
 
                 return;
 
-            case ICollection collection:
+            case ICollection collection when !HasKeyedEntries(declaredType, collection):
             {
                 var index = 0;
                 foreach (var item in collection)
