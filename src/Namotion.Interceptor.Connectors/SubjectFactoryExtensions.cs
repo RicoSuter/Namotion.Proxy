@@ -1,9 +1,13 @@
+using System.Collections.Concurrent;
 using Namotion.Interceptor.Registry.Abstractions;
+using Namotion.Interceptor.Tracking;
 
 namespace Namotion.Interceptor.Connectors;
 
 public static class SubjectFactoryExtensions
 {
+    private static readonly ConcurrentDictionary<(Type Type, bool Dictionary), (Type? Key, Type Element)> CollectionTypes = new();
+
     public static IInterceptorSubject CreateSubject(this ISubjectFactory subjectFactory, RegisteredSubjectProperty property)
     {
         var serviceProvider = property.Parent.Subject.Context.TryGetService<IServiceProvider>();
@@ -31,19 +35,32 @@ public static class SubjectFactoryExtensions
         {
             itemType = propertyType.GetElementType();
         }
-        else if (propertyType.GenericTypeArguments.Length == 2)
-        {
-            // Dictionary<TKey, TValue> - use the value type (index 1)
-            itemType = propertyType.GenericTypeArguments[1];
-        }
         else
         {
-            // List<T>, ICollection<T>, etc. - use the element type (index 0)
-            itemType = propertyType.GenericTypeArguments[0];
+            itemType = GetCollectionTypes(propertyType, propertyType.IsSubjectDictionaryType()).Element;
         }
 
         return subjectFactory.CreateSubject(
             itemType ?? throw new InvalidOperationException("Unknown collection element type"),
             serviceProvider);
+    }
+
+    internal static (Type? Key, Type Element) GetCollectionTypes(Type propertyType, bool dictionary = false)
+    {
+        return CollectionTypes.GetOrAdd((propertyType, dictionary), static shape =>
+        {
+            var itemTypes = shape.Type.GetInterfaces().Append(shape.Type)
+                .Where(type => type.IsGenericType && (shape.Dictionary
+                    ? type.GetGenericTypeDefinition() == typeof(IDictionary<,>) || type.GetGenericTypeDefinition() == typeof(IReadOnlyDictionary<,>)
+                    : type.GetGenericTypeDefinition() == typeof(IEnumerable<>)))
+                .Select(type => (Key: shape.Dictionary ? type.GenericTypeArguments[0] : null,
+                    Element: type.GenericTypeArguments[shape.Dictionary ? 1 : 0]))
+                .Distinct()
+                .ToArray();
+
+            return itemTypes.Length == 1
+                ? itemTypes[0]
+                : throw new NotSupportedException($"Cannot infer a unique collection element type from '{shape.Type}'. Declare a collection with a known element type.");
+        });
     }
 }
