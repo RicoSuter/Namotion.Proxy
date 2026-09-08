@@ -1,3 +1,4 @@
+using Namotion.Interceptor.Tracking.Change;
 using Namotion.Interceptor.Tracking.Tests.Models;
 
 namespace Namotion.Interceptor.Tracking.Tests.Lifecycle;
@@ -98,9 +99,7 @@ public class NormalizingSetterDerivedRaceTests
             $"{recalculationException?.GetType().Name}: {recalculationException?.Message}");
         Assert.Same(context, ((IInterceptorSubject)substitute).TryGetContext());
 
-        // The withheld value is not lost. Withholding is only safe because the exposure came from a
-        // dependency, so the write that opened the window ends by cascading to this property, and
-        // the value that replaces the withheld one arrives on the writing thread.
+        // Projection values remain valid while structural ownership catches up.
         Assert.Same(substitute, probe.Projected);
     }
 
@@ -159,11 +158,11 @@ public class NormalizingSetterDerivedRaceTests
         };
         recalculator.Start();
         var recalculatorCompleted = recalculator.Join(WriteProtocolAcceptance.RendezvousTimeout);
-        var evaluationsWhenWithheld = probe.EvaluationCount;
+        var projectedBeforeRelease = new PropertyReference(probe, nameof(DerivedProjectionProbe.Projected))
+            .GetDerivedPropertyData().LastKnownValue;
 
         release.Set();
         var writerCompleted = writer.Join(WriteProtocolAcceptance.RendezvousTimeout);
-        var evaluationsAfterTheWrite = probe.EvaluationCount;
 
         // Assert
         Assert.True(reachedPark, "the normalizing write never parked inside the store-to-reconcile window");
@@ -171,11 +170,9 @@ public class NormalizingSetterDerivedRaceTests
             "the park did not land between the terminal store and the reconcile");
         Assert.True(recalculatorCompleted, "the recalculating thread never finished");
 
-        // Nothing this write cascades to reaches the probe, because reading through a plain accessor
-        // recorded no dependency on the property that was written. The value comes back only because
-        // the withholding recalculation booked itself with the lifecycle.
-        Assert.True(evaluationsAfterTheWrite > evaluationsWhenWithheld,
-            "the withheld value was never re-evaluated when the write it was waiting on ended");
+        // A plain accessor records no dependency, so the value must already have published on
+        // the scalar trigger; it cannot depend on a later cascade from the structural write.
+        Assert.Same(substitute, projectedBeforeRelease);
         Assert.True(writerCompleted, "the parked writer never finished");
         Assert.Null(writeException);
         Assert.True(recalculationException is null,

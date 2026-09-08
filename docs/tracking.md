@@ -261,6 +261,8 @@ person.LastName = "Doe";
 - When a dependency changes, the derived property is recalculated
 - If the derived value changes, a change event is triggered with `Source = null` (indicating local calculation)
 
+Computed derived properties are projections and create no ownership edges. They may return subjects that are detached or belong to another context; reading or publishing the projection does not attach them or extend their lifetime. Use an intercepted stored property or an explicit attachment when the returned subject should be tracked. A `[Derived]` partial property with a backing field remains a stored structural property.
+
 ### Manual Recalculation
 
 When a derived property's getter depends on data outside the interceptor system (external APIs, services, static state, etc.), automatic dependency tracking cannot detect changes. Use `RecalculateDerivedProperty()` to manually trigger recalculation:

@@ -57,8 +57,8 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     /// property is the store; a dynamic property is intercepted unconditionally, so its setter
     /// stands in instead, because a getter-only derived one can return nothing the properties it
     /// reads do not already own. A subject reachable only through a property that carries no edge
-    /// is never tracked, and DerivedPropertyChangeHandler rejects it instead of letting it go
-    /// silently unowned. See docs/design/tracking-lifecycle.md.
+    /// is not owned through that projection. It may be detached or owned by another context.
+    /// See docs/design/tracking-lifecycle.md.
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool IsStructural(in SubjectPropertyMetadata metadata)

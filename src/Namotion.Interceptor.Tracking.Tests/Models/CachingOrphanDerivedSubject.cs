@@ -9,13 +9,12 @@ public partial class CachingOrphanDerivedSubject
 
     public partial Person? Stored { get; set; }
 
-    /// <summary>Counts getter evaluations so a test can prove the retry bound was exercised.</summary>
+    /// <summary>Counts getter evaluations.</summary>
     public int EvaluationCount { get; private set; }
 
     /// <summary>
     /// Caches the projected subject in a plain field, so once the stored edge is cleared every
-    /// re-evaluation keeps returning a subject the graph no longer owns: a genuine orphan that
-    /// no amount of retrying converges away.
+    /// re-evaluation keeps returning a subject the graph no longer owns.
     /// </summary>
     [Derived]
     public Person? Current

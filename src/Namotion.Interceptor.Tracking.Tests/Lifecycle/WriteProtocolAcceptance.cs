@@ -44,12 +44,11 @@ namespace Namotion.Interceptor.Tracking.Tests.Lifecycle;
 /// rejected: that delegate runs under the terminal lock the reading thread also takes, so the reader
 /// blocks instead of racing. The guard asserts the backing field held the substituted subject when
 /// the park ran, so a park landing outside the window fails the test rather than passing it. Its
-/// non-intercepted twin is the one that pins the mechanism: reading through a plain accessor records
-/// no dependency, so no recalculation cascade can reach the probe and the value comes back only
-/// through the booking the withholding recalculation made with the lifecycle. Both assert that the
-/// re-evaluation happened rather than only that the final read looks right, because reading a
-/// derived property re-invokes its getter and would answer correctly either way.
-/// ConcurrentPublicationVerdictTests holds the other side, that a deferral is not an acquittal.
+/// non-intercepted twin records no dependency, so no structural cascade reaches the probe. It
+/// asserts LastKnownValue before releasing the writer, proving the scalar-triggered projection
+/// was published without waiting for ownership or relying on a later getter read.
+/// ConcurrentPublicationVerdictTests similarly verifies projection publication while an
+/// unrelated topology operation is in flight.
 ///
 /// AttachResidueTests, root half. A rejected explicit attach left residue behind. Asserts each kind
 /// of state the attach would have written separately, so a partial rollback reports which part
