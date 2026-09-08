@@ -83,79 +83,38 @@ internal sealed class SubjectOwnership
         }
     }
 
-    /// <summary>
-    /// Removes one incoming edge occurrence of the property, preferring an exact index match and
-    /// falling back to any occurrence of the same property.
-    /// </summary>
-    /// <remarks>
-    /// The inexact case is reachable and must not fail. A reconcile commits the property's new
-    /// value before it refreshes the retained edges' stored indices, so a release descent that
-    /// runs inside that window collects children through the committed baseline and presents
-    /// indices this record has not adopted yet. Lifecycle callbacks cannot open the window
-    /// anymore (topology mutation from a callback throws, see
-    /// <see cref="CallbackReentrancyGuard"/>), but side-effecting user code the reconcile loops
-    /// invoke at callback depth zero, such as a dictionary-key <c>Equals</c> or a user collection
-    /// implementation, still can. Only the per-property occurrence count is authoritative in that
-    /// window; refusing to remove would leak the edge and leave the subject attached to a
-    /// released parent.
-    /// </remarks>
-    public bool RemoveIncoming(PropertyReference property, object? index)
+    /// <summary>Removes the last occurrence of the property, preserving its leading occurrences.</summary>
+    public bool RemoveIncoming(PropertyReference property, object? index) => RemoveIncoming(property, index, out _);
+
+    /// <summary>Removes the last occurrence and returns its stored index.</summary>
+    public bool RemoveIncoming(PropertyReference property, object? index, out object? removedIndex)
     {
         lock (this)
         {
-            if (_incomingCount == 0)
-            {
-                return false;
-            }
-
-            var fallbackInFirst = false;
-            if (_firstProperty.Equals(property))
-            {
-                if (Equals(_firstIndex, index))
-                {
-                    RemoveFirstSlot();
-                    return true;
-                }
-
-                fallbackInFirst = true;
-            }
-
-            var fallbackInAdditional = -1;
+            // Occurrences of the same child and property are interchangeable. Removing the last
+            // one matches surplus removal order and never invokes a user key's Equals under this lock.
             if (_additionalEdges is not null)
             {
-                for (var i = 0; i < _additionalEdges.Count; i++)
+                for (var position = _additionalEdges.Count - 1; position >= 0; position--)
                 {
-                    var edge = _additionalEdges[i];
-                    if (!edge.Property.Equals(property))
+                    var edge = _additionalEdges[position];
+                    if (edge.Property.Equals(property))
                     {
-                        continue;
-                    }
-
-                    if (Equals(edge.Index, index))
-                    {
-                        RemoveAdditionalAt(i);
+                        removedIndex = edge.Index;
+                        RemoveAdditionalAt(position);
                         return true;
-                    }
-
-                    if (fallbackInAdditional < 0)
-                    {
-                        fallbackInAdditional = i;
                     }
                 }
             }
 
-            if (fallbackInFirst)
+            if (_incomingCount > 0 && _firstProperty.Equals(property))
             {
+                removedIndex = _firstIndex;
                 RemoveFirstSlot();
                 return true;
             }
 
-            if (fallbackInAdditional >= 0)
-            {
-                RemoveAdditionalAt(fallbackInAdditional);
-                return true;
-            }
-
+            removedIndex = null;
             return false;
         }
     }
