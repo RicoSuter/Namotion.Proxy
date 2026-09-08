@@ -372,7 +372,9 @@ Circular references are handled naturally by the flat structure. Each subject in
 }
 ```
 
-No special `reference` field is needed - the `id` field always points to a subject in the dictionary.
+No special `reference` field is needed - the `id` field always points to a subject in the dictionary. A non-null object, inserted item, or sparse item ID missing from `subjects` is an invalid update: applying it reports a property failure and preserves that property, while sibling property updates continue. A null object ID intentionally clears the reference. Remove operations need only the index or key, without subject payload.
+
+Every subject referenced by the final update must have Registry metadata, including subjects returned by derived properties. Intermediate references overwritten while building a batch do not require a payload. A subject that has left the graph, or a projection the graph never owned, is still valid to read, but the wire cannot carry it: update creation omits the referencing property instead of emitting a dangling ID and logs a warning naming it. The receiver therefore keeps its own value for that property. Register the referenced subject or exclude the property with an `ISubjectUpdateProcessor` to silence the warning. Creation never throws for this, because the complete update is also the snapshot sent on every connector handshake.
 
 ## Null Collections and Dictionaries
 

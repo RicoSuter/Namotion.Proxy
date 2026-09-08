@@ -43,8 +43,9 @@ internal static class SubjectItemsUpdateApplier
                         break;
 
                     case SubjectCollectionOperationType.Insert:
-                        if (operation.Id is not null && context.Subjects.TryGetValue(operation.Id, out var itemProps))
+                        if (operation.Id is not null)
                         {
+                            var itemProps = context.GetSubjectProperties(operation.Id);
                             var newItem = CreateAndApplyItem(parent, property, index, operation.Id, itemProps, context);
                             if (index >= workingItems.Count)
                                 workingItems.Add(newItem);
@@ -93,9 +94,9 @@ internal static class SubjectItemsUpdateApplier
                         "The index in a sparse update must be less than the declared count.");
                 }
 
-                if (collectionUpdate.Id is not null &&
-                    context.Subjects.TryGetValue(collectionUpdate.Id, out var itemProps))
+                if (collectionUpdate.Id is not null)
                 {
+                    var itemProps = context.GetSubjectProperties(collectionUpdate.Id);
                     if (index >= 0 && index < workingItems.Count)
                     {
                         // Update existing item
@@ -162,8 +163,9 @@ internal static class SubjectItemsUpdateApplier
                         break;
 
                     case SubjectCollectionOperationType.Insert:
-                        if (operation.Id is not null && context.Subjects.TryGetValue(operation.Id, out var itemProps))
+                        if (operation.Id is not null)
                         {
+                            var itemProps = context.GetSubjectProperties(operation.Id);
                             var newItem = CreateAndApplyItem(parent, property, key, operation.Id, itemProps, context);
                             workingDictionary[key] = newItem;
                             structureChanged = true;
@@ -180,9 +182,9 @@ internal static class SubjectItemsUpdateApplier
             {
                 var key = ConvertDictionaryKey(collUpdate.Index, targetKeyType);
 
-                if (collUpdate.Id is not null &&
-                    context.Subjects.TryGetValue(collUpdate.Id, out var itemProps))
+                if (collUpdate.Id is not null)
                 {
+                    var itemProps = context.GetSubjectProperties(collUpdate.Id);
                     if (workingDictionary.TryGetValue(key, out var existing))
                     {
                         if (context.TryMarkAsProcessed(collUpdate.Id))

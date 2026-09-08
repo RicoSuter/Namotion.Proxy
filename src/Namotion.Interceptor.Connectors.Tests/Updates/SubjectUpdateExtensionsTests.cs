@@ -825,11 +825,12 @@ public partial class SubjectUpdateExtensionsTests
     }
 
     [Fact]
-    public void WhenApplyingUpdateWithMissingSubjectId_ThenItIsIgnored()
+    public void WhenApplyingUpdateWithMissingSubjectId_ThenItReportsFailureAndPreservesTheExistingSubject()
     {
         // Arrange
         var context = InterceptorSubjectContext.Create().WithRegistry();
-        var target = new Person(context) { FirstName = "Original" };
+        var father = new Person { FirstName = "Existing" };
+        var target = new Person(context) { FirstName = "Original", Father = father };
 
         var update = new SubjectUpdate
         {
@@ -847,11 +848,14 @@ public partial class SubjectUpdateExtensionsTests
             }
         };
 
-        // Act - should not throw
-        target.ApplySubjectUpdate(update, DefaultSubjectFactory.Instance, ChangeOrigin.Local);
+        // Act
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            target.ApplySubjectUpdate(update, DefaultSubjectFactory.Instance, ChangeOrigin.Local));
 
-        // Assert - Father should remain null (not set to anything)
-        Assert.Null(target.Father);
+        // Assert
+        Assert.Contains("nonexistent", exception.Message);
+        Assert.Same(father, target.Father);
+        Assert.Equal("Existing", father.FirstName);
     }
 
     [Fact]
