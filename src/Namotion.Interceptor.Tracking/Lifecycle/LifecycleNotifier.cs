@@ -120,7 +120,7 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
                         var ownership = (SubjectOwnership)notification.Value!;
                         if (graph.IsCurrentRelease(subject, ownership))
                         {
-                            if (!graph.IsOwned(subject)) graph.ReleaseClaim(subject);
+                            graph.ReleaseClaim(subject);
                             graph.ClearReleasing(subject, ownership);
                         }
                         break;

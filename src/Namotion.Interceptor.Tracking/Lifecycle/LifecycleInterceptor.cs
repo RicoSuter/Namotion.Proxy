@@ -404,7 +404,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         var gate = EnterGate();
         try
         {
-            if (_graph.IsReleasingUnderGate(subject) && !_graph.IsOwned(subject))
+            if (_graph.IsReleasing(subject))
             {
                 next(ref context);
                 return;
@@ -646,7 +646,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 }
 
                 _graph.SetAnchor(subject, anchor);
-                if (_graph.IsOwned(subject) || !_graph.IsReleasingUnderGate(subject))
+                if (!_graph.IsReleasing(subject))
                 {
                     return;
                 }
@@ -896,7 +896,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
 
     internal bool IsPendingRelease(IInterceptorSubject subject)
     {
-        return !_graph.IsOwned(subject) && _graph.IsReleasing(subject);
+        return _graph.IsReleasing(subject);
     }
 
     /// <summary>

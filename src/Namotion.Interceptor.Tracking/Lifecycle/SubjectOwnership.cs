@@ -59,6 +59,16 @@ internal sealed class SubjectOwnership
     /// </remarks>
     private volatile bool _areParentsActivated;
 
+    private volatile bool _isReleasing;
+
+    /// <summary>Whether this ownership lifetime has ended and must be hidden from ownership queries.</summary>
+    public bool IsReleasing => _isReleasing;
+
+    public void MarkReleasing()
+    {
+        _isReleasing = true;
+    }
+
     private bool AreParentsActivated => _areParentsActivated;
 
     /// <summary>The number of committed incoming edge occurrences, which is the reference count.</summary>

@@ -30,7 +30,8 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 {
     // Reference equality, explicitly: graph membership is identity, and a hand-written subject
     // may override Equals/GetHashCode, which under default equality could merge distinct nodes or
-    // strand a subject whose hash mutates while it is owned.
+    // strand a subject whose hash mutates while it is owned. Releasing records stay in this map
+    // as identity tokens until final notification cleanup; ownership queries filter those records.
     private readonly ConcurrentDictionary<IInterceptorSubject, SubjectOwnership> _owned = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<PropertyReference, (object? Value, long Revision)> _baselines = new(PropertyReference.Comparer);
 
@@ -40,12 +41,6 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     private Dictionary<PropertyReference, PropertyEdgeJournal>? _additionalPropertyJournals;
     private (PropertyReference Property, SubjectOwnership? Ownership) _activeSeedingGetter;
     private Dictionary<(PropertyReference Property, SubjectOwnership? Ownership), int>? _suspendedSeedingGetters;
-
-    // Writers hold the topology gate. The leaf lock also protects derived readers outside that
-    // gate; no executor or user code runs while it is held. Ownership identity distinguishes a
-    // newer release queued by reattachment from the older release still awaiting delivery.
-    private readonly Lock _releasingLock = new();
-    private readonly Dictionary<IInterceptorSubject, SubjectOwnership> _releasing = new(ReferenceEqualityComparer.Instance);
 
     public IInterceptorSubjectContext Context { get; } = context;
 
@@ -72,13 +67,13 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public SubjectOwnership? TryGetOwnership(IInterceptorSubject subject)
     {
-        return _owned.TryGetValue(subject, out var ownership) ? ownership : null;
+        return _owned.TryGetValue(subject, out var ownership) && !ownership.IsReleasing ? ownership : null;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsOwned(IInterceptorSubject subject)
     {
-        return _owned.ContainsKey(subject);
+        return TryGetOwnership(subject) is not null;
     }
 
     public SubjectOwnership AddOwnership(IInterceptorSubject subject)
@@ -88,13 +83,8 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
         return ownership;
     }
 
-    public void RemoveOwnership(IInterceptorSubject subject)
-    {
-        _owned.TryRemove(subject, out _);
-    }
-
     /// <summary>
-    /// Whether the subject is between losing its ownership record and having its executor handed
+    /// Whether the subject is between losing graph ownership and having its executor handed
     /// back, which is the window its detach callbacks run in.
     /// </summary>
     /// <remarks>
@@ -104,44 +94,23 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     /// </remarks>
     public bool IsReleasing(IInterceptorSubject subject)
     {
-        lock (_releasingLock)
-        {
-            return _releasing.ContainsKey(subject);
-        }
-    }
-
-    /// <summary>Queries the releasing marker while the caller holds the topology gate.</summary>
-    public bool IsReleasingUnderGate(IInterceptorSubject subject)
-    {
-        return _releasing.Count > 0 && _releasing.ContainsKey(subject);
+        return _owned.TryGetValue(subject, out var ownership) && ownership.IsReleasing;
     }
 
     /// <summary>Queries the release identity while the caller holds the topology gate.</summary>
     public bool IsCurrentRelease(IInterceptorSubject subject, SubjectOwnership ownership)
     {
-        // Every writer holds the topology gate as well as the leaf lock, so other threads can
-        // only read this dictionary while the drain compares its queued identity.
-        return _releasing.TryGetValue(subject, out var current) && ReferenceEquals(current, ownership);
-    }
-
-    /// <inheritdoc cref="IsReleasing"/>
-    public void MarkReleasing(IInterceptorSubject subject, SubjectOwnership ownership)
-    {
-        lock (_releasingLock)
-        {
-            _releasing[subject] = ownership;
-        }
+        return ownership.IsReleasing && _owned.TryGetValue(subject, out var current) && ReferenceEquals(current, ownership);
     }
 
     /// <inheritdoc cref="IsReleasing"/>
     public void ClearReleasing(IInterceptorSubject subject, SubjectOwnership ownership)
     {
-        lock (_releasingLock)
+        // A failure before marking must leave the live record intact. Reattachment replaces this
+        // entry, so an older queued release must not remove a newer ownership lifetime.
+        if (IsCurrentRelease(subject, ownership))
         {
-            if (_releasing.TryGetValue(subject, out var current) && ReferenceEquals(current, ownership))
-            {
-                _releasing.Remove(subject);
-            }
+            _owned.TryRemove(subject, out _);
         }
     }
 
