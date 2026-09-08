@@ -640,18 +640,19 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
 
             if (attachedContext is not null)
             {
-                // A retained teardown claim has no graph ownership to promote. Republish its
-                // component so the pending release sees the new root rather than dropping it.
-                if (anchor != SubjectAttachmentAnchorKind.Provisional)
+                if (anchor == SubjectAttachmentAnchorKind.Provisional)
                 {
-                    _graph.SetAnchor(subject, anchor);
-                    if (!_graph.IsOwned(subject) && _graph.IsReleasing(subject))
-                    {
-                        SeedAndAttachComponent(subject);
-                    }
+                    return;
                 }
 
-                return;
+                _graph.SetAnchor(subject, anchor);
+                if (_graph.IsOwned(subject) || !_graph.IsReleasing(subject))
+                {
+                    return;
+                }
+
+                // A retained teardown claim needs the same seeding rollback and consumed-anchor
+                // tracking as a fresh attach, because a resurrection getter can reject its graph.
             }
 
             var claimed = LifecycleScratch.RentSubjectList();
