@@ -89,6 +89,10 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     // deciding anything: a stale read costs one sample of a window that needs all of them.
     private Thread? _gateHolder;
 
+    // A waiter can miss both release and reacquisition by the same thread between samples.
+    // Published before the holder so separate transactions cannot share one blocked window.
+    private long _gateTransactionRevision;
+
     // How many topology gates the current thread holds, across every lifecycle. Gates have no
     // order among themselves, so a thread holding one and blocking on another deadlocks against a
     // thread taking them the other way round: a second transaction on a different lifecycle is
@@ -196,7 +200,8 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
 
         if (_heldGateCount++ == 0)
         {
-            _gateHolder = Thread.CurrentThread;
+            Volatile.Write(ref _gateTransactionRevision, unchecked(_gateTransactionRevision + 1));
+            Volatile.Write(ref _gateHolder, Thread.CurrentThread);
             // Past the rejection above, a nonzero count means this thread already holds this very
             // gate, so a reentrant acquisition is not a new transaction.
             Interlocked.Increment(ref _transactionsInFlight);
@@ -243,7 +248,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             // so a reader that registers after this point reads a settled count and is told to
             // decide for itself rather than to wait for a transaction that has ended.
             Interlocked.Decrement(ref _transactionsInFlight);
-            _gateHolder = null;
+            Volatile.Write(ref _gateHolder, null);
         }
 
         _gate.Exit();
@@ -263,33 +268,20 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     private void WaitForGate()
     {
         var deadline = Environment.TickCount64 + GateWaitTimeoutMilliseconds;
-        Thread? blockedHolder = null;
-        var blockedSince = 0L;
+        var blockedWindow = new BlockedGateHolderWindow();
 
         while (true)
         {
             // Sampled before the wait rather than after it, so the window is the wait itself and a
             // holder that releases the gate during it is seen as gone on the next pass.
+            var transactionRevision = Volatile.Read(ref _gateTransactionRevision);
             var holder = Volatile.Read(ref _gateHolder);
-            if (holder is not null && (holder.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0)
+            var isBlocked = holder is not null &&
+                (holder.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0;
+            if (blockedWindow.Observe(holder, transactionRevision, isBlocked, Environment.TickCount64, BlockedHolderThresholdMilliseconds) &&
+                transactionRevision == Volatile.Read(ref _gateTransactionRevision))
             {
-                // Per holder, not per wait: a gate handed from one thread to the next is a queue
-                // draining, and each new holder starts its own window. Measured as elapsed time
-                // rather than as a sample count, so load stretches the sampling rate without
-                // stretching what the threshold means.
-                if (!ReferenceEquals(holder, blockedHolder))
-                {
-                    blockedHolder = holder;
-                    blockedSince = Environment.TickCount64;
-                }
-                else if (Environment.TickCount64 - blockedSince >= BlockedHolderThresholdMilliseconds)
-                {
-                    ThrowHolderBlocked(BlockedHolderThresholdMilliseconds);
-                }
-            }
-            else
-            {
-                blockedHolder = null;
+                ThrowHolderBlocked(BlockedHolderThresholdMilliseconds);
             }
 
             if (_gate.TryEnter(HolderSampleIntervalMilliseconds))
