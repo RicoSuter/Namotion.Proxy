@@ -1,4 +1,5 @@
 using Namotion.Interceptor.Registry;
+using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Tracking.Lifecycle;
 using Namotion.Interceptor.Tracking.Tests.Models;
 
@@ -48,4 +49,52 @@ public class CallbackReleaseEpochSpikeTests
         Assert.False(lifecycle.Graph.IsOwned(child));
         Assert.False(lifecycle.Graph.IsReleasing(child));
     }
+    [Fact]
+    public void WhenDetachCallbackExplicitlyAttachesDepartingSubject_ThenItOwnsItsDescendantsAsARoot()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithFullPropertyTracking().WithRegistry();
+        var descendant = new Person();
+        var child = new Person { Father = descendant };
+        var parent = new Person(context) { Father = child };
+        var lifecycle = context.TryGetLifecycleInterceptor()!;
+        var resurrected = false;
+        lifecycle.SubjectDetaching += change =>
+        {
+            if (!ReferenceEquals(change.Subject, child) || resurrected) return;
+            resurrected = true;
+            child.AttachToContext(context);
+            Assert.True(lifecycle.Graph.IsOwned(child));
+            Assert.True(lifecycle.Graph.IsOwned(descendant));
+            Assert.Equal(SubjectAttachmentAnchorKind.Explicit, ((IInterceptorSubject)child).Executor.AttachmentAnchor);
+        };
+
+        // Act
+        parent.Father = null;
+
+        // Assert
+        Assert.True(resurrected);
+        Assert.Null(parent.Father);
+        Assert.Same(context, child.GetContext());
+        Assert.Same(context, descendant.GetContext());
+        Assert.NotNull(child.TryGetRegisteredSubject());
+        Assert.NotNull(descendant.TryGetRegisteredSubject());
+        Assert.Equal(SubjectAttachmentAnchorKind.Explicit, ((IInterceptorSubject)child).Executor.AttachmentAnchor);
+        Assert.Equal(1, descendant.GetReferenceCount());
+        Assert.False(lifecycle.Graph.IsReleasing(child));
+        Assert.False(lifecycle.Graph.IsReleasing(descendant));
+
+        // Act
+        child.DetachFromContext(context);
+
+        // Assert
+        Assert.Null(child.TryGetContext());
+        Assert.Null(descendant.TryGetContext());
+        Assert.Null(child.TryGetRegisteredSubject());
+        Assert.Null(descendant.TryGetRegisteredSubject());
+        Assert.False(lifecycle.Graph.IsOwned(child));
+        Assert.False(lifecycle.Graph.IsOwned(descendant));
+        Assert.Equal(SubjectAttachmentAnchorKind.None, ((IInterceptorSubject)child).Executor.AttachmentAnchor);
+    }
+
 }

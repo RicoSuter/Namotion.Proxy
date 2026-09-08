@@ -640,11 +640,15 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
 
             if (attachedContext is not null)
             {
-                // Already in this context: promote the anchor without repeating attach callbacks. A
-                // provisional request never promotes, it is only a construction-time default.
+                // A retained teardown claim has no graph ownership to promote. Republish its
+                // component so the pending release sees the new root rather than dropping it.
                 if (anchor != SubjectAttachmentAnchorKind.Provisional)
                 {
                     _graph.SetAnchor(subject, anchor);
+                    if (!_graph.IsOwned(subject) && _graph.IsReleasing(subject))
+                    {
+                        SeedAndAttachComponent(subject);
+                    }
                 }
 
                 return;

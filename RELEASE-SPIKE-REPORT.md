@@ -26,6 +26,14 @@ The focused command compiled with `dotnet test src/Namotion.Interceptor.Tracking
 
 Production increment: **41 added / 14 removed lines** across OwnershipGraph, ReleaseTraversal, and LifecycleNotifier. The new regression is CallbackReleaseEpochSpikeTests.cs.
 
-## Adjacent unresolved question
+## Explicit root resurrection follow-up
 
-Code inspection suggests that explicit AttachToContext from a departing subject's callback may only promote its retained executor claim without restoring graph ownership, because the attached-context branch returns early. Final release still tests graph ownership. This probe verifies parent-edge reattachment only; explicit-root resurrection is not tested or fixed here and was reported to the coordinating investigation.
+A second probe confirmed that explicit AttachToContext from the departing subject's callback promoted its retained claim but returned with no graph ownership. The old final release therefore dropped that promoted context claim. The red test failed its immediate post-AttachToContext ownership assertion.
+
+The promotion branch now calls the existing SeedAndAttachComponent helper when the subject is both unowned and releasing, after setting the explicit anchor. This restores the component using the existing attach policy, including descendant seeding and back-edge handling. An already owned subject still only promotes its anchor. Provisional attach requests retain their documented already-attached no-op behavior. Fresh-root ordering policy is unchanged.
+
+The new test confirms root and descendant ownership before the nested call returns, explicit anchor and Registry registration after the outer setter returns, and complete context/Registry/ownership cleanup after a later explicit DetachFromContext. The final-release identity check preserves the restored ownership. This does not remove the prototype's existing getter/discovery or callback-failure limitations.
+
+Follow-up production increment: **6 added / 2 removed lines** in LifecycleInterceptor. Test increment: 49 lines. Focused callback/publication/release tests: **12 passed / 0 failed**. Full Tracking: **737 passed / 24 failed / 761 total**. Original tests remain **724/747 passed**, and all 24 failure names are unchanged. Added spike tests are **13/14 passed**, with the known getter orphan the remaining failure.
+
+Follow-up logs: `/private/tmp/release-root-v2-red.log`, `/private/tmp/release-root-v2-green.log`, `/private/tmp/release-root-v2-full.log`. Full results: `src/Namotion.Interceptor.Tracking.Tests/TestResults/release-root-v2-full.trx`. Commands match the earlier release probe with the additional test included by CallbackReleaseEpochSpikeTests. The final full run reused the successfully compiled focused build. `git diff --check` passes.
