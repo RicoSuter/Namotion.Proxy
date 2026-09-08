@@ -666,7 +666,7 @@ A same-context lifecycle callback may initialize a child through an intercepted 
 
 Collection edges are captured when a structural value is reconciled. Release and reachability reuse that capture; they do not repeat side effects or exceptions from the old collection's enumerator. Change topology through intercepted property assignments; mutating a collection in place does not initiate reconciliation.
 
-Dictionary values retain their keys even when they also implement non-generic `ICollection`. Collections must enumerate successfully: initialize `ImmutableArray<T>` and `ArraySegment<T>` with `.Empty` instead of `default`, whose BCL enumerators throw. A rejected assignment of either default value preserves the previous property value and ownership.
+Dictionary key/value entries retain their keys even when the dictionary also implements non-generic `ICollection`. Enumerators that yield subjects directly instead use positional indices. Collections must enumerate successfully: initialize `ImmutableArray<T>` and `ArraySegment<T>` with `.Empty` instead of `default`, whose BCL enumerators throw. A rejected assignment of either default value preserves the previous property value and ownership.
 
 > **Internal design:** For the exact read points and why the discard is cleaned up rather than reported, see [Structural Getters](design/tracking-lifecycle.md#structural-getters).
 

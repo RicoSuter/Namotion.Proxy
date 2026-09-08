@@ -392,7 +392,7 @@ Note: In partial updates, `Kind=Collection/Dictionary` entries with no operation
 - **No "clear collection" operation**: clearing N items emits N individual Remove operations.
 - **Non-subject collections** (`List<int>`, `Dictionary<string, string>`) use value-replacement semantics (full replacement, no granular diffing). Only `IInterceptorSubject` collections support structural diffs.
 - **Conflict resolution** is last-applied-wins by message arrival order with eventual consistency via reconnection.
-- **Dictionary keys** are normalized to strings during transport. Non-string keys (int, enum) must be convertible via `Convert.ChangeType` or `Enum.Parse`. Dictionary entries require a dictionary-declared property; attempting to encode them through a positional collection declaration throws `NotSupportedException`.
+- **Dictionary keys** are normalized to strings during transport. Non-string keys (int, enum) must be convertible via `Convert.ChangeType` or `Enum.Parse`. Dictionary entries require a dictionary-declared property; attempting to encode them through a positional collection declaration throws `NotSupportedException`. Dictionary wrappers must expose subject values as key/value pairs through non-generic enumeration; value-only subject enumerators are rejected because their keys cannot be preserved.
 - **Collection factories** require a unique element type from the declared collection or dictionary interfaces. Untyped or ambiguous declarations throw `NotSupportedException`. The default factory creates arrays, `List<T>`, and `Dictionary<TKey, TValue>`; supply an `ISubjectFactory` for declarations requiring another concrete container type.
 
 ## Attributes

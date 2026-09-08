@@ -32,6 +32,29 @@ public class SubjectUpdateDictionaryShapeTests
         Assert.Contains("dictionary", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void WhenADictionaryEnumeratesSubjectValuesWithoutKeys_ThenUpdateCreationRejectsTheShape(bool partial)
+    {
+        // Arrange
+        var root = new Person(InterceptorSubjectContext.Create().WithRegistry());
+        var child = new Person { FirstName = "Ada" };
+        var dictionary = new DictionaryCollectionView(
+            new Dictionary<string, Person> { ["child"] = child }, enumerateValues: true);
+        var property = root.TryGetRegisteredSubject()!.AddProperty(
+            "RuntimeChildren", typeof(IReadOnlyDictionary<string, Person>), _ => dictionary, (_, _) => { });
+        var change = SubjectPropertyChange.Create<IReadOnlyDictionary<string, Person>?>(
+            property.Reference, ChangeOrigin.Local, DateTimeOffset.UtcNow, null, null, dictionary);
+        Assert.Same(child, Assert.Single(property.Children).Subject);
+
+        // Act & Assert
+        var exception = Assert.Throws<NotSupportedException>(() => partial
+            ? SubjectUpdate.CreatePartialUpdateFromChanges(root, [change], [])
+            : SubjectUpdate.CreateCompleteUpdate(root, []));
+        Assert.Contains("key/value", exception.Message);
+    }
+
     [Fact]
     public void WhenADictionaryUsesADictionaryDeclaration_ThenItsKeysAndChildrenRoundtrip()
     {
@@ -119,7 +142,7 @@ public class SubjectUpdateDictionaryShapeTests
         }
     }
 
-    private sealed class DictionaryCollectionView(Dictionary<string, Person> entries)
+    private sealed class DictionaryCollectionView(Dictionary<string, Person> entries, bool enumerateValues = false)
         : IReadOnlyDictionary<string, Person>, ICollection
     {
         public Person this[string key] => entries[key];
@@ -131,7 +154,7 @@ public class SubjectUpdateDictionaryShapeTests
         public bool ContainsKey(string key) => entries.ContainsKey(key);
         public bool TryGetValue(string key, out Person value) => entries.TryGetValue(key, out value!);
         public IEnumerator<KeyValuePair<string, Person>> GetEnumerator() => entries.GetEnumerator();
-        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => enumerateValues ? entries.Values.GetEnumerator() : GetEnumerator();
         public void CopyTo(Array array, int index) => ((ICollection)entries).CopyTo(array, index);
     }
 }
