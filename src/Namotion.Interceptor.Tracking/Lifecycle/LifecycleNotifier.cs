@@ -14,7 +14,7 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 /// </remarks>
 internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, OwnershipGraph graph, ILifecycleHandler descentHandler)
 {
-    private enum NotificationKind { Attached, Detaching, LifecycleHandler, PropertyChange, Refresh, AttachProperty, DetachProperty, ReleaseClaim }
+    private enum NotificationKind { Attached, Detaching, LifecycleHandler, Refresh, AttachProperty, DetachProperty, ReleaseClaim }
     private readonly record struct Notification(NotificationKind Kind, SubjectLifecycleChange Change, PropertyReference Property = default, object? Value = null);
     private readonly List<PropertyChangeInterceptor.Publication> _propertyChanges = [];
     private readonly List<Notification> _notifications = [];
@@ -49,7 +49,6 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
     public void QueuePropertyChange(PropertyChangeInterceptor.Publication publication)
     {
         _propertyChanges.Add(publication);
-        _notifications.Add(new(NotificationKind.PropertyChange, default));
     }
     public void RefreshCollectionProperty(PropertyReference property, object? value) => _notifications.Add(new(NotificationKind.Refresh, default, property, value));
     public void QueueProperty(PropertyReference property, bool attach) => _notifications.Add(new(attach ? NotificationKind.AttachProperty : NotificationKind.DetachProperty, default, property));
@@ -72,10 +71,20 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
         try
         {
             using var scope = CallbackReentrancyGuard.EnterDeliveryScope();
+            var notificationIndex = 0;
             var propertyChangeIndex = 0;
-            for (var index = 0; index < _notifications.Count; index++)
+            while (notificationIndex < _notifications.Count || propertyChangeIndex < _propertyChanges.Count)
             {
-                var notification = _notifications[index];
+                // A self-writing seed queues its property change before discovering that value's
+                // lifecycle transitions. Drain all pending maintenance before each observer group.
+                if (notificationIndex == _notifications.Count)
+                {
+                    try { _propertyChanges[propertyChangeIndex++].Dispatch(); }
+                    catch (Exception exception) { (failures ??= []).Add(exception); }
+                    continue;
+                }
+
+                var notification = _notifications[notificationIndex++];
                 switch (notification.Kind)
                 {
                     case NotificationKind.Attached:
@@ -92,10 +101,6 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
                         break;
                     case NotificationKind.LifecycleHandler:
                         try { ((ILifecycleHandler)notification.Value!).HandleLifecycleChange(notification.Change); }
-                        catch (Exception exception) { (failures ??= []).Add(exception); }
-                        break;
-                    case NotificationKind.PropertyChange:
-                        try { _propertyChanges[propertyChangeIndex++].Dispatch(); }
                         catch (Exception exception) { (failures ??= []).Add(exception); }
                         break;
                     case NotificationKind.Refresh:
