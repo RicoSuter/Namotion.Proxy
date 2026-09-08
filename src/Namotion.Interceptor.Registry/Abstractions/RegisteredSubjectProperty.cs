@@ -379,30 +379,42 @@ public class RegisteredSubjectProperty
     }
 
     /// <summary>
-    /// Syncs children's indices and parent entries with the live collection.
-    /// Must be called while LifecycleInterceptor's _attachedSubjects lock is held,
-    /// because this method acquires _children then _knownSubjects, which is the inverse of
-    /// HandleLifecycleChange's lock order. The outer _attachedSubjects lock serializes
-    /// both paths and prevents deadlock.
+    /// Syncs children's indices and parent entries with the captured collection value.
+    /// Must be called while the lifecycle topology gate is held, because this method acquires
+    /// _children then _knownSubjects, which is the inverse of HandleLifecycleChange's lock order.
+    /// The outer topology gate serializes both paths and prevents deadlock.
     /// </summary>
     /// <param name="collectionValue">The current collection value (passed from caller to avoid re-reading through interceptors).</param>
     /// <param name="registry">The subject registry (passed from caller to avoid repeated service resolution per child).</param>
     internal void RefreshCollectionIndices(object? collectionValue, ISubjectRegistry registry)
     {
-        // Anything that is not an ordinal collection is offered to the keyed refresh, which no-ops
-        // unless the value really carries keyed entries. That covers a dictionary reaching an
-        // object-declared property, where the declared type reveals nothing about its shape.
-        if (!IsSubjectCollection)
+        if (collectionValue is null or IInterceptorSubject or string)
+            return;
+
+        // Match structural scanning: dictionary keys win before ICollection positions; only the
+        // remaining enumerable shapes consult declared/runtime dictionary metadata.
+        if (collectionValue is IDictionary ||
+            collectionValue is not ICollection &&
+            (Type.IsSubjectDictionaryType() || collectionValue.GetType().IsSubjectDictionaryType()))
         {
-            RefreshKeyedIndices(collectionValue, registry);
+            RefreshOccurrenceIndices(collectionValue, registry);
             return;
         }
 
         lock (_children)
         {
-            var collectionPositions = BuildCollectionPositions(collectionValue, _children.Count);
+            var collectionPositions = BuildCollectionPositions(collectionValue, _children.Count, out var hasDuplicates);
             if (collectionPositions is null)
                 return;
+
+            if (hasDuplicates)
+            {
+                collectionPositions.Clear();
+                RefreshOccurrenceIndices(collectionValue, registry);
+                _children.Sort(static (a, b) => ((int)a.Index!).CompareTo((int)b.Index!));
+                _childrenCache = default;
+                return;
+            }
 
             for (var i = 0; i < _children.Count; i++)
             {
@@ -432,18 +444,17 @@ public class RegisteredSubjectProperty
     }
 
     /// <summary>
-    /// Syncs children's keys and parent entries with the live keyed value. A retained child whose key
-    /// moved keeps its registration, so nothing else republishes its index: the lifecycle rewrites the
-    /// ownership edge and this rewrites the projection of it.
+    /// Syncs each child's occurrence index or key and corresponding parent entry. Retained children
+    /// keep their registration, so the lifecycle rewrites ownership and this refreshes its projection.
     /// </summary>
     /// <remarks>
     /// Occurrences of one subject are interchangeable, so the entries are paired with the child slots
-    /// of the same subject in enumeration order, and the cursor makes that pairing one pass rather
-    /// than a rescan per entry. Locking matches the collection path: <c>_children</c> then
+    /// of the same subject in enumeration order. Each cursor skips slots already paired with that
+    /// subject. Locking matches the collection path: <c>_children</c> then
     /// <c>_knownSubjects</c> through the registry, which the lifecycle's outer topology lock
     /// serializes.
     /// </remarks>
-    private void RefreshKeyedIndices(object? keyedValue, ISubjectRegistry registry)
+    private void RefreshOccurrenceIndices(object? keyedValue, ISubjectRegistry registry)
     {
         if (keyedValue is null)
             return;
@@ -468,12 +479,20 @@ public class RegisteredSubjectProperty
             }
             else if (keyedValue is IEnumerable enumerable and not string)
             {
+                var isKeyed = keyedValue is not ICollection &&
+                    (Type.IsSubjectDictionaryType() || keyedValue.GetType().IsSubjectDictionaryType());
+                var index = 0;
                 foreach (var item in enumerable)
                 {
-                    if (item is not null && SubjectLookup.TryGetSubjectFromKeyValuePair(item, out var key, out var subject))
+                    if (isKeyed && item is not null && SubjectLookup.TryGetSubjectFromKeyValuePair(item, out var key, out var subject))
                     {
                         MoveChildToKey(cursors, subject, key, registry);
                     }
+                    else if (item is IInterceptorSubject subjectItem)
+                    {
+                        MoveChildToKey(cursors, subjectItem, index, registry);
+                    }
+                    index++;
                 }
             }
 
@@ -509,7 +528,7 @@ public class RegisteredSubjectProperty
     }
 
     /// <summary>
-    /// Maps each subject in the collection to its current position.
+    /// Maps unique subjects to their positions and detects when occurrence matching is required.
     /// Uses IList indexed access when available; falls back to ICollection foreach,
     /// then IEnumerable for read-only types that implement neither.
     /// Reuses a ThreadStatic dictionary to avoid allocations.
@@ -520,8 +539,9 @@ public class RegisteredSubjectProperty
     /// entry and give both of them the last one's position.
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Dictionary<IInterceptorSubject, int>? BuildCollectionPositions(object? value, int capacityHint)
+    private static Dictionary<IInterceptorSubject, int>? BuildCollectionPositions(object? value, int capacityHint, out bool hasDuplicates)
     {
+        hasDuplicates = false;
         if (value is null)
             return null;
 
@@ -535,7 +555,7 @@ public class RegisteredSubjectProperty
                 if (list[index] is IInterceptorSubject subject)
                 {
                     collectionPositions ??= _reusableCollectionPositions = new Dictionary<IInterceptorSubject, int>(capacityHint, ReferenceEqualityComparer.Instance);
-                    collectionPositions[subject] = index;
+                    if (!collectionPositions.TryAdd(subject, index)) hasDuplicates = true;
                 }
             }
         }
@@ -547,7 +567,7 @@ public class RegisteredSubjectProperty
                 if (item is IInterceptorSubject subject)
                 {
                     collectionPositions ??= _reusableCollectionPositions = new Dictionary<IInterceptorSubject, int>(capacityHint, ReferenceEqualityComparer.Instance);
-                    collectionPositions[subject] = index;
+                    if (!collectionPositions.TryAdd(subject, index)) hasDuplicates = true;
                 }
                 index++;
             }
@@ -560,7 +580,7 @@ public class RegisteredSubjectProperty
                 if (item is IInterceptorSubject subject)
                 {
                     collectionPositions ??= _reusableCollectionPositions = new Dictionary<IInterceptorSubject, int>(capacityHint, ReferenceEqualityComparer.Instance);
-                    collectionPositions[subject] = index;
+                    if (!collectionPositions.TryAdd(subject, index)) hasDuplicates = true;
                 }
                 index++;
             }
