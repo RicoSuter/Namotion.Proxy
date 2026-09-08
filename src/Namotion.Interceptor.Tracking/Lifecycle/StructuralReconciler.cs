@@ -30,6 +30,12 @@ internal sealed class StructuralReconciler(LifecycleNotifier notifier, Ownership
         if (existingJournal is null && ReferenceEquals(oldValue, newValue)) return;
         if (existingJournal is null && !StructuralValueScanner.CanHoldSubjects(oldValue) && !StructuralValueScanner.CanHoldSubjects(newValue)) return;
 
+        if (existingJournal is null && (oldValue is null or IInterceptorSubject) && (newValue is null or IInterceptorSubject))
+        {
+            ReconcileScalar(property, ownership, (IInterceptorSubject?)oldValue, (IInterceptorSubject?)newValue);
+            return;
+        }
+
         var previousRevision = graph.GetBaselineRevision(property);
         var oldOccurrences = LifecycleScratch.RentOccurrenceList();
         var newOccurrences = LifecycleScratch.RentOccurrenceList();
@@ -64,6 +70,43 @@ internal sealed class StructuralReconciler(LifecycleNotifier notifier, Ownership
         {
             LifecycleScratch.Return(oldOccurrences);
             LifecycleScratch.Return(newOccurrences);
+        }
+    }
+
+    private void ReconcileScalar(
+        PropertyReference property,
+        SubjectOwnership ownership,
+        IInterceptorSubject? oldSubject,
+        IInterceptorSubject? newSubject)
+    {
+        var journal = graph.BeginPropertyJournal(property, ownership);
+        try
+        {
+            if (oldSubject is not null) journal.Add(oldSubject, null);
+            graph.SetBaseline(property, newSubject);
+            var revision = graph.GetBaselineRevision(property);
+            if (oldSubject is not null)
+            {
+                release.RemoveEdge(oldSubject, property, null);
+                if (!ReferenceEquals(graph.TryGetOwnership(property.Subject), ownership) || graph.GetBaselineRevision(property) != revision)
+                    return;
+            }
+
+            if (newSubject is not null)
+            {
+                attach.AttachEdge(newSubject, property, null);
+                attach.ResumeFailedSeed(newSubject, this);
+                if (!ReferenceEquals(graph.TryGetOwnership(property.Subject), ownership) || graph.GetBaselineRevision(property) != revision)
+                    return;
+            }
+
+            // No journal existed on entry; any nested write that shares this one changes the
+            // revision checked above, so completion has no enclosing snapshot to refresh.
+            journal.IsComplete = true;
+        }
+        finally
+        {
+            graph.EndPropertyJournal(journal);
         }
     }
 
