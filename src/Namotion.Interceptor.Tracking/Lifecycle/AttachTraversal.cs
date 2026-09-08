@@ -182,7 +182,6 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
                     notifier.QueueProperty(new PropertyReference(subject, propertyName), attach: true);
                 }
             }
-
         }
     }
 

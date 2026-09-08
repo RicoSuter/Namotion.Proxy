@@ -694,7 +694,7 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
         foreach (var subject in claimed)
         {
             // A queued release keeps its claim through preceding lifecycle/property delivery.
-            if (!IsOwned(subject) && !IsAnchored(subject) && !IsReleasing(subject))
+            if (!_owned.ContainsKey(subject) && !IsAnchored(subject))
             {
                 ReleaseClaim(subject);
             }
