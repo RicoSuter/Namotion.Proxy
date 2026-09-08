@@ -70,6 +70,7 @@ namespace HomeBlaze.History.InMemory
         public System.Threading.Tasks.Task ApplyConfigurationAsync(System.Threading.CancellationToken cancellationToken) { }
         protected override System.Threading.Tasks.Task ExecuteAsync(System.Threading.CancellationToken stoppingToken) { }
         protected System.Collections.Generic.IReadOnlyDictionary<string, Namotion.Interceptor.SubjectPropertyMetadata>? GetInstanceProperties() { }
+        protected TProperty GetPropertyValue<TProperty>(System.Func<Namotion.Interceptor.IInterceptorSubject, TProperty> readValue) { }
         protected TProperty GetPropertyValue<TProperty>(string propertyName, System.Func<Namotion.Interceptor.IInterceptorSubject, TProperty> readValue) { }
         public System.Threading.Tasks.ValueTask<HomeBlaze.History.Abstractions.HistoryPoint?> GetSampleAtOrBeforeAsync(string propertyPath, System.DateTimeOffset asOf, System.Threading.CancellationToken cancellationToken) { }
         public void HandleLifecycleChange(Namotion.Interceptor.Tracking.Lifecycle.SubjectLifecycleChange change) { }
