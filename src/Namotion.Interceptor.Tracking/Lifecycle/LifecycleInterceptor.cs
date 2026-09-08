@@ -414,10 +414,10 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             try
             {
                 ClaimProposedComponent(metadata.Type, context.NewValue, claimed);
-                if (!_graph.IsOwned(subject))
+                if (!_graph.IsOwned(subject) || _graph.IsEvaluatingSeedingGetter(property))
                 {
-                    // The active seed owns publication. Rereading here would recursively invoke
-                    // a getter that writes its own property while the root is still unpublished.
+                    // The enclosing seed getter supplies the stored value after this setter returns.
+                    // Rereading it here recursively invokes a getter that writes its own property.
                     next(ref context);
                     return;
                 }

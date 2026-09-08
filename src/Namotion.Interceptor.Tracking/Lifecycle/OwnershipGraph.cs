@@ -37,6 +37,7 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 
     // A nested write can replace a value and restore the exact same instance before returning.
     private long _nextBaselineRevision;
+    private readonly Dictionary<PropertyReference, int> _activeSeedingGetters = new(PropertyReference.Comparer);
 
     // Writers hold the topology gate. The leaf lock also protects derived readers outside that
     // gate; no executor or user code runs while it is held. Ownership identity distinguishes a
@@ -227,6 +228,12 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 
                 var property = new PropertyReference(subject, entry.Key);
                 var hadBaseline = _baselines.TryGetValue(property, out var previousBaseline);
+                if (seed && hadBaseline)
+                {
+                    // A nested write to another property already committed and published it.
+                    continue;
+                }
+
                 object? value = previousBaseline.Value;
                 if (seed)
                 {
@@ -235,7 +242,7 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
                         return;
                     }
 
-                    value = metadata.GetValue?.Invoke(subject);
+                    value = ReadSeedingGetter(property, metadata);
                     if (!IsSeedOwnerCurrent(subject, ownership))
                     {
                         return;
@@ -281,6 +288,26 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
         finally
         {
             LifecycleScratch.Return(occurrences);
+        }
+    }
+
+    public bool IsEvaluatingSeedingGetter(PropertyReference property)
+    {
+        return _activeSeedingGetters.Count > 0 && _activeSeedingGetters.ContainsKey(property);
+    }
+
+    private object? ReadSeedingGetter(PropertyReference property, SubjectPropertyMetadata metadata)
+    {
+        _activeSeedingGetters[property] = _activeSeedingGetters.GetValueOrDefault(property) + 1;
+        try
+        {
+            return metadata.GetValue?.Invoke(property.Subject);
+        }
+        finally
+        {
+            var remaining = _activeSeedingGetters[property] - 1;
+            if (remaining == 0) _activeSeedingGetters.Remove(property);
+            else _activeSeedingGetters[property] = remaining;
         }
     }
 
