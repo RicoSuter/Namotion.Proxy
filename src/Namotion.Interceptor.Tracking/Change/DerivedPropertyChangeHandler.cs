@@ -506,7 +506,8 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
             StructuralValueScanner.CollectOccurrences(property.Metadata.Type, value, occurrences);
             foreach (var occurrence in occurrences)
             {
-                if (!ReferenceEquals(occurrence.Subject.TryGetContext(), context))
+                if (!ReferenceEquals(occurrence.Subject.TryGetContext(), context) ||
+                    context.TryGetLifecycleInterceptor()?.IsPendingRelease(occurrence.Subject) == true)
                 {
                     return true;
                 }

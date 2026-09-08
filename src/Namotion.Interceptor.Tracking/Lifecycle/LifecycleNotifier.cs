@@ -1,4 +1,5 @@
 using Namotion.Interceptor.Tracking.Change;
+using System.Runtime.ExceptionServices;
 
 namespace Namotion.Interceptor.Tracking.Lifecycle;
 
@@ -67,7 +68,7 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
         });
     }
 
-    public void Drain()
+    public void Drain(Exception? operationFailure = null)
     {
         if (_draining) return;
         _draining = true;
@@ -126,7 +127,12 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
             _propertyChanges.Clear();
             _draining = false;
         }
-        if (failures is not null) throw new AggregateException(failures);
+        if (failures is not null)
+        {
+            if (operationFailure is not null) failures.Insert(0, operationFailure);
+            if (failures.Count == 1) ExceptionDispatchInfo.Capture(failures[0]).Throw();
+            throw new AggregateException(failures);
+        }
     }
 
     private static void InvokePropertyHandler(IPropertyLifecycleHandler handler, Notification notification, ref List<Exception>? failures)

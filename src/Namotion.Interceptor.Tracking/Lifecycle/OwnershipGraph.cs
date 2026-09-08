@@ -38,8 +38,8 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     // A nested write can replace a value and restore the exact same instance before returning.
     private long _nextBaselineRevision;
 
-    // Written only by the release descent, under the topology lock, and read only by the
-    // admission path; a set rather than a field because a release can nest inside a callback.
+    // Derived readers consult this outside the topology gate to distinguish a retained teardown
+    // claim from a newly claimed component. Its monitor is a leaf and never invokes user code.
     private readonly HashSet<IInterceptorSubject> _releasing = new(ReferenceEqualityComparer.Instance);
 
     public IInterceptorSubjectContext Context { get; } = context;
@@ -99,19 +99,28 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     /// </remarks>
     public bool IsReleasing(IInterceptorSubject subject)
     {
-        return _releasing.Count > 0 && _releasing.Contains(subject);
+        lock (_releasing)
+        {
+            return _releasing.Contains(subject);
+        }
     }
 
     /// <inheritdoc cref="IsReleasing"/>
     public void MarkReleasing(IInterceptorSubject subject)
     {
-        _releasing.Add(subject);
+        lock (_releasing)
+        {
+            _releasing.Add(subject);
+        }
     }
 
     /// <inheritdoc cref="IsReleasing"/>
     public void ClearReleasing(IInterceptorSubject subject)
     {
-        _releasing.Remove(subject);
+        lock (_releasing)
+        {
+            _releasing.Remove(subject);
+        }
     }
 
     /// <summary>

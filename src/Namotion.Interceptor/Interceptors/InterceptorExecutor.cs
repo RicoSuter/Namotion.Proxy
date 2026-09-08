@@ -267,6 +267,7 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
             else
             {
                 lifecycle.EnterStructuralWriteGate();
+                Exception? writeFailure = null;
                 try
                 {
                     lock (_attachmentLock)
@@ -280,9 +281,21 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
                         }
                     }
                 }
+                catch (Exception exception)
+                {
+                    writeFailure = exception;
+                    throw;
+                }
                 finally
                 {
-                    lifecycle.ExitStructuralWriteGate();
+                    try
+                    {
+                        lifecycle.ExitStructuralWriteGate();
+                    }
+                    catch (Exception notificationFailure) when (writeFailure is not null)
+                    {
+                        throw new AggregateException(writeFailure, notificationFailure);
+                    }
                 }
             }
         }

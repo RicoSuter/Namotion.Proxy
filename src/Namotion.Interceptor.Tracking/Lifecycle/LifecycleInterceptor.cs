@@ -352,6 +352,11 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         {
             lifecycle.ExitGate();
         }
+
+        public void DrainOnFailure(Exception operationFailure)
+        {
+            if (_heldGateCount == 1) lifecycle._notifier.Drain(operationFailure);
+        }
     }
 
     /// <inheritdoc />
@@ -396,7 +401,8 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             return;
         }
 
-        using (EnterGate())
+        var gate = EnterGate();
+        try
         {
             if (_graph.IsReleasing(subject) && !_graph.IsOwned(subject))
             {
@@ -445,6 +451,15 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 _graph.ReleaseUnusedClaims(claimed);
                 LifecycleScratch.Return(claimed);
             }
+        }
+        catch (Exception operationFailure)
+        {
+            gate.DrainOnFailure(operationFailure);
+            throw;
+        }
+        finally
+        {
+            gate.Dispose();
         }
     }
 
@@ -541,7 +556,8 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         // EnterGate rejects an admission that would open a second transaction, before the input is
         // enumerated and before anything blocks. A same-lifecycle callback re-enters this gate and
         // is the supported dynamic-property-initializer case.
-        using (EnterGate())
+        var gate = EnterGate();
+        try
         {
             var subject = registration.Subject;
             if (!ReferenceEquals(subject.Executor.AttachedContext, _context))
@@ -564,6 +580,15 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             }
 
             return true;
+        }
+        catch (Exception operationFailure)
+        {
+            gate.DrainOnFailure(operationFailure);
+            throw;
+        }
+        finally
+        {
+            gate.Dispose();
         }
     }
 
@@ -606,7 +631,8 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             throw new InvalidOperationException("An attach without a root anchor would be released by the next reachability decision.");
         }
 
-        using (EnterGate())
+        var gate = EnterGate();
+        try
         {
             var executor = subject.Executor;
             executor.TryGetAttachment(out var attachedContext, out var currentAnchor, out _);
@@ -659,6 +685,15 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 LifecycleScratch.Return(claimed);
                 LifecycleScratch.Return(consumedAnchors);
             }
+        }
+        catch (Exception operationFailure)
+        {
+            gate.DrainOnFailure(operationFailure);
+            throw;
+        }
+        finally
+        {
+            gate.Dispose();
         }
     }
 
@@ -782,7 +817,8 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             throw new InvalidOperationException("The subject cannot be detached through the lifecycle of another context.");
         }
 
-        using (EnterGate())
+        var gate = EnterGate();
+        try
         {
             var executor = subject.Executor;
             executor.TryGetAttachment(out var attachedContext, out var anchor, out _);
@@ -801,6 +837,15 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             {
                 _release.ReleaseRoot(subject);
             }
+        }
+        catch (Exception operationFailure)
+        {
+            gate.DrainOnFailure(operationFailure);
+            throw;
+        }
+        finally
+        {
+            gate.Dispose();
         }
     }
 
@@ -850,6 +895,11 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     // Internal for tests only: committed baselines have no public observer, and the
     // released-parent regression tests must assert that none survives a subject's release.
     internal OwnershipGraph Graph => _graph;
+
+    internal bool IsPendingRelease(IInterceptorSubject subject)
+    {
+        return !_graph.IsOwned(subject) && _graph.IsReleasing(subject);
+    }
 
     /// <summary>
     /// Asks whether there is an in-flight transaction to wait for, and registers work to run once it
