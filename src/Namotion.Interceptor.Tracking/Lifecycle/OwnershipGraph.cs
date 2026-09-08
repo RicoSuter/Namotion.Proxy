@@ -33,7 +33,10 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     // may override Equals/GetHashCode, which under default equality could merge distinct nodes or
     // strand a subject whose hash mutates while it is owned.
     private readonly ConcurrentDictionary<IInterceptorSubject, SubjectOwnership> _owned = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<PropertyReference, object?> _baselines = new(PropertyReference.Comparer);
+    private readonly Dictionary<PropertyReference, (object? Value, long Revision)> _baselines = new(PropertyReference.Comparer);
+
+    // A nested write can replace a value and restore the exact same instance before returning.
+    private long _nextBaselineRevision;
 
     // Written only by the release descent, under the topology lock, and read only by the
     // admission path; a set rather than a field because a release can nest inside a callback.
@@ -141,13 +144,18 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public object? GetBaseline(PropertyReference property)
     {
-        return _baselines.GetValueOrDefault(property);
+        return _baselines.GetValueOrDefault(property).Value;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void SetBaseline(PropertyReference property, object? value)
     {
-        _baselines[property] = value;
+        _baselines[property] = (value, ++_nextBaselineRevision);
+    }
+
+    public long GetBaselineRevision(PropertyReference property)
+    {
+        return _baselines.GetValueOrDefault(property).Revision;
     }
 
     /// <summary>
@@ -169,7 +177,7 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     public bool CommitsEdgeTo(PropertyReference property, IInterceptorSubject target)
     {
         return _baselines.TryGetValue(property, out var value) &&
-               StructuralValueScanner.Contains(property, value, target);
+               StructuralValueScanner.Contains(property, value.Value, target);
     }
 
     /// <summary>
@@ -180,9 +188,10 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     /// </summary>
     public void CollectStructuralChildren(
         IInterceptorSubject subject,
-        List<(PropertyReference Property, SubjectOccurrence Occurrence)> children,
+        List<(PropertyReference Property, SubjectOccurrence Occurrence, long BaselineRevision)> children,
         bool seed)
     {
+        var ownership = seed ? TryGetOwnership(subject) : null;
         var occurrences = LifecycleScratch.RentOccurrenceList();
         try
         {
@@ -195,27 +204,55 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
                 }
 
                 var property = new PropertyReference(subject, entry.Key);
-                object? value;
+                var hadBaseline = _baselines.TryGetValue(property, out var previousBaseline);
+                object? value = previousBaseline.Value;
                 if (seed)
                 {
-                    value = metadata.GetValue?.Invoke(subject);
-                    _baselines[property] = value;
-                }
-                else if (!_baselines.TryGetValue(property, out value))
-                {
-                    continue;
-                }
+                    if (!IsSeedOwnerCurrent(subject, ownership))
+                    {
+                        return;
+                    }
 
-                if (value is null)
+                    value = metadata.GetValue?.Invoke(subject);
+                    if (!IsSeedOwnerCurrent(subject, ownership))
+                    {
+                        return;
+                    }
+
+                    if (previousBaseline.Revision != GetBaselineRevision(property))
+                    {
+                        continue;
+                    }
+
+                }
+                else if (!hadBaseline)
                 {
                     continue;
                 }
 
                 occurrences.Clear();
                 StructuralValueScanner.CollectOccurrences(metadata.Type, value, occurrences);
+                if (seed)
+                {
+                    // Getters and enumerators can release this owner or publish a newer property
+                    // before returning. Neither continuation may recreate their obsolete edges.
+                    if (!IsSeedOwnerCurrent(subject, ownership))
+                    {
+                        return;
+                    }
+
+                    if (previousBaseline.Revision != GetBaselineRevision(property))
+                    {
+                        continue;
+                    }
+
+                    SetBaseline(property, value);
+                }
+
+                var baselineRevision = seed ? GetBaselineRevision(property) : previousBaseline.Revision;
                 foreach (var occurrence in occurrences)
                 {
-                    children.Add((property, occurrence));
+                    children.Add((property, occurrence, baselineRevision));
                 }
             }
         }
@@ -223,6 +260,13 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
         {
             LifecycleScratch.Return(occurrences);
         }
+    }
+
+    public bool IsSeedOwnerCurrent(IInterceptorSubject subject, SubjectOwnership? ownership)
+    {
+        return ownership is not null
+            ? ReferenceEquals(ownership, TryGetOwnership(subject))
+            : IsAnchored(subject) && !IsReleasing(subject);
     }
 
     /// <summary>

@@ -30,12 +30,23 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
 
     public void SeedAndAttachChildren(IInterceptorSubject subject)
     {
+        var ownership = graph.TryGetOwnership(subject);
         var children = LifecycleScratch.RentChildList();
         try
         {
             graph.CollectStructuralChildren(subject, children, seed: true);
-            foreach (var (property, occurrence) in children)
+            foreach (var (property, occurrence, baselineRevision) in children)
             {
+                if (!graph.IsSeedOwnerCurrent(subject, ownership))
+                {
+                    return;
+                }
+
+                if (graph.GetBaselineRevision(property) != baselineRevision)
+                {
+                    continue;
+                }
+
                 AttachEdge(occurrence.Subject, property, occurrence.Index);
             }
         }

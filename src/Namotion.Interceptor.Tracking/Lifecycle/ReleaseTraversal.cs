@@ -147,7 +147,7 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
             // resolve. Cleared here rather than only in the finally so it does not cover the
             // children drain below, which is no longer this subject's window.
 
-            foreach (var (childProperty, occurrence) in children)
+            foreach (var (childProperty, occurrence, _) in children)
             {
                 RemoveEdge(occurrence.Subject, childProperty, occurrence.Index);
             }

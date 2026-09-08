@@ -398,13 +398,8 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
 
         using (EnterGate())
         {
-            if (!_graph.IsOwned(subject))
+            if (_graph.IsReleasing(subject) && !_graph.IsOwned(subject))
             {
-                // Claimed for this context but not published: a root whose own structural getter
-                // writes back while the explicit attach seeds it at callback depth zero, or a
-                // subject between losing its ownership record and having its claim handed back. The
-                // reconcile would find no owner to publish edges for, and the seed that follows
-                // reads the committed value anyway.
                 next(ref context);
                 return;
             }
@@ -413,6 +408,13 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             try
             {
                 ClaimProposedComponent(metadata.Type, context.NewValue, claimed);
+                if (!_graph.IsOwned(subject))
+                {
+                    // The active seed owns publication. Rereading here would recursively invoke
+                    // a getter that writes its own property while the root is still unpublished.
+                    next(ref context);
+                    return;
+                }
 
                 try
                 {
@@ -697,7 +699,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             }
 
             _graph.CollectStructuralChildren(subject, children, seed: false);
-            foreach (var (property, occurrence) in children)
+            foreach (var (property, occurrence, _) in children)
             {
                 _release.RemoveEdge(occurrence.Subject, property, occurrence.Index);
             }
