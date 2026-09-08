@@ -12,8 +12,10 @@ internal sealed class PropertyEdgeJournal
         public int PreviousForSubject;
     }
 
-    private readonly List<Entry> _entries = [];
-    private readonly Dictionary<IInterceptorSubject, int> _lastForSubject = new(ReferenceEqualityComparer.Instance);
+    private IInterceptorSubject? _singleSubject;
+    private object? _singleIndex;
+    private List<Entry>? _entries;
+    private Dictionary<IInterceptorSubject, int>? _lastForSubject;
     private int _first = -1;
     private int _last = -1;
     private int _free = -1;
@@ -23,40 +25,64 @@ internal sealed class PropertyEdgeJournal
     public int Users { get; set; }
     public bool IsComplete { get; set; }
 
-    public void Initialize(PropertyReference property, SubjectOwnership ownership, List<SubjectOccurrence> installed)
+    public void Initialize(PropertyReference property, SubjectOwnership ownership, List<SubjectOccurrence>? installed)
     {
         Property = property;
         Ownership = ownership;
         Users = 1;
-        foreach (var occurrence in installed) Add(occurrence.Subject, occurrence.Index);
+        if (installed is not null)
+            foreach (var occurrence in installed) Add(occurrence.Subject, occurrence.Index);
     }
 
     public void Add(IInterceptorSubject subject, object? index)
     {
+        if (_first < 0)
+        {
+            if (_singleSubject is null)
+            {
+                _singleSubject = subject;
+                _singleIndex = index;
+                return;
+            }
+
+            _entries ??= [];
+            _lastForSubject ??= new(ReferenceEqualityComparer.Instance);
+            AddEntry(_singleSubject, _singleIndex);
+            _singleSubject = null;
+            _singleIndex = null;
+        }
+
+        AddEntry(subject, index);
+    }
+
+    private void AddEntry(IInterceptorSubject subject, object? index)
+    {
+        var entries = _entries!;
+        var lastForSubject = _lastForSubject!;
         var entryIndex = _free;
         if (entryIndex >= 0)
         {
-            _free = _entries[entryIndex].Next;
+            _free = entries[entryIndex].Next;
         }
         else
         {
-            entryIndex = _entries.Count;
-            _entries.Add(default);
+            entryIndex = entries.Count;
+            entries.Add(default);
         }
 
-        _entries[entryIndex] = new Entry
+        entries[entryIndex] = new Entry
         {
             Subject = subject,
             Index = index,
             Previous = _last,
             Next = -1,
-            PreviousForSubject = _lastForSubject.GetValueOrDefault(subject, -1)
+            PreviousForSubject = lastForSubject.GetValueOrDefault(subject, -1)
         };
         if (_last >= 0)
         {
-            var previous = _entries[_last];
+            var previous = entries[_last];
             previous.Next = entryIndex;
-            _entries[_last] = previous;
+            entries[_last] = previous;
         }
         else
         {
@@ -64,13 +90,23 @@ internal sealed class PropertyEdgeJournal
         }
 
         _last = entryIndex;
-        _lastForSubject[subject] = entryIndex;
+        lastForSubject[subject] = entryIndex;
     }
 
     public void RemoveLast(IInterceptorSubject subject)
     {
-        if (!_lastForSubject.TryGetValue(subject, out var entryIndex)) return;
-        var entry = _entries[entryIndex];
+        if (_singleSubject is not null)
+        {
+            if (ReferenceEquals(_singleSubject, subject))
+            {
+                _singleSubject = null;
+                _singleIndex = null;
+            }
+            return;
+        }
+
+        if (_first < 0 || !_lastForSubject!.TryGetValue(subject, out var entryIndex)) return;
+        var entry = _entries![entryIndex];
         if (entry.PreviousForSubject < 0) _lastForSubject.Remove(subject);
         else _lastForSubject[subject] = entry.PreviousForSubject;
 
@@ -102,9 +138,15 @@ internal sealed class PropertyEdgeJournal
 
     public void CopyTo(List<SubjectOccurrence> target)
     {
-        for (var index = _first; index >= 0; index = _entries[index].Next)
+        if (_singleSubject is not null)
         {
-            var entry = _entries[index];
+            target.Add(new SubjectOccurrence(_singleSubject, _singleIndex));
+            return;
+        }
+
+        for (var index = _first; index >= 0; index = _entries![index].Next)
+        {
+            var entry = _entries![index];
             target.Add(new SubjectOccurrence(entry.Subject!, entry.Index));
         }
     }
@@ -133,8 +175,10 @@ internal sealed class PropertyEdgeJournal
 
     private void ClearEntries()
     {
-        _entries.Clear();
-        _lastForSubject.Clear();
+        _singleSubject = null;
+        _singleIndex = null;
+        _entries?.Clear();
+        _lastForSubject?.Clear();
         _first = _last = _free = -1;
     }
 }

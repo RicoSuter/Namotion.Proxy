@@ -36,7 +36,8 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 
     // A nested write can replace a value and restore the exact same instance before returning.
     private long _nextBaselineRevision;
-    private readonly Dictionary<PropertyReference, PropertyEdgeJournal> _propertyJournals = new(PropertyReference.Comparer);
+    private PropertyEdgeJournal? _firstPropertyJournal;
+    private Dictionary<PropertyReference, PropertyEdgeJournal>? _additionalPropertyJournals;
     private (PropertyReference Property, SubjectOwnership? Ownership) _activeSeedingGetter;
     private Dictionary<(PropertyReference Property, SubjectOwnership? Ownership), int>? _suspendedSeedingGetters;
 
@@ -190,12 +191,14 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 
     public PropertyEdgeJournal? GetPropertyJournal(PropertyReference property, SubjectOwnership? ownership)
     {
-        return _propertyJournals.Count > 0 &&
-               _propertyJournals.TryGetValue(property, out var journal) &&
+        var first = _firstPropertyJournal;
+        if (first is not null && first.Property == property && ReferenceEquals(first.Ownership, ownership)) return first;
+        return _additionalPropertyJournals is { Count: > 0 } &&
+               _additionalPropertyJournals.TryGetValue(property, out var journal) &&
                ReferenceEquals(journal.Ownership, ownership) ? journal : null;
     }
 
-    public PropertyEdgeJournal BeginPropertyJournal(PropertyReference property, SubjectOwnership ownership, List<SubjectOccurrence> installed)
+    public PropertyEdgeJournal BeginPropertyJournal(PropertyReference property, SubjectOwnership ownership, List<SubjectOccurrence>? installed = null)
     {
         var journal = GetPropertyJournal(property, ownership);
         if (journal is not null)
@@ -206,7 +209,8 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 
         journal = LifecycleScratch.RentPropertyJournal();
         journal.Initialize(property, ownership, installed);
-        _propertyJournals[property] = journal;
+        if (_firstPropertyJournal is null) _firstPropertyJournal = journal;
+        else (_additionalPropertyJournals ??= new(PropertyReference.Comparer))[property] = journal;
         return journal;
     }
 
@@ -216,9 +220,11 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
         // A failed descent can leave desired edges unpublished. Keep its actual occurrences until
         // a later write settles the property or releasing the owner drains what was installed.
         if (!journal.IsComplete && ReferenceEquals(TryGetOwnership(journal.Property.Subject), journal.Ownership)) return;
-        if (_propertyJournals.TryGetValue(journal.Property, out var current) && ReferenceEquals(current, journal))
+        if (ReferenceEquals(_firstPropertyJournal, journal)) _firstPropertyJournal = null;
+        else if (_additionalPropertyJournals is not null &&
+                 _additionalPropertyJournals.TryGetValue(journal.Property, out var current) && ReferenceEquals(current, journal))
         {
-            _propertyJournals.Remove(journal.Property);
+            _additionalPropertyJournals.Remove(journal.Property);
         }
 
         LifecycleScratch.Return(journal);
@@ -226,13 +232,13 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 
     public void RecordIncomingAdded(PropertyReference property, IInterceptorSubject child, object? index)
     {
-        if (_propertyJournals.Count == 0) return;
+        if (_firstPropertyJournal is null && _additionalPropertyJournals is not { Count: > 0 }) return;
         GetPropertyJournal(property, TryGetOwnership(property.Subject))?.Add(child, index);
     }
 
     public void RecordIncomingRemoved(PropertyReference property, IInterceptorSubject child)
     {
-        if (_propertyJournals.Count == 0) return;
+        if (_firstPropertyJournal is null && _additionalPropertyJournals is not { Count: > 0 }) return;
         GetPropertyJournal(property, TryGetOwnership(property.Subject))?.RemoveLast(child);
     }
 
@@ -341,18 +347,10 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 
                     if (occurrences.Count > 0)
                     {
-                        var empty = LifecycleScratch.RentOccurrenceList();
-                        try
-                        {
-                            var journal = BeginPropertyJournal(property, ownership!, empty);
-                            SetBaseline(property, value);
-                            journal.IsComplete = false;
-                            seedingJournals!.Add((journal, GetBaselineRevision(property)));
-                        }
-                        finally
-                        {
-                            LifecycleScratch.Return(empty);
-                        }
+                        var journal = BeginPropertyJournal(property, ownership!);
+                        SetBaseline(property, value);
+                        journal.IsComplete = false;
+                        seedingJournals!.Add((journal, GetBaselineRevision(property)));
                     }
                     else
                     {
@@ -450,7 +448,15 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
             {
                 var property = new PropertyReference(subject, entry.Key);
                 _baselines.Remove(property);
-                if (_propertyJournals.Remove(property, out var journal) && journal.Users == 0)
+                var first = _firstPropertyJournal;
+                if (first is not null && first.Property == property)
+                {
+                    _firstPropertyJournal = null;
+                    if (first.Users == 0) LifecycleScratch.Return(first);
+                }
+
+                if (_additionalPropertyJournals is not null &&
+                    _additionalPropertyJournals.Remove(property, out var journal) && journal.Users == 0)
                 {
                     LifecycleScratch.Return(journal);
                 }

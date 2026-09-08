@@ -11,3 +11,9 @@ Verification: `dotnet test src/Namotion.Interceptor.Tracking.Tests --no-restore 
 Scope limits: this is evidence for the tested mutation paths, not a general proof for arbitrary side-effecting enumerables. Release and reachability still enumerate settled baselines, which can invoke user code. A structural getter that throws before its own baseline is read may leave that subject partially seeded until release; recovery of an already retained descendant's failed seed is not changed by this journal. No benchmarks or non-Tracking suite runs were performed in this worktree.
 
 Production diff for the journal stage: 289 added / 51 removed lines, net +238, across six files including the new 140-line journal. Tests add the two blocker probes and seven new focused cases. Root's notifier/release-storage and active-getter optimizations are intentionally absent from this stage and can be integrated independently.
+
+## Inline storage follow-up
+
+The next commit stores zero/single occurrences directly in the pooled journal record and only materializes the linked entry list and per-subject dictionary on a second installed occurrence. OwnershipGraph stores the first journal directly and creates a dictionary only when another property is active concurrently. Normal single-property operations avoid journal-map hashing and single-occurrence operations avoid subject hashing. Membership remains expected O(1) at arbitrary nesting depth. Multi-occurrence capacities remain reusable after reset. Empty seed journals no longer rent an unnecessary temporary occurrence list. No speculative lazy reconstruction is used.
+
+Verification after these changes: full Tracking **808 passed / 20 failed / 828**, with the same original failure names; the 21 focused blocker/oracle/journal cases pass. Production delta over correctness: +90/-40, net +50. This is a structural allocation/hot-path reduction; no benchmark was run, so CPU or allocation gains are not quantified.
