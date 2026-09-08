@@ -167,6 +167,13 @@ public class UnitAttribute : Attribute, ISubjectPropertyInitializer
 
     public void InitializeProperty(RegisteredSubjectProperty property)
     {
+        // Initializers run again whenever a subject is re-attached, over properties that are
+        // still on the subject, so check before adding.
+        if (property.TryGetAttribute("Unit") is not null)
+        {
+            return;
+        }
+
         property.AddAttribute("Unit", typeof(string), _ => _unit, null);
     }
 }
@@ -187,7 +194,7 @@ public class DefaultValueInitializer : ISubjectPropertyInitializer
             .OfType<DefaultValueAttribute>()
             .FirstOrDefault();
 
-        if (attribute is not null)
+        if (attribute is not null && property.TryGetAttribute("DefaultValue") is null)
         {
             property.AddAttribute("DefaultValue", property.Type,
                 _ => attribute.Value, null);

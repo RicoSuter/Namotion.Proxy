@@ -13,6 +13,10 @@ public class RegisteredSubject
 {
     private readonly Lock _lock = new();
 
+    // Not _lock, which a dynamic getter can reach through Parents while under SyncRoot; this is
+    // held across SyncRoot, so sharing one lock, or adding a property from a getter, deadlocks.
+    private readonly Lock _addPropertyLock = new();
+
     private volatile FrozenDictionary<string, RegisteredSubjectProperty> _properties;
 
     // Most subjects have exactly one parent, so the first is stored inline and the
@@ -329,34 +333,29 @@ public class RegisteredSubject
         Action<IInterceptorSubject, object?>? setValue,
         params Attribute[] attributes)
     {
-        Subject.AddProperties(new SubjectPropertyMetadata(
+        var metadata = new SubjectPropertyMetadata(
             name,
             type,
             attributes,
             getValue is not null ? s => ((IInterceptorExecutor)s.Context).GetPropertyValue(name, getValue) : null,
             setValue is not null ? (s, v) => ((IInterceptorExecutor)s.Context).SetPropertyValue(name, v, getValue?.Invoke(s), setValue) : null,
             isIntercepted: true,
-            isDynamic: true));
+            isDynamic: true);
 
-        var property = AddPropertyInternal(name, type, attributes);
-
-        // Fires a null→value transition for lifecycle tracking of subject-valued initial values.
-        // TODO(perf): For derived-with-setter this re-enters RecalculateDerivedProperty (total
-        // 3 getter invocations: AttachProperty + invoke below + recalc), but AttachProperty has
-        // already seeded LastKnownValue. Consider a dedicated lifecycle notification for derived,
-        // or passing currentValue so PropertyValueEqualityCheckHandler short-circuits the write.
-        property.Reference.SetPropertyValueWithInterception(getValue?.Invoke(Subject) ?? null,
-            null, delegate { });
-
-        return property;
-    }
-
-    private RegisteredSubjectProperty AddPropertyInternal(string name, Type type, Attribute[] attributes)
-    {
         var subjectProperty = new RegisteredSubjectProperty(this, name, type, attributes);
 
-        lock (_lock)
+        lock (_addPropertyLock)
         {
+            if (_properties.ContainsKey(subjectProperty.Name))
+            {
+                throw new InvalidOperationException(
+                    $"Property '{subjectProperty.Name}' already exists on '{Subject.GetType().Name}'. " +
+                    "If this is an ISubjectPropertyInitializer, check for the property before adding it: " +
+                    "initializers run again whenever a subject is re-attached.");
+            }
+
+            Subject.AddProperties(metadata);
+
             var newProperties = _properties
                 .Append(KeyValuePair.Create(subjectProperty.Name, subjectProperty))
                 .ToFrozenDictionary(p => p.Key, p => p.Value);
@@ -370,6 +369,15 @@ public class RegisteredSubject
         }
 
         Subject.AttachSubjectProperty(subjectProperty.Reference);
+
+        // Fires a null→value transition for lifecycle tracking of subject-valued initial values.
+        // TODO(perf): For derived-with-setter this re-enters RecalculateDerivedProperty (total
+        // 3 getter invocations: AttachProperty + invoke below + recalc), but AttachProperty has
+        // already seeded LastKnownValue. Consider a dedicated lifecycle notification for derived,
+        // or passing currentValue so PropertyValueEqualityCheckHandler short-circuits the write.
+        subjectProperty.Reference.SetPropertyValueWithInterception(getValue?.Invoke(Subject) ?? null,
+            null, delegate { });
+
         return subjectProperty;
     }
 }

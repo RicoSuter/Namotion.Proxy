@@ -81,6 +81,13 @@ namespace Namotion.Interceptor.SampleWeb
 
         public void InitializeProperty(RegisteredSubjectProperty property)
         {
+            // Initializers run again whenever the subject is re-attached, over attributes that are
+            // still on the subject.
+            if (property.TryGetAttribute("Unit") is not null)
+            {
+                return;
+            }
+
             property.AddAttribute("Unit", typeof(string),
                 _ => _unit, null,
                 new PathAttribute("mqtt", "unit"));

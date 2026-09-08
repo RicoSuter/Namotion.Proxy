@@ -525,6 +525,63 @@ public class MethodPropertyInitializerTests
         // Assert
         Assert.Empty(methods);
     }
+
+    [Fact]
+    public void WhenSubjectMovesBetweenParents_ThenMethodPropertiesAreNotAddedTwice()
+    {
+        // Arrange
+        var context = CreateContext();
+        var first = new MethodTestSubjectHolder(context);
+        var second = new MethodTestSubjectHolder(context);
+        var subject = new MethodTestSubject();
+
+        // Act: the move detaches the subject, so it is registered again under the new parent and
+        // every lifecycle handler runs a second time over method properties that are already there.
+        first.Child = subject;
+        first.Child = null;
+        second.Child = subject;
+
+        // Assert
+        var registered = ((IInterceptorSubject)subject).TryGetRegisteredSubject();
+        Assert.NotNull(registered);
+        Assert.NotNull(registered.TryGetProperty("Stop"));
+    }
+
+    [Fact]
+    public void WhenAMethodNameClashesWithADeclaredProperty_ThenItIsReportedRatherThanSkipped()
+    {
+        // Arrange & Act: the subject declares a property named Stop and also has [Operation]
+        // StopAsync(), so the method property cannot be created.
+        var context = CreateContext();
+
+        // Assert: the re-attach guard only treats an existing method property as already done, so a
+        // genuine clash still reaches AddProperty instead of being silently dropped.
+        var exception = Assert.Throws<InvalidOperationException>(() => new ClashingMethodSubject(context));
+        Assert.Contains("Stop", exception.Message);
+    }
+}
+
+[InterceptorSubject]
+public partial class ClashingMethodSubject
+{
+    public partial string Stop { get; set; }
+
+    public ClashingMethodSubject()
+    {
+        Stop = string.Empty;
+    }
+
+    [Operation]
+    public Task StopAsync()
+    {
+        return Task.CompletedTask;
+    }
+}
+
+[InterceptorSubject]
+public partial class MethodTestSubjectHolder
+{
+    public partial MethodTestSubject? Child { get; set; }
 }
 
 public interface IMethodTestInterface
