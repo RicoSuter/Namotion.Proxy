@@ -16,6 +16,8 @@ The previous full Tracking result was 784 passing and 20 failing tests. The migr
 | Getter probes depended on a claimed but unowned root phase | 2 | Public context attachment arms each one-shot write. Both probes assert that the nested assignment actually executed, that the stored replacement owns the final edge, and that the stale value and all teardown state are released. |
 | Contention test inferred overlap from elapsed time | 1 | A structural getter keeps the gate holder runnable. Synchronization observes the contender waiting before releasing the holder, then verifies successful ordered completion and complete graph cleanup. There are no sleeps, duration thresholds, or large-tree workload assumptions. |
 
+The deterministic contention replacement proves actual overlap and serialization. It does not prove that a holder remained runnable longer than the deadlock conviction threshold; the old elapsed-time assertion did not reliably establish that coverage either.
+
 The root snapshot intentionally changes from `Mother2, Mother3, Mother1` to `Mother1, Mother2, Mother3`. No production handler ordering changes were made here. Root ownership now exists before seeding, and external notification preserves the current declared order around descent. The `FooBar` snapshot intentionally moves its single property notification after the previously queued built-in properties.
 
 `SupportContractAssertions` traverses the actual settled storage from the supplied anchors and compares exact incoming occurrences, parent indices and counts, both Registry edge directions, complete Registry membership, and structural baselines. Released subjects must have no executor context, ownership, anchor, release marker, parent edge, Registry entry, or baseline. Existing graph assertions were replaced with stronger positive committed-state assertions, not removed to suppress errors. The separate getter oracle is not weakened.
@@ -31,3 +33,5 @@ dotnet test src/Namotion.Interceptor.Tracking.Tests -m:1 -p:UseSharedCompilation
 ```
 
 Full log: `/private/tmp/pr494-contract-migration-full.log`. TRX: `src/Namotion.Interceptor.Tracking.Tests/TestResults/contract-migration-full.trx`. No production edits, benchmarks, original-baseline edits, or pushes were made.
+
+Follow-up verification rejects every subject absent from the declared fixture universe instead of assigning unknown subjects a shared identity. No fixture omissions were found: the full suite again passed 804 tests with zero failures or skips. Log: `/private/tmp/pr494-contract-universe-full.log`; TRX: `src/Namotion.Interceptor.Tracking.Tests/TestResults/contract-universe-full.trx`.

@@ -31,7 +31,8 @@ internal static class SupportContractAssertions
         string Identity(IInterceptorSubject subject)
         {
             var index = Array.FindIndex(universe, candidate => ReferenceEquals(candidate, subject));
-            return index < 0 ? "unexpected subject" : $"subject[{index}]";
+            Assert.True(index >= 0, $"{phase}: encountered a subject absent from the fixture universe ({subject.GetType().Name})");
+            return $"subject[{index}]";
         }
         string Edge(PropertyReference property, object? index) => $"{Identity(property.Subject)}.{property.Name}[{index ?? "-"}]";
         string Child(IInterceptorSubject subject, object? index) => $"{Identity(subject)}[{index ?? "-"}]";

@@ -21,7 +21,8 @@ namespace Namotion.Interceptor.Tracking.Tests.Lifecycle;
 /// the bounded join instead of taking the suite with it.
 ///
 /// The last test observes a contender waiting at the gate while its holder remains runnable, then
-/// releases the holder and verifies that the write completes afterwards.
+/// releases the holder and verifies that the write completes afterwards. It covers overlap and
+/// serialization, without asserting a minimum runnable hold duration.
 /// </remarks>
 public class SameContextGateDeadlockTests
 {
