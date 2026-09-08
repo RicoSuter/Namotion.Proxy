@@ -37,7 +37,8 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 
     // A nested write can replace a value and restore the exact same instance before returning.
     private long _nextBaselineRevision;
-    private readonly Dictionary<(PropertyReference Property, SubjectOwnership? Ownership), int> _activeSeedingGetters = new();
+    private (PropertyReference Property, SubjectOwnership? Ownership) _activeSeedingGetter;
+    private Dictionary<(PropertyReference Property, SubjectOwnership? Ownership), int>? _suspendedSeedingGetters;
 
     // Writers hold the topology gate. The leaf lock also protects derived readers outside that
     // gate; no executor or user code runs while it is held. Ownership identity distinguishes a
@@ -242,7 +243,7 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
                         return;
                     }
 
-                    value = ReadSeedingGetter(property, metadata);
+                    value = ReadSeedingGetter(property, metadata, ownership);
                     if (!IsSeedOwnerCurrent(subject, ownership))
                     {
                         return;
@@ -293,23 +294,40 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 
     public bool IsEvaluatingSeedingGetter(PropertyReference property)
     {
-        return _activeSeedingGetters.Count > 0 && _activeSeedingGetters.ContainsKey((property, TryGetOwnership(property.Subject)));
+        if (_activeSeedingGetter.Property.Equals(property))
+        {
+            return ReferenceEquals(_activeSeedingGetter.Ownership, TryGetOwnership(property.Subject));
+        }
+
+        return _suspendedSeedingGetters is { Count: > 0 } &&
+               _suspendedSeedingGetters.ContainsKey((property, TryGetOwnership(property.Subject)));
     }
 
-    private object? ReadSeedingGetter(PropertyReference property, SubjectPropertyMetadata metadata)
+    private object? ReadSeedingGetter(PropertyReference property, SubjectPropertyMetadata metadata, SubjectOwnership? ownership)
     {
-        // A released owner can be reattached while an older getter frame is still running.
-        var evaluation = (property, TryGetOwnership(property.Subject));
-        _activeSeedingGetters[evaluation] = _activeSeedingGetters.GetValueOrDefault(evaluation) + 1;
+        var preceding = _activeSeedingGetter;
+        var isNested = preceding.Property.Subject is not null;
+        if (isNested)
+        {
+            // Only reentrant getter evaluation needs a lookup for older frames.
+            _suspendedSeedingGetters ??= new();
+            _suspendedSeedingGetters[preceding] = _suspendedSeedingGetters.GetValueOrDefault(preceding) + 1;
+        }
+
+        _activeSeedingGetter = (property, ownership);
         try
         {
             return metadata.GetValue?.Invoke(property.Subject);
         }
         finally
         {
-            var remaining = _activeSeedingGetters[evaluation] - 1;
-            if (remaining == 0) _activeSeedingGetters.Remove(evaluation);
-            else _activeSeedingGetters[evaluation] = remaining;
+            _activeSeedingGetter = preceding;
+            if (isNested)
+            {
+                var remaining = _suspendedSeedingGetters![preceding] - 1;
+                if (remaining == 0) _suspendedSeedingGetters.Remove(preceding);
+                else _suspendedSeedingGetters[preceding] = remaining;
+            }
         }
     }
 
