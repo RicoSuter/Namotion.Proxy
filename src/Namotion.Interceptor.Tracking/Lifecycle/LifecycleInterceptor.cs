@@ -153,7 +153,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         _attach = new AttachTraversal(_notifier, _graph, _reachability);
         _release = new ReleaseTraversal(_notifier, _graph, _reachability);
         _reconciler = new StructuralReconciler(_notifier, _graph, _attach, _release);
-        _admission = new PropertyAdmission(_graph, _reconciler, _attach);
+        _admission = new PropertyAdmission(_graph, _reconciler);
     }
 
     #region Structural writes
@@ -573,10 +573,9 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             }
             else
             {
-                // Claimed for this context but not owned by the graph: this thread's own attach
-                // descent before it publishes, or a detach callback after the release dropped the
-                // record; see AdmitUnowned for the shapes.
-                _admission.AdmitUnowned(registration);
+                // A claimed subject may never be published, and a releasing subject has no
+                // descent left. Only a future ownership entry may seed these new properties.
+                registration.Publish();
             }
 
             return true;
