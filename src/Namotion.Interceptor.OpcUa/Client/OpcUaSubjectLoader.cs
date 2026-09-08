@@ -58,12 +58,6 @@ internal sealed class OpcUaSubjectLoader
         RegisteredSubject Registered,
         List<ChildEntry> ChildEntries);
 
-    private readonly record struct PendingSubjectReference(
-        RegisteredSubjectProperty Property,
-        ReferenceDescription NodeReference,
-        IInterceptorSubject SubjectToLoad,
-        bool IsNew);
-
     public async Task<IReadOnlyList<MonitoredItem>> LoadSubjectAsync(
         IInterceptorSubject subject,
         ReferenceDescription node,
@@ -166,8 +160,7 @@ internal sealed class OpcUaSubjectLoader
 
         var browseResults = await context.BrowseAsync(subjectNodeIds).ConfigureAwait(false);
 
-        // A NodeId absent from the result was not browsed to completion. The subject is skipped:
-        // its properties keep their current values and the next load reloads it.
+        // A NodeId absent from the result was not browsed to completion.
         for (var i = validSubjects.Count - 1; i >= 0; i--)
         {
             var (subject, _, nodeId) = validSubjects[i];
@@ -283,11 +276,10 @@ internal sealed class OpcUaSubjectLoader
         IReadOnlyDictionary<NodeId, Type?> variableTypeMap,
         OpcUaLoadContext context)
     {
-        var allAttributeVariableNodes = new List<(RegisteredSubjectProperty Property, NodeId NodeId)>();
-        var allPendingSubjectReferences = new List<PendingSubjectReference>();
+        var attributeVariableNodes = new List<(RegisteredSubjectProperty Property, NodeId NodeId)>();
         var pendingVariableSubjects = new List<(RegisteredSubjectProperty Property, NodeId NodeId)>();
-        var pendingCollections = new List<(RegisteredSubjectProperty Property, NodeId NodeId)>();
-        var pendingDictionaries = new List<(RegisteredSubjectProperty Property, NodeId NodeId)>();
+        var pendingContainers = new List<(RegisteredSubjectProperty Property, NodeId NodeId)>();
+        var children = new List<(ReferenceDescription Node, IInterceptorSubject Subject)>();
 
         // Two sibling references with different NodeIds can map to the same property
         // (legal OPC UA, e.g. reached via different reference types). For subject,
@@ -340,54 +332,40 @@ internal sealed class OpcUaSubjectLoader
                     {
                         pendingVariableSubjects.Add((property, resolvedNodeId));
                     }
-                    else
+                    else if (TryReserveStructuredTarget(property, nodeReference, resolvedNodeId))
                     {
-                        if (!TryReserveStructuredTarget(property, nodeReference, resolvedNodeId))
-                        {
-                            continue;
-                        }
-
-                        var result = await PrepareSubjectReferenceAsync(
+                        var subjectToLoad = await PrepareSubjectReferenceAsync(
                             property, nodeReference, resolvedNodeId, stateSubject,
                             context).ConfigureAwait(false);
 
-                        if (result is not null)
+                        if (subjectToLoad is not null)
                         {
-                            var (subjectToLoad, isNew) = result.Value;
-                            allPendingSubjectReferences.Add(new PendingSubjectReference(property, nodeReference, subjectToLoad, isNew));
+                            children.Add((nodeReference, subjectToLoad));
                         }
                     }
                 }
-                else if (property.IsSubjectCollection)
+                else if (property.IsSubjectCollection || property.IsSubjectDictionary)
                 {
-                    if (!TryReserveStructuredTarget(property, nodeReference, resolvedNodeId))
+                    if (TryReserveStructuredTarget(property, nodeReference, resolvedNodeId))
                     {
-                        continue;
+                        pendingContainers.Add((property, resolvedNodeId));
                     }
-
-                    pendingCollections.Add((property, resolvedNodeId));
-                }
-                else if (property.IsSubjectDictionary)
-                {
-                    if (!TryReserveStructuredTarget(property, nodeReference, resolvedNodeId))
-                    {
-                        continue;
-                    }
-
-                    pendingDictionaries.Add((property, resolvedNodeId));
                 }
                 else
                 {
                     MonitorValueNode(resolvedNodeId, property, context);
-                    allAttributeVariableNodes.Add((property, resolvedNodeId));
+                    attributeVariableNodes.Add((property, resolvedNodeId));
                 }
             }
         }
 
         await LoadVariableSubjectReferencesAsync(pendingVariableSubjects, context).ConfigureAwait(false);
-        await LoadCollectionsAndDictionariesAsync(pendingCollections, pendingDictionaries, context).ConfigureAwait(false);
-        await LoadPendingSubjectReferencesAsync(allPendingSubjectReferences, context).ConfigureAwait(false);
-        await _attributeLoader.LoadAttributesAsync(allAttributeVariableNodes, context).ConfigureAwait(false);
+        await LoadCollectionsAndDictionariesAsync(pendingContainers, children, context).ConfigureAwait(false);
+
+        // One recursion over every child of the level, whichever branch kind led to it, so the
+        // level below is browsed in one call and the round-trip count grows with depth alone.
+        await LoadSubjectsAsync(children, context).ConfigureAwait(false);
+        await _attributeLoader.LoadAttributesAsync(attributeVariableNodes, context).ConfigureAwait(false);
     }
 
     private RegisteredSubjectProperty? TryCreateDynamicProperty(
@@ -430,7 +408,11 @@ internal sealed class OpcUaSubjectLoader
             _configuration.TypeResolver!.GetDynamicPropertyAttributes(nodeReference, context.Session));
     }
 
-    private async Task<(IInterceptorSubject Subject, bool IsNew)?> PrepareSubjectReferenceAsync(
+    /// <returns>
+    /// The subject the level below loads for this reference, or null when another path in this
+    /// load already produced the node's subject and loads it.
+    /// </returns>
+    private async Task<IInterceptorSubject?> PrepareSubjectReferenceAsync(
         RegisteredSubjectProperty property,
         ReferenceDescription nodeReference,
         NodeId resolvedNodeId,
@@ -451,10 +433,11 @@ internal sealed class OpcUaSubjectLoader
         if (existingSubject is null)
         {
             context.RegisterStagedSubject(subjectToLoad, parentSubject.Context);
+            context.QueueBinding(property, subjectToLoad);
         }
 
         context.SubjectsByNodeId.TryAdd(resolvedNodeId, subjectToLoad);
-        return (subjectToLoad, existingSubject is null);
+        return subjectToLoad;
     }
 
     // Variable subjects' value properties intentionally don't enter `_attributeLoader.LoadAttributesAsync`.
@@ -556,100 +539,57 @@ internal sealed class OpcUaSubjectLoader
     }
 
     private async Task LoadCollectionsAndDictionariesAsync(
-        List<(RegisteredSubjectProperty Property, NodeId NodeId)> pendingCollections,
-        List<(RegisteredSubjectProperty Property, NodeId NodeId)> pendingDictionaries,
+        List<(RegisteredSubjectProperty Property, NodeId NodeId)> pendingContainers,
+        List<(ReferenceDescription Node, IInterceptorSubject Subject)> children,
         OpcUaLoadContext context)
     {
-        if (pendingCollections.Count + pendingDictionaries.Count == 0)
+        if (pendingContainers.Count == 0)
         {
             return;
         }
 
-        var allNodeIds = new HashSet<NodeId>(pendingCollections.Count + pendingDictionaries.Count);
-        foreach (var (_, nodeId) in pendingCollections) allNodeIds.Add(nodeId);
-        foreach (var (_, nodeId) in pendingDictionaries) allNodeIds.Add(nodeId);
+        var nodeIds = new List<NodeId>(pendingContainers.Count);
+        foreach (var (_, nodeId) in pendingContainers)
+        {
+            nodeIds.Add(nodeId);
+        }
 
-        var browseResults = await context.BrowseAsync(allNodeIds).ConfigureAwait(false);
-        var allChildrenToLoad = new List<(ReferenceDescription Node, IInterceptorSubject Subject)>();
+        var browseResults = await context.BrowseAsync(nodeIds).ConfigureAwait(false);
 
-        // Queued after the children's own bindings so Commit applies the tree bottom-up, matching
-        // LoadPendingSubjectReferencesAsync.
-        var pendingContainerAssignments = new List<(RegisteredSubjectProperty Property, object Container)>();
-
-        foreach (var (property, nodeId) in pendingCollections)
+        foreach (var (property, nodeId) in pendingContainers)
         {
             if (!browseResults.TryGetValue(nodeId, out var rawChildren))
             {
                 // Missing entry = the browse failed with a permanent bad status (transient
                 // failures abort the whole load). Keep the property's current items rather
-                // than overwriting them with an empty collection; the next load retries.
+                // than overwriting them with an empty container; the next load retries.
                 _logger.LogWarning(
-                    "Skipping OPC UA collection '{Subject}.{Property}' (NodeId: {NodeId}): browse failed this load; existing items are preserved.",
+                    "Skipping OPC UA collection or dictionary '{Subject}.{Property}' (NodeId: {NodeId}): browse failed this load; existing items are preserved.",
                     property.Subject.GetType().Name, property.Name, nodeId);
                 continue;
             }
 
-            var childNodes = context.DistinctByResolvedNodeId(rawChildren);
+            var isDictionary = property.IsSubjectDictionary;
+            var containerChildren = await ResolveChildSubjectsAsync(
+                property, context.DistinctByResolvedNodeId(rawChildren), isDictionary, context).ConfigureAwait(false);
 
-            var children = await ResolveChildSubjectsAsync(property, childNodes, isDictionary: false, context).ConfigureAwait(false);
-
-            var collection = DefaultSubjectFactory.Instance.CreateSubjectCollection(property.Type, children.Select(c => c.Subject));
-            pendingContainerAssignments.Add((property, collection));
-            allChildrenToLoad.AddRange(children);
-        }
-
-        foreach (var (property, nodeId) in pendingDictionaries)
-        {
-            if (!browseResults.TryGetValue(nodeId, out var rawChildren))
+            object container;
+            if (isDictionary)
             {
-                // Same contract as the collection branch above: absent = failed, not empty.
-                _logger.LogWarning(
-                    "Skipping OPC UA dictionary '{Subject}.{Property}' (NodeId: {NodeId}): browse failed this load; existing entries are preserved.",
-                    property.Subject.GetType().Name, property.Name, nodeId);
-                continue;
-            }
-
-            var childNodes = context.DistinctByResolvedNodeId(rawChildren);
-
-            // Two children can extract to the same dictionary key (e.g. 'Items[a]' and a
-            // bracket-less sibling 'a'). Dedupe before subjects are created so the loser is
-            // never staged, claimed, or monitored (it would be committed yet unreachable
-            // from the graph); the first reference wins, matching the sibling dedup in
-            // ClassifyChildReferencesAsync.
-            var seenKeys = new HashSet<string>(childNodes.Count);
-            var dedupedChildNodes = new List<(ReferenceDescription Reference, NodeId NodeId)>(childNodes.Count);
-            foreach (var childNode in childNodes)
-            {
-                if (seenKeys.Add(ExtractDictionaryKey(childNode.Reference.BrowseName.Name)))
+                var entries = new Dictionary<object, IInterceptorSubject>(containerChildren.Count);
+                foreach (var (node, subject) in containerChildren)
                 {
-                    dedupedChildNodes.Add(childNode);
+                    entries[ExtractDictionaryKey(node.BrowseName.Name)] = subject;
                 }
-                else
-                {
-                    _logger.LogWarning(
-                        "Skipping OPC UA dictionary child '{BrowseName}' (NodeId: {NodeId}): a sibling already produced the same dictionary key.",
-                        childNode.Reference.BrowseName.Name, childNode.NodeId);
-                }
+                container = DefaultSubjectFactory.Instance.CreateSubjectDictionary(property.Type, entries);
             }
-
-            var children = await ResolveChildSubjectsAsync(property, dedupedChildNodes, isDictionary: true, context).ConfigureAwait(false);
-
-            var entries = new Dictionary<object, IInterceptorSubject>(children.Count);
-            foreach (var (node, subject) in children)
+            else
             {
-                entries[ExtractDictionaryKey(node.BrowseName.Name)] = subject;
+                container = DefaultSubjectFactory.Instance.CreateSubjectCollection(property.Type, containerChildren.Select(child => child.Subject));
             }
 
-            var dictionary = DefaultSubjectFactory.Instance.CreateSubjectDictionary(property.Type, entries);
-            pendingContainerAssignments.Add((property, dictionary));
-            allChildrenToLoad.AddRange(children);
-        }
-
-        await LoadSubjectsAsync(allChildrenToLoad, context).ConfigureAwait(false);
-
-        foreach (var (property, container) in pendingContainerAssignments)
-        {
             context.QueueBinding(property, container);
+            children.AddRange(containerChildren);
         }
     }
 
@@ -679,6 +619,12 @@ internal sealed class OpcUaSubjectLoader
             }
         }
 
+        // Two children can extract to the same dictionary key (e.g. 'Items[a]' and a
+        // bracket-less sibling 'a'). The loser is skipped before its subject is created so it is
+        // never staged, claimed, or monitored (it would be committed yet unreachable from the
+        // graph); the first reference wins, matching the sibling dedup in
+        // ClassifyChildReferencesAsync.
+        HashSet<string>? seenKeys = isDictionary ? new(childNodes.Count) : null;
         var children = new List<(ReferenceDescription Node, IInterceptorSubject Subject)>(childNodes.Count);
 
         for (var i = 0; i < childNodes.Count; i++)
@@ -691,6 +637,14 @@ internal sealed class OpcUaSubjectLoader
             if (isDictionary)
             {
                 var key = ExtractDictionaryKey(childNode.BrowseName.Name);
+                if (!seenKeys!.Add(key))
+                {
+                    _logger.LogWarning(
+                        "Skipping OPC UA dictionary child '{BrowseName}' (NodeId: {NodeId}): a sibling already produced the same dictionary key.",
+                        childNode.BrowseName.Name, nodeId);
+                    continue;
+                }
+
                 existingByKey.TryGetValue(key, out childSubject);
                 factoryIndex = key;
             }
@@ -719,31 +673,6 @@ internal sealed class OpcUaSubjectLoader
         }
 
         return children;
-    }
-
-    private async Task LoadPendingSubjectReferencesAsync(
-        List<PendingSubjectReference> pendingReferences,
-        OpcUaLoadContext context)
-    {
-        if (pendingReferences.Count == 0)
-        {
-            return;
-        }
-
-        var referencesToLoad = new List<(ReferenceDescription Node, IInterceptorSubject Subject)>(pendingReferences.Count);
-        foreach (var pending in pendingReferences)
-        {
-            referencesToLoad.Add((pending.NodeReference, pending.SubjectToLoad));
-        }
-        await LoadSubjectsAsync(referencesToLoad, context).ConfigureAwait(false);
-
-        foreach (var pending in pendingReferences)
-        {
-            if (pending.IsNew)
-            {
-                context.QueueBinding(pending.Property, pending.SubjectToLoad);
-            }
-        }
     }
 
     private static string ExtractDictionaryKey(string browseName)

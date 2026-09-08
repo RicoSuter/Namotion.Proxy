@@ -141,9 +141,12 @@ internal sealed class OpcUaLoadContext : IDisposable
     }
 
     /// <summary>
-    /// Queues a property binding that <see cref="Commit"/> applies in queue order through
+    /// Queues a property binding that <see cref="Commit"/> applies deepest level first through
     /// <c>SetValueFromSource</c>. On rollback, the entry is discarded.
     /// </summary>
+    /// <remarks>
+    /// Only a reference-typed value is restored when <see cref="Commit"/> fails after applying it.
+    /// </remarks>
     public void QueueBinding(RegisteredSubjectProperty property, object? value)
     {
         _pendingBindings.Add((property, value));
@@ -177,7 +180,7 @@ internal sealed class OpcUaLoadContext : IDisposable
 
     /// <summary>
     /// Commits the load: claims source ownership for every queued property, then applies the
-    /// queued bindings in queue order. Claims run first so an observer that sees a new child
+    /// queued bindings deepest level first. Claims run first so an observer that sees a new child
     /// appear finds all of the child's leaves already source-owned. A queued claim whose subject
     /// the application detached during the load is dropped.
     /// </summary>
@@ -226,8 +229,11 @@ internal sealed class OpcUaLoadContext : IDisposable
                 MonitoredItems.Add(monitoredItem);
             }
 
-            foreach (var (property, value) in _pendingBindings)
+            // Bindings are queued top-down as levels are discovered. Applying deepest first keeps a
+            // subject unreachable from the root until its own subtree is bound.
+            for (var i = _pendingBindings.Count - 1; i >= 0; i--)
             {
+                var (property, value) = _pendingBindings[i];
                 appliedBindings.Add((property, property.GetValue(), value));
                 property.SetValueFromSource(_source, null, null, value);
             }

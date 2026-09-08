@@ -384,6 +384,67 @@ public class OpcUaSubjectLoaderFailureTests
     }
 
     [Fact]
+    public async Task WhenLoadSucceeds_ThenRootBindingsAreAppliedAfterTheirSubtrees()
+    {
+        // Arrange: Root.Items is a collection whose two items each carry a subject reference, so
+        // the load queues the root binding while discovering level 0 and the item bindings while
+        // discovering level 1. Subscribe to the property change observable and count, at the
+        // moment Root.Items is assigned, the items whose Child is already bound. Deepest first
+        // means both are; applying in queue order would expose the items through the root while
+        // their children are still null.
+        var itemsId = new NodeId(4401, 2);
+        var firstItemId = new NodeId(4402, 2);
+        var secondItemId = new NodeId(4403, 2);
+        var firstChildId = new NodeId(4404, 2);
+        var secondChildId = new NodeId(4405, 2);
+
+        var browseTree = new Dictionary<NodeId, ReferenceDescription[]>
+        {
+            [RootId] = [MakeReference("Items", itemsId, NodeClass.Object)],
+            [itemsId] =
+            [
+                MakeReference("Items[0]", firstItemId, NodeClass.Object),
+                MakeReference("Items[1]", secondItemId, NodeClass.Object)
+            ],
+            [firstItemId] = [MakeReference("Child", firstChildId, NodeClass.Object)],
+            [secondItemId] = [MakeReference("Child", secondChildId, NodeClass.Object)]
+        };
+
+        var modelContext = InterceptorSubjectContext.Create()
+            .WithRegistry()
+            .WithLifecycle()
+            .WithPropertyChangeSubscriptions();
+        var root = new BindingOrderRoot(modelContext);
+        var (loader, _) = CreateSourceAndLoaderFor(root, shouldAddDynamicProperties: false);
+
+        var mockSession = CreateMockSession();
+        ConfigureBrowseTree(mockSession, failOnNodeId: NodeId.Null, browseTree);
+
+        var boundChildrenAtItemsAssignment = -1;
+        using var subscription = modelContext
+            .GetPropertyChangeObservable(ImmediateScheduler.Instance)
+            .Subscribe(change =>
+            {
+                if (ReferenceEquals(change.Property.Subject, root) && change.Property.Name == nameof(BindingOrderRoot.Items))
+                {
+                    boundChildrenAtItemsAssignment = change
+                        .GetNewValue<RollbackReferenceParent[]>()
+                        .Count(item => item.Child is not null);
+                }
+            });
+
+        var rootNode = MakeReference("Root", RootId, NodeClass.Object);
+
+        // Act
+        await loader.LoadSubjectAsync(root, rootNode, mockSession.Object, CancellationToken.None);
+
+        // Assert: the observer fired and saw every item's child already bound.
+        var items = Assert.IsType<RollbackReferenceParent[]>(root.Items);
+        Assert.Equal(2, items.Length);
+        Assert.Equal(2, boundChildrenAtItemsAssignment);
+    }
+
+    [Fact]
     public async Task WhenLoadFailsAtNestedStagedLevel_ThenAllStagedSubjectsAreUnregistered()
     {
         // Arrange: 3-level tree Root → ParentA (staged) → ChildB (staged) → fail.
@@ -598,8 +659,8 @@ public class OpcUaSubjectLoaderFailureTests
     public async Task WhenADictionaryEntryLoadFailsUnderANonRootParent_ThenALaterLoadStillRegistersTheEntry()
     {
         // Arrange: identical in shape to the collection case above, but through the dictionary
-        // branch of LoadCollectionsAndDictionariesAsync, which queues its container binding
-        // separately and so needs its own regression pin. Bracketed browse names carry the
+        // path of LoadCollectionsAndDictionariesAsync, which keys and builds its container
+        // differently and so needs its own regression pin. Bracketed browse names carry the
         // dictionary keys.
         var parentId = new NodeId(4101, 2);
         var entriesId = new NodeId(4102, 2);
@@ -777,12 +838,12 @@ public class OpcUaSubjectLoaderFailureTests
     public async Task WhenALaterPhaseFailsAfterAContainerIsResolved_ThenNothingIsBoundUntilALaterLoadSucceeds()
     {
         // Arrange: the collection, dictionary and subject reference rollback tests above all fail
-        // while LoadCollectionsAndDictionariesAsync is still loading the container's children. Here
-        // the collection loads cleanly and its binding is queued, and only then does a later phase
-        // throw. Parent.Status is a plain value property, so LoadChildPropertiesAsync queues it for
-        // LoadAttributesAsync, which is the last phase of the level and therefore runs after the
-        // container has been resolved. Failing its browse transiently on the first load rolls back
-        // a load whose container binding is already queued for Commit.
+        // while the level below the container is still being loaded. Here the collection loads
+        // cleanly and its binding is queued, and only then does a later phase throw. Parent.Status
+        // is a plain value property, so LoadChildPropertiesAsync queues it for LoadAttributesAsync,
+        // which is the last phase of the level and therefore runs after the container has been
+        // resolved. Failing its browse transiently on the first load rolls back a load whose
+        // container binding is already queued for Commit.
         var parentId = new NodeId(4301, 2);
         var itemsId = new NodeId(4302, 2);
         var firstItemId = new NodeId(4303, 2);
@@ -1394,4 +1455,11 @@ public partial class RollbackDictionaryParent
 {
     [OpcUaNode("Entries")]
     public partial IReadOnlyDictionary<string, RollbackCollectionItem>? Entries { get; set; }
+}
+
+[InterceptorSubject]
+public partial class BindingOrderRoot
+{
+    [OpcUaNode("Items")]
+    public partial RollbackReferenceParent[]? Items { get; set; }
 }

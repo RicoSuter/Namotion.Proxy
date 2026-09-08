@@ -242,6 +242,103 @@ public class OpcUaSubjectLoaderBatchingTests : OpcUaSubjectLoaderTestsBase
 
         // Assert: all monitored item properties are owned by the source
         Assert.Equal(5, ownership.Properties.Count());
+
+        // Assert: one browse call per level plus one per attribute round, five in total.
+        // Call 1: the root, Plant.
+        // Call 2: the object-type browse of Plant's dynamic Object children, Sensors and Settings,
+        //         which also fills the browse cache for both.
+        // Call 3: the next level in one call. Sensors[0..2] and Settings are its subjects; Settings
+        //         is served from the cache, so the request carries the three sensors.
+        // Call 4: the attribute browse of that level's four value variables (three Values and
+        //         Parameter1).
+        // Call 5: the attribute browse of Plant's own value variable, Status. The attribute phase is
+        //         the last phase of a level, so it runs after the recursion.
+        // The container browse of Sensors is a cache hit from call 2. A loader that recursed once
+        // per branch kind browsed the sensors and Settings in separate passes and needed six calls.
+        var browseCallCount = mockSession.Invocations.Count(invocation => invocation.Method.Name == nameof(ISession.BrowseAsync));
+        Assert.Equal(5, browseCallCount);
+    }
+
+    /// <summary>
+    /// Every subject on three levels carries both a collection and a subject reference, so the
+    /// tree forks into both branch kinds at every level:
+    ///   Root (Object)
+    ///   ├── Items (Object, collection) → Item[0] (Object) → { Items, Child } again
+    ///   └── Child (Object, subject reference) → { Items, Child } again
+    /// The eight subjects on the fourth level each carry one Value variable.
+    /// </summary>
+    [Fact]
+    public async Task WhenEveryLevelCarriesACollectionAndASubjectReference_ThenBrowseCallCountGrowsWithDepthNotWithBranches()
+    {
+        // Arrange
+        var rootId = new NodeId(1, 0);
+        var browseTree = new Dictionary<NodeId, ReferenceDescription[]>();
+        var dataTypes = new Dictionary<NodeId, (NodeId DataTypeId, int ValueRank)>();
+        var nextIdentifier = 1000u;
+
+        NodeId NextNodeId() => new(nextIdentifier++, 2);
+
+        void AddLevels(NodeId subjectId, int remainingContainerLevels)
+        {
+            if (remainingContainerLevels == 0)
+            {
+                var valueId = NextNodeId();
+                browseTree[subjectId] = [CreateTestReferenceDescription("Value", new ExpandedNodeId(valueId))];
+                dataTypes[valueId] = (DataTypeIds.Float, -1);
+                return;
+            }
+
+            var itemsId = NextNodeId();
+            var itemId = NextNodeId();
+            var childId = NextNodeId();
+            browseTree[subjectId] =
+            [
+                CreateObjectReferenceDescription("Items", new ExpandedNodeId(itemsId)),
+                CreateObjectReferenceDescription("Child", new ExpandedNodeId(childId))
+            ];
+            browseTree[itemsId] = [CreateObjectReferenceDescription("Item[0]", new ExpandedNodeId(itemId))];
+            AddLevels(itemId, remainingContainerLevels - 1);
+            AddLevels(childId, remainingContainerLevels - 1);
+        }
+
+        AddLevels(rootId, 3);
+
+        var mockSession = CreateMockSession();
+        SetupBrowseAsync(mockSession, browseTree);
+        SetupReadAsync(mockSession, dataTypes);
+
+        var (loader, ownership, subject) = CreateLoader(
+            shouldAddDynamicProperties: (_, _) => Task.FromResult(true));
+
+        var rootNode = CreateObjectReferenceDescription("Root", new ExpandedNodeId(rootId));
+
+        // Act
+        var monitoredItems = await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
+
+        // Assert: every leaf Value is monitored and owned, so the whole tree was loaded.
+        Assert.Equal(8, monitoredItems.Count);
+        Assert.Equal(8, ownership.Properties.Count());
+        Assert.Equal(dataTypes.Keys.ToHashSet(), monitoredItems.Select(item => item.StartNodeId).ToHashSet());
+
+        // Assert: two browse calls per container level, then two for the leaf level, eight in total.
+        // Each container level costs the browse of its subjects and the object-type browse of their
+        // dynamic Object children. The object-type browse also fills the browse cache, so the
+        // container browse of every Items node is a cache hit and every Child subject reference is
+        // served from the cache when its level is browsed: a level's subject browse carries only the
+        // Item[0] subjects, however many collections and references led to the level.
+        // Level 0: Root (1 node), then Items and Child (2 nodes).
+        // Level 1: Item[0] (1 node), then the 4 dynamic Object children of Item[0] and Child.
+        // Level 2: 2 Item[0] nodes, then 8 dynamic Object children.
+        // Level 3: 4 Item[0] nodes, then the attribute browse of the 8 Value variables.
+        // A loader that recursed separately below collections and below subject references browsed
+        // each branch's subtree in its own pass: with C(d) the calls for an uncached subject with d
+        // container levels below it and K(d) for a cached one, C(0) = 2, K(0) = 1,
+        // C(d) = 2 + C(d - 1) + K(d - 1) and K(d) = 1 + C(d - 1) + K(d - 1), which is 23 calls here.
+        var nodesPerBrowseCall = mockSession.Invocations
+            .Where(invocation => invocation.Method.Name == nameof(ISession.BrowseAsync))
+            .Select(invocation => ((BrowseDescriptionCollection)invocation.Arguments[3]).Count)
+            .ToArray();
+        Assert.Equal([1, 2, 1, 4, 2, 8, 4, 8], nodesPerBrowseCall);
     }
 
     [Fact]
