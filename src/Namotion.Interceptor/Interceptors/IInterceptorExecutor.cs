@@ -70,6 +70,10 @@ public interface IInterceptorExecutor
     /// <summary>
     /// Gets a property value through the interceptor chain.
     /// </summary>
+    /// <remarks>
+    /// While attached, non-atomic value reads share the write terminal's lock, including reads
+    /// that box a declared value type. Unattached access has ordinary CLR field semantics.
+    /// </remarks>
     /// <param name="propertyName">The name of the property to read.</param>
     /// <param name="readValue">A delegate that reads the backing field value from the subject.</param>
     TProperty GetPropertyValue<TProperty>(string propertyName, Func<IInterceptorSubject, TProperty> readValue);

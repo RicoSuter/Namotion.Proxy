@@ -168,9 +168,8 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
 
     /// <summary>
     /// The chain an unattached subject's scalar write runs: nothing intercepts, so this is the
-    /// zero-interceptor chain, the terminal write with its commit bookkeeping. Reads and method
-    /// invocations need no counterpart because their zero-interceptor chains are the plain
-    /// operations.
+    /// zero-interceptor chain, the terminal write with its commit bookkeeping. Unattached reads and method
+    /// invocations call their delegates directly.
     /// </summary>
     private static class UninterceptedChain<TProperty>
     {
@@ -185,8 +184,8 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
         var attachedContext = _attachment.Context;
         if (attachedContext is null)
         {
-            // The zero-interceptor read chain is the plain read, no terminal lock; see
-            // ReadInterceptorFactory.
+            // Unattached access has ordinary CLR field semantics; attached reads select the
+            // terminal synchronization required by their value type.
             return readValue(_subject);
         }
 
