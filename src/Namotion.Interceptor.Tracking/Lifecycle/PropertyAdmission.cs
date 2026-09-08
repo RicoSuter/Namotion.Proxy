@@ -115,7 +115,7 @@ internal sealed class PropertyAdmission(OwnershipGraph graph, StructuralReconcil
     public void AdmitUnowned(SubjectPropertyRegistration registration)
     {
         var subject = registration.Subject;
-        if (graph.IsReleasing(subject) || !graph.AreBaselinesSeeded(subject))
+        if (graph.IsReleasingUnderGate(subject) || !graph.AreBaselinesSeeded(subject))
         {
             registration.Publish();
             return;

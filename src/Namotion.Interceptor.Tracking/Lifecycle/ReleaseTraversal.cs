@@ -120,7 +120,7 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
 
             foreach (var entry in subject.Properties)
             {
-                subject.DetachSubjectProperty(new PropertyReference(subject, entry.Key));
+                notifier.QueueProperty(new PropertyReference(subject, entry.Key), attach: false);
             }
 
             DrainRemainingEdges(subject, ownership);

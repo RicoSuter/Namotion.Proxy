@@ -404,7 +404,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         var gate = EnterGate();
         try
         {
-            if (_graph.IsReleasing(subject) && !_graph.IsOwned(subject))
+            if (_graph.IsReleasingUnderGate(subject) && !_graph.IsOwned(subject))
             {
                 next(ref context);
                 return;
@@ -646,7 +646,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 }
 
                 _graph.SetAnchor(subject, anchor);
-                if (_graph.IsOwned(subject) || !_graph.IsReleasing(subject))
+                if (_graph.IsOwned(subject) || !_graph.IsReleasingUnderGate(subject))
                 {
                     return;
                 }

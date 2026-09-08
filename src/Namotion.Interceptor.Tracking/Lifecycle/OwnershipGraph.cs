@@ -109,12 +109,18 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
         }
     }
 
+    /// <summary>Queries the releasing marker while the caller holds the topology gate.</summary>
+    public bool IsReleasingUnderGate(IInterceptorSubject subject)
+    {
+        return _releasing.Count > 0 && _releasing.ContainsKey(subject);
+    }
+
+    /// <summary>Queries the release identity while the caller holds the topology gate.</summary>
     public bool IsCurrentRelease(IInterceptorSubject subject, SubjectOwnership ownership)
     {
-        lock (_releasingLock)
-        {
-            return _releasing.TryGetValue(subject, out var current) && ReferenceEquals(current, ownership);
-        }
+        // Every writer holds the topology gate as well as the leaf lock, so other threads can
+        // only read this dictionary while the drain compares its queued identity.
+        return _releasing.TryGetValue(subject, out var current) && ReferenceEquals(current, ownership);
     }
 
     /// <inheritdoc cref="IsReleasing"/>
