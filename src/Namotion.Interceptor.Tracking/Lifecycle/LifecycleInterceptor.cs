@@ -606,7 +606,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     /// </summary>
     public void HandleLifecycleChange(SubjectLifecycleChange change)
     {
-        if (change is { IsContextAttach: true, Property: not null })
+        if (change.IsContextAttach)
         {
             _attach.SeedChildrenIfNeeded(change.Subject);
         }
@@ -858,14 +858,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     /// </summary>
     private void SeedAndAttachComponent(IInterceptorSubject subject)
     {
-        _attach.SeedAndAttachChildren(subject);
-
-        // A back edge inside the seeded component can attach the subject before this point, in
-        // which case it already published its context attach through that edge.
-        if (!_graph.IsOwned(subject))
-        {
-            _attach.AttachRoot(subject);
-        }
+        _attach.AttachRoot(subject);
     }
 
     /// <summary>
