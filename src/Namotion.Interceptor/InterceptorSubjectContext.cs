@@ -117,7 +117,10 @@ public sealed class InterceptorSubjectContext : IInterceptorSubjectContext
 
             // Validated against the re-read state, so a contract a reentrant factory published
             // cannot be doubled by the factory's own product.
-            ValidateServiceRegistration(state.Services, service);
+            if (!ValidateServiceRegistration(state.Services, service))
+            {
+                return false;
+            }
             PublishState(new ContextState(state.Services.Add(service!)));
         }
 
@@ -129,7 +132,10 @@ public sealed class InterceptorSubjectContext : IInterceptorSubjectContext
         lock (_mutationLock)
         {
             var state = Volatile.Read(ref _state);
-            ValidateServiceRegistration(state.Services, service);
+            if (!ValidateServiceRegistration(state.Services, service))
+            {
+                return;
+            }
             PublishState(new ContextState(state.Services.Add(service!)));
         }
     }
@@ -138,7 +144,8 @@ public sealed class InterceptorSubjectContext : IInterceptorSubjectContext
     /// Validates lifecycle registration order and singleton contracts before publishing the service.
     /// Runs under <see cref="_mutationLock"/>.
     /// </summary>
-    private void ValidateServiceRegistration(ImmutableArray<object> services, object? service)
+    /// <returns>False when this singleton instance is already registered.</returns>
+    private bool ValidateServiceRegistration(ImmutableArray<object> services, object? service)
     {
         if (service is ILifecycleInterceptor && Volatile.Read(ref _wasAttachedWithoutLifecycle))
         {
@@ -149,25 +156,33 @@ public sealed class InterceptorSubjectContext : IInterceptorSubjectContext
 
         if (service is null)
         {
-            return;
+            return true;
         }
 
         var contracts = GetSingletonContracts(service.GetType());
         if (contracts.Length == 0)
         {
-            return;
+            return true;
         }
 
+        var alreadyRegistered = false;
         foreach (var contract in contracts)
         {
             foreach (var existingService in services)
             {
                 if (contract.IsInstanceOfType(existingService))
                 {
-                    throw CreateSingletonContractConflictException(contract, existingService, service);
+                    if (!ReferenceEquals(existingService, service))
+                    {
+                        throw CreateSingletonContractConflictException(contract, existingService, service);
+                    }
+
+                    alreadyRegistered = true;
                 }
             }
         }
+
+        return !alreadyRegistered;
     }
 
     private static Type[] GetSingletonContracts(Type implementationType)

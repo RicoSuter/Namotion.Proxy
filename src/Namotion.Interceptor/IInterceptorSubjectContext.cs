@@ -20,8 +20,8 @@ public interface IInterceptorSubjectContext
     /// <remarks>
     /// A service implementing <see cref="ISingletonContextService{TContract}"/> reserves that
     /// contract on this context: registering a second service implementing the same contract
-    /// throws, even when it is the same instance or a different <typeparamref name="TService"/>
-    /// is used. A rejected registration leaves the context unchanged.
+    /// throws even when a different <typeparamref name="TService"/> is used. Registering the same
+    /// singleton instance again is a no-op. A rejected registration leaves the context unchanged.
     /// </remarks>
     /// <typeparam name="TService">The type of service to register.</typeparam>
     /// <param name="service">The service instance to add.</param>
@@ -41,8 +41,9 @@ public interface IInterceptorSubjectContext
     ///
     /// A created service implementing <see cref="ISingletonContextService{TContract}"/> is
     /// validated like in <see cref="AddService{TService}"/>, against the state after the factory
-    /// ran, so it also conflicts with a service the factory itself registered reentrantly. A
-    /// conflict throws rather than returning false and leaves the context unchanged, but any
+    /// ran. Returning the same singleton instance that is already registered returns false,
+    /// including when the factory registered it reentrantly. A different instance with a conflicting
+    /// contract throws rather than returning false and leaves the context unchanged, but any
     /// registration the factory already published stays.
     /// </remarks>
     /// <typeparam name="TService">The type of service to register.</typeparam>
