@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Namotion.Interceptor.Attributes;
 using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Tracking.Lifecycle;
@@ -146,10 +147,37 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Committed writes recalculate their dependents even when downstream processing throws.
+    /// This requires a truthful <see cref="PropertyWriteContext{TProperty}.IsWritten"/> marker.
+    /// Remaining dependents are attempted after a recalculation failure; failures are reported
+    /// after completion, with any downstream write failure first.
+    /// </remarks>
     public void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next)
     {
-        next(ref context);
+        try
+        {
+            next(ref context);
+        }
+        catch (Exception writeFailure) when (context.IsWritten)
+        {
+            try
+            {
+                CompleteWrite(ref context);
+            }
+            catch (Exception completionFailure)
+            {
+                throw new AggregateException(writeFailure, completionFailure);
+            }
 
+            throw;
+        }
+
+        CompleteWrite(ref context);
+    }
+
+    private static void CompleteWrite<TProperty>(ref PropertyWriteContext<TProperty> context)
+    {
         if (!context.IsWritten)
         {
             return;
@@ -164,6 +192,8 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
             return;
         }
 
+        List<Exception>? failures = null;
+
         // Derived-with-setter: value comes from the getter, so setter changes require recalc
         // even when the getter recorded zero deps (e.g. short-circuited at attach).
         if (Volatile.Read(ref data.IsDerived) && context.Property.Metadata.SetValue is not null)
@@ -171,7 +201,14 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
             var rawTimestamp = context.WriteTimestampRaw;
             var storageTimestamp = rawTimestamp > 0 ? rawTimestamp : 0L;
             var property = context.Property;
-            RecalculateDerivedProperty(ref property, storageTimestamp, rawTimestamp);
+            try
+            {
+                RecalculateDerivedProperty(ref property, storageTimestamp, rawTimestamp);
+            }
+            catch (Exception exception)
+            {
+                (failures ??= []).Add(exception);
+            }
         }
 
         var usedByProperties = data.GetUsedByProperties();
@@ -181,12 +218,18 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
             // scope push. storageTimestamp=0 under a null scope preserves the never-written sentinel.
             var rawTimestamp = context.WriteTimestampRaw;
             var storageTimestamp = rawTimestamp > 0 ? rawTimestamp : 0L;
-            RecalculateDependents(usedByProperties, context.Property, storageTimestamp, rawTimestamp);
+            RecalculateDependents(usedByProperties, context.Property, storageTimestamp, rawTimestamp, ref failures);
+        }
+
+        if (failures is not null)
+        {
+            if (failures.Count == 1) ExceptionDispatchInfo.Capture(failures[0]).Throw();
+            throw new AggregateException(failures);
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void RecalculateDependents(ReadOnlySpan<PropertyReference> usedByProperties, PropertyReference triggerProperty, long storageTimestamp, long rawTimestamp)
+    private static void RecalculateDependents(ReadOnlySpan<PropertyReference> usedByProperties, PropertyReference triggerProperty, long storageTimestamp, long rawTimestamp, ref List<Exception>? failures)
     {
         for (var i = 0; i < usedByProperties.Length; i++)
         {
@@ -198,7 +241,14 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
                 continue;
             }
 
-            RecalculateDerivedProperty(ref dependent, storageTimestamp, rawTimestamp);
+            try
+            {
+                RecalculateDerivedProperty(ref dependent, storageTimestamp, rawTimestamp);
+            }
+            catch (Exception exception)
+            {
+                (failures ??= []).Add(exception);
+            }
         }
     }
 
@@ -240,6 +290,7 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
         // Crucially, IsRecalculating stays true during NotifyDerivedPropertyChanged. This
         // serializes notification delivery with recalculation, preventing a stale notification
         // from being delivered after a newer one (TOCTOU race between guard checks and delivery).
+        Exception? recalculationFailure = null;
         try
         {
             for (var outerIteration = 0; outerIteration < MaxStabilizationIterations; outerIteration++)
@@ -309,6 +360,11 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
                 $"'{derivedProperty.Metadata.Name}' on {derivedProperty.Subject.GetType().Name}. " +
                 "This indicates a derived getter with circular side effects.");
         }
+        catch (Exception exception)
+        {
+            recalculationFailure = exception;
+            throw;
+        }
         finally
         {
             // Atomically clear IsRecalculating. If a write set RecalculationNeeded
@@ -332,7 +388,14 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
 
             if (needsRetrigger)
             {
-                RecalculateDerivedProperty(ref derivedProperty, storageTimestamp, rawTimestamp);
+                try
+                {
+                    RecalculateDerivedProperty(ref derivedProperty, storageTimestamp, rawTimestamp);
+                }
+                catch (Exception retriggerFailure) when (recalculationFailure is not null)
+                {
+                    throw new AggregateException(recalculationFailure, retriggerFailure);
+                }
             }
         }
     }

@@ -150,18 +150,40 @@ public sealed class PropertyChangeInterceptor : IObservable<SubjectPropertyChang
         }
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// A downstream failure after a truthful <see cref="PropertyWriteContext{TProperty}.IsWritten"/>
+    /// marker still publishes the committed change. Publication failure is aggregated after the
+    /// original failure. A failure before commit publishes nothing.
+    /// </remarks>
     public void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next)
     {
         // Pre-commit gate only selects the dispatch path; listener RESOLUTION is post-commit
         // (see ResolveListeners), so an install racing this write is never missed.
-        if (_dispatchState is null && PropertyChangeSubscriptions.ReadSubscriptionCount() == 0)
+        var useLateDispatch = _dispatchState is null && PropertyChangeSubscriptions.ReadSubscriptionCount() == 0;
+        try
         {
             next(ref context);
+        }
+        catch (Exception writeFailure) when (context.IsWritten)
+        {
+            try
+            {
+                DispatchLateConsumers(ref context);
+            }
+            catch (Exception publicationFailure)
+            {
+                throw new AggregateException(writeFailure, publicationFailure);
+            }
+
+            throw;
+        }
+
+        if (useLateDispatch)
+        {
             DispatchLateConsumers(ref context);
             return;
         }
-
-        next(ref context);
 
         if (!context.IsWritten)
         {
