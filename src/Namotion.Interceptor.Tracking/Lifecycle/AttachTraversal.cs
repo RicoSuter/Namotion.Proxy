@@ -83,7 +83,7 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
             {
                 if (!OwnershipGraph.IsStructural(entry.Value)) continue;
                 var property = new PropertyReference(subject, entry.Key);
-                if (graph.HasBaseline(property)) reconciler.Reconcile(property, entry.Value, graph.GetBaseline(property));
+                if (graph.HasBaseline(property)) reconciler.Reconcile(property, entry.Value, null, useCapturedBaseline: true);
                 if (!ReferenceEquals(graph.TryGetOwnership(subject), ownership)) return true;
             }
 

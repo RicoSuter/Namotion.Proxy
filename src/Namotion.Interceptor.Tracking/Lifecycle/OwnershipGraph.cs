@@ -15,7 +15,8 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 /// Property baselines describe the committed outgoing relation. While publication is incomplete,
 /// a property journal also records its installed incoming occurrences: a nested write or release
 /// must reconcile those occurrences rather than assuming every desired edge was already installed.
-/// Reachability still validates incoming candidates against the committed baselines.
+/// Reachability validates incoming candidates against captured committed occurrences, so neither
+/// reachability nor release invokes the original value's enumerator.
 ///
 /// The claim primitives (claiming, releasing and re-anchoring executors) take the executor's
 /// attachment monitor through <c>TryUpdateAttachment</c>, so they require the topology gate to
@@ -33,7 +34,7 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     // strand a subject whose hash mutates while it is owned. Releasing records stay in this map
     // as identity tokens until final notification cleanup; ownership queries filter those records.
     private readonly ConcurrentDictionary<IInterceptorSubject, SubjectOwnership> _owned = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<PropertyReference, (object? Value, long Revision)> _baselines = new(PropertyReference.Comparer);
+    private readonly Dictionary<PropertyReference, PropertyBaseline> _baselines = new(PropertyReference.Comparer);
 
     // A nested write can replace a value and restore the exact same instance before returning.
     private long _nextBaselineRevision;
@@ -149,10 +150,21 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
         return _baselines.GetValueOrDefault(property).Value;
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void SetBaseline(PropertyReference property, object? value)
+    public PropertyBaseline GetBaselineSnapshot(PropertyReference property) => _baselines.GetValueOrDefault(property);
+
+    public long SetBaseline(PropertyReference property, IInterceptorSubject? value)
     {
-        _baselines[property] = (value, ++_nextBaselineRevision);
+        var revision = ++_nextBaselineRevision;
+        _baselines[property] = new PropertyBaseline(value, revision, null);
+        return revision;
+    }
+
+    public long SetBaseline(PropertyReference property, object? value, List<SubjectOccurrence> occurrences)
+    {
+        var revision = ++_nextBaselineRevision;
+        _baselines[property] = new PropertyBaseline(value, revision,
+            value is IInterceptorSubject || occurrences.Count == 0 ? null : occurrences.ToArray());
+        return revision;
     }
 
     public long GetBaselineRevision(PropertyReference property)
@@ -252,7 +264,7 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     public bool CommitsEdgeTo(PropertyReference property, IInterceptorSubject target)
     {
         return _baselines.TryGetValue(property, out var value) &&
-               StructuralValueScanner.Contains(property, value.Value, target);
+               value.Contains(target);
     }
 
     /// <summary>
@@ -274,86 +286,41 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
             foreach (var entry in subject.Properties)
             {
                 var metadata = entry.Value;
-                if (!IsStructural(metadata))
-                {
-                    continue;
-                }
-
+                if (!IsStructural(metadata)) continue;
                 var property = new PropertyReference(subject, entry.Key);
-                if (!seed && GetPropertyJournal(property, ownership) is { } installedJournal)
+                var hadBaseline = _baselines.TryGetValue(property, out var previousBaseline);
+                if (!seed)
                 {
                     occurrences.Clear();
-                    installedJournal.CopyTo(occurrences);
-                    foreach (var occurrence in occurrences) children.Add((property, occurrence, GetBaselineRevision(property)));
+                    if (GetPropertyJournal(property, ownership) is { } installedJournal) installedJournal.CopyTo(occurrences);
+                    else previousBaseline.CopyTo(occurrences);
+                    foreach (var occurrence in occurrences) children.Add((property, occurrence, previousBaseline.Revision));
                     continue;
                 }
 
-                var hadBaseline = _baselines.TryGetValue(property, out var previousBaseline);
-                if (seed && hadBaseline)
-                {
-                    // A nested write to another property already committed and published it.
-                    continue;
-                }
-
-                object? value = previousBaseline.Value;
-                if (seed)
-                {
-                    if (!IsSeedOwnerCurrent(subject, ownership))
-                    {
-                        return;
-                    }
-
-                    value = ReadSeedingGetter(property, metadata, ownership);
-                    if (!IsSeedOwnerCurrent(subject, ownership))
-                    {
-                        return;
-                    }
-
-                    if (previousBaseline.Revision != GetBaselineRevision(property))
-                    {
-                        continue;
-                    }
-
-                }
-                else if (!hadBaseline)
-                {
-                    continue;
-                }
+                // A nested write to another property already committed and published it.
+                if (hadBaseline) continue;
+                if (!IsSeedOwnerCurrent(subject, ownership)) return;
+                var value = ReadSeedingGetter(property, metadata, ownership);
+                if (!IsSeedOwnerCurrent(subject, ownership)) return;
+                if (previousBaseline.Revision != GetBaselineRevision(property)) continue;
 
                 occurrences.Clear();
                 StructuralValueScanner.CollectOccurrences(metadata.Type, value, occurrences);
-                if (seed)
+                // Getters and enumerators can release this owner or publish a newer property.
+                // Neither continuation may recreate their obsolete edges.
+                if (!IsSeedOwnerCurrent(subject, ownership)) return;
+                if (previousBaseline.Revision != GetBaselineRevision(property)) continue;
+
+                var journal = occurrences.Count > 0 ? BeginPropertyJournal(property, ownership!) : null;
+                var revision = SetBaseline(property, value, occurrences);
+                if (journal is not null)
                 {
-                    // Getters and enumerators can release this owner or publish a newer property
-                    // before returning. Neither continuation may recreate their obsolete edges.
-                    if (!IsSeedOwnerCurrent(subject, ownership))
-                    {
-                        return;
-                    }
-
-                    if (previousBaseline.Revision != GetBaselineRevision(property))
-                    {
-                        continue;
-                    }
-
-                    if (occurrences.Count > 0)
-                    {
-                        var journal = BeginPropertyJournal(property, ownership!);
-                        SetBaseline(property, value);
-                        journal.IsComplete = false;
-                        seedingJournals!.Add((journal, GetBaselineRevision(property)));
-                    }
-                    else
-                    {
-                        SetBaseline(property, value);
-                    }
+                    journal.IsComplete = false;
+                    seedingJournals!.Add((journal, revision));
                 }
 
-                var baselineRevision = seed ? GetBaselineRevision(property) : previousBaseline.Revision;
-                foreach (var occurrence in occurrences)
-                {
-                    children.Add((property, occurrence, baselineRevision));
-                }
+                foreach (var occurrence in occurrences) children.Add((property, occurrence, revision));
             }
         }
         finally

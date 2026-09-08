@@ -21,12 +21,14 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 /// </remarks>
 internal sealed class StructuralReconciler(LifecycleNotifier notifier, OwnershipGraph graph, AttachTraversal attach, ReleaseTraversal release)
 {
-    public void Reconcile(PropertyReference property, SubjectPropertyMetadata metadata, object? newValue)
+    public void Reconcile(PropertyReference property, SubjectPropertyMetadata metadata, object? newValue, bool useCapturedBaseline = false)
     {
         var ownership = graph.TryGetOwnership(property.Subject);
         if (ownership is null) return;
         var existingJournal = graph.GetPropertyJournal(property, ownership);
-        var oldValue = graph.GetBaseline(property);
+        var baseline = graph.GetBaselineSnapshot(property);
+        var oldValue = baseline.Value;
+        if (useCapturedBaseline) newValue = baseline.Value;
         if (existingJournal is null && ReferenceEquals(oldValue, newValue)) return;
         if (existingJournal is null && !StructuralValueScanner.CanHoldSubjects(oldValue) && !StructuralValueScanner.CanHoldSubjects(newValue)) return;
 
@@ -36,14 +38,15 @@ internal sealed class StructuralReconciler(LifecycleNotifier notifier, Ownership
             return;
         }
 
-        var previousRevision = graph.GetBaselineRevision(property);
+        var previousRevision = baseline.Revision;
         var oldOccurrences = LifecycleScratch.RentOccurrenceList();
         var newOccurrences = LifecycleScratch.RentOccurrenceList();
         try
         {
-            if (existingJournal is null) StructuralValueScanner.CollectOccurrences(metadata.Type, oldValue, oldOccurrences);
+            if (existingJournal is null) baseline.CopyTo(oldOccurrences);
             else existingJournal.CopyTo(oldOccurrences);
-            StructuralValueScanner.CollectOccurrences(metadata.Type, newValue, newOccurrences);
+            if (useCapturedBaseline) baseline.CopyTo(newOccurrences);
+            else StructuralValueScanner.CollectOccurrences(metadata.Type, newValue, newOccurrences);
 
             if (!ReferenceEquals(graph.TryGetOwnership(property.Subject), ownership) ||
                 graph.GetBaselineRevision(property) != previousRevision) return;
@@ -51,8 +54,7 @@ internal sealed class StructuralReconciler(LifecycleNotifier notifier, Ownership
             var journal = graph.BeginPropertyJournal(property, ownership, oldOccurrences);
             try
             {
-                graph.SetBaseline(property, newValue);
-                var revision = graph.GetBaselineRevision(property);
+                var revision = graph.SetBaseline(property, newValue, newOccurrences);
                 journal.IsComplete = false;
                 ReconcileOccurrences(property, newValue, oldOccurrences, newOccurrences, ownership, revision);
                 if (ReferenceEquals(graph.TryGetOwnership(property.Subject), ownership) &&
@@ -83,8 +85,7 @@ internal sealed class StructuralReconciler(LifecycleNotifier notifier, Ownership
         try
         {
             if (oldSubject is not null) journal.Add(oldSubject, null);
-            graph.SetBaseline(property, newSubject);
-            var revision = graph.GetBaselineRevision(property);
+            var revision = graph.SetBaseline(property, newSubject);
             if (oldSubject is not null)
             {
                 release.RemoveEdge(oldSubject, property, null);

@@ -67,26 +67,14 @@ public class ReentrantStructuralWriteTests
     }
 
     /// <summary>
-    /// Reproduces the finding that a reentrant write from inside a user enumerable commits a newer
-    /// baseline which the outer operation then overwrites. Reproduces on a single thread, with no
-    /// artificially held window: the reentrancy is the enumerable's own code running where the
-    /// reconciler invokes it.
-    ///
-    /// The re-entry lands in the reconcile phase, specifically in the scan of the committed baseline
-    /// the reconcile performs on its way in. That position is the whole point of the test and is
-    /// pinned by two guards below: the terminal has already stored the outer value (so this is not
-    /// the capture phase, where the protocol claims the proposed component before the terminal
-    /// runs), and the outer baseline has not been committed yet (so the overwrite is still ahead).
-    /// The capture phase was measured and does not reproduce this: a re-entry there commits its
-    /// baseline before the outer reconcile reads it, so the outer diffs correctly and the graph
-    /// stays consistent. Anyone changing which values the reconcile scans, or how often, should
-    /// expect this test to fail loudly rather than quietly stop exercising anything.
+    /// The newly stored enumerable re-enters before its captured baseline commits. The terminal
+    /// guard keeps discovery benign and proves the older continuation cannot replace a newer write.
     /// </summary>
     [Fact]
     public void WhenAUserEnumerableWritesTheSamePropertyWhileItIsScanned_ThenTheOuterWriteDoesNotOverwriteTheNewerBaseline()
     {
-        // Arrange: the committed value is a user enumerable, so the reconcile of the next write runs
-        // user code after the terminal stored and before the new baseline is committed.
+        // Arrange: discovery is benign; capturing the newly stored value runs the nested write
+        // after the terminal commits it and before its baseline is installed.
         var context = CreateContext();
         var holder = new EnumerableChildrenHolder(context);
         var firstChild = new Person { FirstName = "first" };
@@ -96,12 +84,12 @@ public class ReentrantStructuralWriteTests
         var committedValue = new ScanHookEnumerable([firstChild]);
         holder.Children = committedValue;
 
-        var outerValue = new List<Person> { outerChild };
+        var outerValue = new ScanHookEnumerable([outerChild]);
         object? fieldAtReentry = null;
         object? baselineAtReentry = null;
 
-        committedValue.ShouldReenter = () => !ReferenceEquals(holder.Children, committedValue);
-        committedValue.OnReenter = () =>
+        outerValue.ShouldReenter = () => ReferenceEquals(holder.Children, outerValue);
+        outerValue.OnReenter = () =>
         {
             fieldAtReentry = holder.Children;
             baselineAtReentry = GetCommittedBaseline(context, holder);
@@ -113,8 +101,8 @@ public class ReentrantStructuralWriteTests
 
         // Assert: the re-entry happened, and it happened in the phase this test is about. Either
         // guard failing means the instrument moved, not that the behaviour changed.
-        Assert.True(committedValue.HasReentered,
-            $"the reentrant write never ran; the committed value was scanned {committedValue.Enumerations} times");
+        Assert.True(outerValue.HasReentered,
+            $"the reentrant write never ran; the new value was scanned {outerValue.Enumerations} times");
         Assert.Same(outerValue, fieldAtReentry);
         Assert.Same(committedValue, baselineAtReentry);
 
