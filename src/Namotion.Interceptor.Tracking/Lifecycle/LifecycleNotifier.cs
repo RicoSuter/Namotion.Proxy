@@ -27,8 +27,14 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
     public void RaiseSubjectDetaching(SubjectLifecycleChange change) => _notifications.Add(new(NotificationKind.Detaching, change));
     public void InvokeAddedLifecycleHandlers(IInterceptorSubject subject, SubjectLifecycleChange change)
     {
-        QueueLifecycleHandlers(change);
-        if (subject is ILifecycleHandler handler) _notifications.Add(new(NotificationKind.LifecycleHandler, change, Value: handler));
+        try
+        {
+            QueueLifecycleHandlers(change);
+        }
+        finally
+        {
+            if (subject is ILifecycleHandler handler) _notifications.Add(new(NotificationKind.LifecycleHandler, change, Value: handler));
+        }
     }
 
     public void InvokeRemovedLifecycleHandlers(IInterceptorSubject subject, SubjectLifecycleChange change)
@@ -39,11 +45,18 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
 
     private void QueueLifecycleHandlers(SubjectLifecycleChange change)
     {
+        ExceptionDispatchInfo? failure = null;
         foreach (var handler in context.GetServices<ILifecycleHandler>())
         {
-            if (ReferenceEquals(handler, descentHandler)) handler.HandleLifecycleChange(change);
+            if (ReferenceEquals(handler, descentHandler))
+            {
+                try { handler.HandleLifecycleChange(change); }
+                catch (Exception exception) { failure = ExceptionDispatchInfo.Capture(exception); }
+            }
             else _notifications.Add(new(NotificationKind.LifecycleHandler, change, Value: handler));
         }
+
+        failure?.Throw();
     }
 
     public void QueuePropertyChange(PropertyChangeInterceptor.Publication publication)

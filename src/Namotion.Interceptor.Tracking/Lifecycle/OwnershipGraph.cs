@@ -39,6 +39,8 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     private long _nextBaselineRevision;
     private PropertyEdgeJournal? _firstPropertyJournal;
     private Dictionary<PropertyReference, PropertyEdgeJournal>? _additionalPropertyJournals;
+    // Failure-only state: ordinary retained children need no seeding flag or property reread.
+    private Dictionary<IInterceptorSubject, SubjectOwnership>? _incompleteSeeds;
     private (PropertyReference Property, SubjectOwnership? Ownership) _activeSeedingGetter;
     private Dictionary<(PropertyReference Property, SubjectOwnership? Ownership), int>? _suspendedSeedingGetters;
 
@@ -197,6 +199,26 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
         }
 
         LifecycleScratch.Return(journal);
+    }
+
+    public void MarkSeedIncomplete(IInterceptorSubject subject, SubjectOwnership? ownership)
+    {
+        if (ownership is not null && ReferenceEquals(TryGetOwnership(subject), ownership))
+            (_incompleteSeeds ??= new(ReferenceEqualityComparer.Instance))[subject] = ownership;
+    }
+
+    public bool TryBeginSeedRecovery(IInterceptorSubject subject, out SubjectOwnership ownership)
+    {
+        if (_incompleteSeeds is { Count: > 0 } && _incompleteSeeds.TryGetValue(subject, out ownership!) &&
+            ReferenceEquals(TryGetOwnership(subject), ownership))
+        {
+            // Removing the marker while recovery runs also terminates back edges into this seed.
+            _incompleteSeeds.Remove(subject);
+            return true;
+        }
+
+        ownership = null!;
+        return false;
     }
 
     public void RecordIncomingAdded(PropertyReference property, IInterceptorSubject child, object? index)
@@ -411,6 +433,7 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     /// <summary>Drops every structural baseline of the subject; called when it leaves the graph.</summary>
     public void RemoveBaselines(IInterceptorSubject subject)
     {
+        _incompleteSeeds?.Remove(subject);
         foreach (var entry in subject.Properties)
         {
             if (IsStructural(entry.Value))
@@ -670,7 +693,8 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     {
         foreach (var subject in claimed)
         {
-            if (!IsOwned(subject) && !IsAnchored(subject))
+            // A queued release keeps its claim through preceding lifecycle/property delivery.
+            if (!IsOwned(subject) && !IsAnchored(subject) && !IsReleasing(subject))
             {
                 ReleaseClaim(subject);
             }

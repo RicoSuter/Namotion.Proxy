@@ -54,6 +54,11 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
 
             completed = true;
         }
+        catch
+        {
+            graph.MarkSeedIncomplete(subject, ownership);
+            throw;
+        }
         finally
         {
             foreach (var (journal, revision) in journals)
@@ -65,6 +70,30 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
 
             LifecycleScratch.Return(journals);
             LifecycleScratch.Return(children);
+        }
+    }
+
+    /// <summary>Resumes captured and unread properties of a retained subject whose seed failed.</summary>
+    public bool ResumeFailedSeed(IInterceptorSubject subject, StructuralReconciler reconciler)
+    {
+        if (!graph.TryBeginSeedRecovery(subject, out var ownership)) return false;
+        try
+        {
+            foreach (var entry in subject.Properties)
+            {
+                if (!OwnershipGraph.IsStructural(entry.Value)) continue;
+                var property = new PropertyReference(subject, entry.Key);
+                if (graph.HasBaseline(property)) reconciler.Reconcile(property, entry.Value, graph.GetBaseline(property));
+                if (!ReferenceEquals(graph.TryGetOwnership(subject), ownership)) return true;
+            }
+
+            SeedAndAttachChildren(subject);
+            return true;
+        }
+        catch
+        {
+            graph.MarkSeedIncomplete(subject, ownership);
+            throw;
         }
     }
 
@@ -137,17 +166,23 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
         // Snapshotted before the handlers run: a handler may add properties, and those are attached
         // by that call rather than a second time here.
         var properties = subject.Properties.Keys;
-        notifier.InvokeAddedLifecycleHandlers(subject, change);
-
-        if (!isContextAttach)
+        try
         {
-            return;
+            notifier.InvokeAddedLifecycleHandlers(subject, change);
         }
-
-        notifier.RaiseSubjectAttached(change);
-        foreach (var propertyName in properties)
+        finally
         {
-            notifier.QueueProperty(new PropertyReference(subject, propertyName), attach: true);
+            // Ownership and its incoming occurrence committed before descent. Complete their
+            // notification history even when a getter fails, so seed retry replays no old edge.
+            if (isContextAttach)
+            {
+                notifier.RaiseSubjectAttached(change);
+                foreach (var propertyName in properties)
+                {
+                    notifier.QueueProperty(new PropertyReference(subject, propertyName), attach: true);
+                }
+            }
+
         }
     }
 

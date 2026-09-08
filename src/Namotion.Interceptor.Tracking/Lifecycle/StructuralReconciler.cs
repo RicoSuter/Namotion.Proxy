@@ -125,10 +125,14 @@ internal sealed class StructuralReconciler(LifecycleNotifier notifier, Ownership
                 if (retained > 0)
                 {
                     oldCounts[occurrence.Subject] = retained - 1;
+                    if (attach.ResumeFailedSeed(occurrence.Subject, this) &&
+                        (!ReferenceEquals(graph.TryGetOwnership(parent), ownership) || graph.GetBaselineRevision(property) != revision))
+                        return;
                     continue;
                 }
 
                 attach.AttachEdge(occurrence.Subject, property, occurrence.Index);
+                attach.ResumeFailedSeed(occurrence.Subject, this);
                 if (!ReferenceEquals(graph.TryGetOwnership(parent), ownership) || graph.GetBaselineRevision(property) != revision)
                 {
                     return;
