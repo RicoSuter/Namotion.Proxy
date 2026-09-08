@@ -3,8 +3,7 @@ using Namotion.Interceptor.Interceptors;
 namespace Namotion.Interceptor.Tracking.Lifecycle;
 
 /// <summary>
-/// Admits an <see cref="IInterceptorSubject.AddProperties"/> batch on an owned subject: one atomic
-/// publication of metadata, property callbacks and initial ownership edges, or nothing. Runs under
+/// Validates and admits an <see cref="IInterceptorSubject.AddProperties"/> batch on an owned subject. Runs under
 /// the lifecycle's topology gate, entered by
 /// <see cref="LifecycleInterceptor.TryAddProperties"/>.
 /// </summary>
@@ -14,9 +13,8 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 /// prospective component is discovered and claimed, and only then does anything publish: the
 /// metadata swap, the property callbacks in input order, and finally the captured values as
 /// ordinary structural assignments. Everything before the metadata swap can fail, and failing
-/// there publishes nothing and releases the provisional claims. Everything after it is
-/// exception-free by contract, and a violating callback propagates without rollback, like every
-/// other lifecycle callback.
+/// there publishes nothing and releases the provisional claims. After the metadata swap, queued
+/// callback failures propagate after notification cleanup without rolling back the admitted batch.
 /// </remarks>
 internal sealed class PropertyAdmission(OwnershipGraph graph, StructuralReconciler reconciler, AttachTraversal attach)
 {

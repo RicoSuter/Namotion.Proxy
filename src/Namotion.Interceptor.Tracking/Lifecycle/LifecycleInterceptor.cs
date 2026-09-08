@@ -111,8 +111,9 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     private List<Action>? _withheldRecalculations;
 
     /// <summary>
-    /// Raised when a subject is attached to the object graph.
-    /// Handlers must be exception-free and fast (invoked inside lock). Never hand structural
+    /// Reports a subject entering the object graph. Queued delivery can observe a later graph state.
+    /// Handler failures propagate after pending notifications drain and do not roll back the attach.
+    /// Handlers must be fast (invoked inside lock). Never hand structural
     /// work to another thread and wait for it from here: the dispatched write needs the very
     /// gate this thread is holding. Dispatching a read, a scalar write or input and output is
     /// safe, and so is handing structural work off without waiting.
@@ -124,12 +125,11 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     }
 
     /// <summary>
-    /// Raised when a subject is about to be detached from the object graph.
-    /// Fires BEFORE ILifecycleHandler.HandleLifecycleChange (symmetric with SubjectAttached which fires AFTER).
-    /// The subject's ownership record and baselines are already gone by this point, so GetParents()
-    /// answers empty and GetReferenceCount() answers zero; the subject still resolves its context,
-    /// which is what the teardown callbacks need.
-    /// Handlers must be exception-free and fast (invoked inside lock). Never hand structural
+    /// Reports a subject leaving the object graph, before its ILifecycleHandler notifications.
+    /// The executor retains its context through queued teardown. Ownership queries can observe
+    /// a later reattachment rather than the historical detach described by this event.
+    /// Handler failures propagate after pending notifications drain and do not roll back the detach.
+    /// Handlers must be fast (invoked inside lock). Never hand structural
     /// work to another thread and wait for it from here: the dispatched write needs the very
     /// gate this thread is holding. Dispatching a read, a scalar write or input and output is
     /// safe, and so is handing structural work off without waiting.
