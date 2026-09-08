@@ -1,5 +1,6 @@
 using Namotion.Interceptor.Registry;
 using Moq;
+using Namotion.Interceptor.Dynamic;
 using Namotion.Interceptor.OpcUa.Attributes;
 using Namotion.Interceptor.Registry.Abstractions;
 using Opc.Ua;
@@ -16,7 +17,7 @@ public class OpcUaSubjectLoaderTests : OpcUaSubjectLoaderTestsBase
         // the guard for a subject that is absent from the registry, and the source's root subject
         // is registered by construction.
         var (loader, _, _) = CreateLoader();
-        var subject = new Namotion.Interceptor.Dynamic.DynamicSubject(InterceptorSubjectContext.Create()); // no registry
+        var subject = new DynamicSubject(InterceptorSubjectContext.Create()); // no registry
 
         var rootNode = CreateTestReferenceDescription("Root", new NodeId(1, 0));
         var mockSession = CreateMockSession();
@@ -34,46 +35,14 @@ public class OpcUaSubjectLoaderTests : OpcUaSubjectLoaderTestsBase
         // Arrange
         var (loader, _, subject) = CreateLoader();
         var rootNode = CreateTestReferenceDescription("Root", new NodeId(1, 0));
-        var mockSession = CreateMockSessionWithNoChildren();
+        var mockSession = CreateMockSession();
+        SetupBrowseAsync(mockSession, new Dictionary<NodeId, ReferenceDescription[]> { [new NodeId(1, 0)] = [] });
 
         // Act
         var result = await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
 
         // Assert
         Assert.Empty(result);
-    }
-
-    [Fact]
-    public async Task WhenAChildNodeMatchesAProperty_ThenOneMonitoredItemIsCreatedForThatProperty()
-    {
-        // Arrange
-        var (loader, _, subject) = CreateLoader();
-        var registeredSubject = subject.TryGetRegisteredSubject()!;
-
-        // Add a property with OPC UA attribute
-        registeredSubject.AddProperty(
-            "Temperature",
-            typeof(double),
-            _ => 0.0,
-            (_, _) => { },
-            new OpcUaNodeAttribute("Temperature", "urn:test", "opc")
-            {
-                NodeIdentifier = "1001",
-                NodeNamespaceUri = "urn:test"
-            });
-
-        var rootNode = CreateTestReferenceDescription("Root", new NodeId(1, 0));
-        var mockSession = CreateMockSessionWithChildren(
-        [
-            CreateTestReferenceDescription("Temperature", new ExpandedNodeId("1001", "urn:test"))
-        ]);
-
-        // Act
-        var result = await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
-
-        // Assert
-        Assert.Single(result);
-        Assert.Equal("Temperature", ((RegisteredSubjectProperty)result[0].Handle!).Name);
     }
 
     [Fact]
@@ -85,10 +54,14 @@ public class OpcUaSubjectLoaderTests : OpcUaSubjectLoaderTestsBase
 
         var rootNode = CreateTestReferenceDescription("Root", new NodeId(1, 0));
 
-        var mockSession = CreateMockSessionWithChildren(
-        [
-            CreateTestReferenceDescription("DynamicProperty", new NodeId(2001, 2))
-        ]);
+        var mockSession = CreateMockSession();
+        SetupBrowseAsync(mockSession, new Dictionary<NodeId, ReferenceDescription[]>
+        {
+            [new NodeId(1, 0)] =
+            [
+                CreateTestReferenceDescription("DynamicProperty", new NodeId(2001, 2))
+            ]
+        });
 
         SetupReadAsync(mockSession, new Dictionary<NodeId, (NodeId, int)>
         {
@@ -114,10 +87,14 @@ public class OpcUaSubjectLoaderTests : OpcUaSubjectLoaderTestsBase
         registeredSubject.AddProperty("Temperature", _ => 0.0, (_, _) => { });
 
         var rootNode = CreateTestReferenceDescription("Root", new NodeId(1, 0));
-        var mockSession = CreateMockSessionWithChildren(
-        [
-            CreateTestReferenceDescription("Temperature", new NodeId(2001, 2))
-        ]);
+        var mockSession = CreateMockSession();
+        SetupBrowseAsync(mockSession, new Dictionary<NodeId, ReferenceDescription[]>
+        {
+            [new NodeId(1, 0)] =
+            [
+                CreateTestReferenceDescription("Temperature", new NodeId(2001, 2))
+            ]
+        });
 
         // Act
         var result = await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
@@ -135,10 +112,14 @@ public class OpcUaSubjectLoaderTests : OpcUaSubjectLoaderTestsBase
 
         var rootNode = CreateTestReferenceDescription("Root", new NodeId(1, 0));
 
-        var mockSession = CreateMockSessionWithChildren(
-        [
-            CreateTestReferenceDescription("UnknownTypeProperty", new NodeId(2001, 2))
-        ]);
+        var mockSession = CreateMockSession();
+        SetupBrowseAsync(mockSession, new Dictionary<NodeId, ReferenceDescription[]>
+        {
+            [new NodeId(1, 0)] =
+            [
+                CreateTestReferenceDescription("UnknownTypeProperty", new NodeId(2001, 2))
+            ]
+        });
 
         // No DataType mapping for NodeId 2001 => ReadAsync returns BadNodeIdUnknown => type resolves to null
         SetupReadAsync(mockSession, new Dictionary<NodeId, (NodeId, int)>());
@@ -154,7 +135,8 @@ public class OpcUaSubjectLoaderTests : OpcUaSubjectLoaderTestsBase
     public async Task WhenAPropertyIsMonitored_ThenItsNodeIdIsTrackedAgainstThePropertyReference()
     {
         // Arrange
-        var (loader, ownership, subject) = CreateLoader();
+        var subject = new DynamicSubject(CreateSubjectContext());
+        var (loader, ownership, source) = CreateLoaderFor(subject);
         var registeredSubject = subject.TryGetRegisteredSubject()!;
 
         registeredSubject.AddProperty(
@@ -169,16 +151,28 @@ public class OpcUaSubjectLoaderTests : OpcUaSubjectLoaderTestsBase
             });
 
         var rootNode = CreateTestReferenceDescription("Root", new NodeId(1, 0));
-        var mockSession = CreateMockSessionWithChildren(
-        [
-            CreateTestReferenceDescription("Pressure", new ExpandedNodeId("1002", "urn:test"))
-        ]);
+        var mockSession = CreateMockSession();
+        SetupBrowseAsync(mockSession, new Dictionary<NodeId, ReferenceDescription[]>
+        {
+            [new NodeId(1, 0)] =
+            [
+                CreateTestReferenceDescription("Pressure", new ExpandedNodeId("1002", "urn:test"))
+            ]
+        });
 
         // Act
-        await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
+        var monitoredItems = await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
 
-        // Assert - Should track the property reference
-        Assert.Single(ownership.Properties);
+        // Assert: one monitored item for the matched property, whose reference is claimed and
+        // carries the NodeId the attribute's identifier resolves to in the session's namespace
+        // table (urn:test is index 1 there).
+        var monitoredItem = Assert.Single(monitoredItems);
+        Assert.Equal("Pressure", ((RegisteredSubjectProperty)monitoredItem.Handle!).Name);
+        var claimedProperty = Assert.Single(ownership.Properties);
+        Assert.Equal("Pressure", claimedProperty.Name);
+        Assert.True(source.TryGetNodeId(claimedProperty, out var nodeId));
+        Assert.Equal(new NodeId("1002", 1), nodeId);
+        Assert.Equal(nodeId, monitoredItem.StartNodeId);
     }
 
     [Fact]
@@ -189,10 +183,14 @@ public class OpcUaSubjectLoaderTests : OpcUaSubjectLoaderTestsBase
             shouldAddDynamicProperties: (_, _) => Task.FromResult(true));
 
         var rootNode = CreateTestReferenceDescription("Root", new NodeId(1, 0));
-        var mockSession = CreateMockSessionWithChildren(
-        [
-            CreateTestReferenceDescription("NumericValue", new NodeId(3001, 2))
-        ]);
+        var mockSession = CreateMockSession();
+        SetupBrowseAsync(mockSession, new Dictionary<NodeId, ReferenceDescription[]>
+        {
+            [new NodeId(1, 0)] =
+            [
+                CreateTestReferenceDescription("NumericValue", new NodeId(3001, 2))
+            ]
+        });
 
         SetupReadAsync(mockSession, new Dictionary<NodeId, (NodeId, int)>
         {
@@ -216,10 +214,14 @@ public class OpcUaSubjectLoaderTests : OpcUaSubjectLoaderTestsBase
             shouldAddDynamicProperties: (_, _) => Task.FromResult(true));
 
         var rootNode = CreateTestReferenceDescription("Root", new NodeId(1, 0));
-        var mockSession = CreateMockSessionWithChildren(
-        [
-            CreateTestReferenceDescription("ComplexValue", new NodeId(3002, 2))
-        ]);
+        var mockSession = CreateMockSession();
+        SetupBrowseAsync(mockSession, new Dictionary<NodeId, ReferenceDescription[]>
+        {
+            [new NodeId(1, 0)] =
+            [
+                CreateTestReferenceDescription("ComplexValue", new NodeId(3002, 2))
+            ]
+        });
 
         SetupReadAsync(mockSession, new Dictionary<NodeId, (NodeId, int)>
         {
@@ -233,64 +235,6 @@ public class OpcUaSubjectLoaderTests : OpcUaSubjectLoaderTestsBase
         var registeredSubject = subject.TryGetRegisteredSubject()!;
         var property = registeredSubject.Properties.Single(p => p.Name == "ComplexValue");
         Assert.Equal(typeof(ExtensionObject), property.Type);
-    }
-
-    [Fact]
-    public async Task WhenObjectNodeBrowseFails_ThenDynamicPropertyIsSkipped()
-    {
-        // Arrange: root has an Object child whose browse returns a permanent bad status.
-        // The loader should skip this node and not create a property for it.
-        var rootId = new NodeId(1, 0);
-        var objectId = new NodeId(2001, 2);
-
-        var mockSession = CreateMockSession();
-        mockSession
-            .Setup(s => s.BrowseAsync(
-                It.IsAny<RequestHeader>(),
-                It.IsAny<ViewDescription>(),
-                It.IsAny<uint>(),
-                It.IsAny<BrowseDescriptionCollection>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync((RequestHeader _, ViewDescription _, uint _, BrowseDescriptionCollection descriptions, CancellationToken _) =>
-            {
-                var results = new BrowseResultCollection();
-                foreach (var desc in descriptions)
-                {
-                    if (desc.NodeId == rootId)
-                    {
-                        results.Add(new BrowseResult
-                        {
-                            References = [CreateObjectReferenceDescription("BadObject", new ExpandedNodeId(objectId))]
-                        });
-                    }
-                    else if (desc.NodeId == objectId)
-                    {
-                        results.Add(new BrowseResult
-                        {
-                            StatusCode = StatusCodes.BadNodeIdUnknown,
-                            References = []
-                        });
-                    }
-                    else
-                    {
-                        results.Add(new BrowseResult { References = [] });
-                    }
-                }
-                return new BrowseResponse { Results = results, DiagnosticInfos = [] };
-            });
-
-        var (loader, _, subject) = CreateLoader(
-            shouldAddDynamicProperties: (_, _) => Task.FromResult(true));
-
-        var rootNode = CreateObjectReferenceDescription("Root", new ExpandedNodeId(rootId));
-
-        // Act
-        await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
-
-        // Assert: the Object node's browse failed, so type resolution returned no entry,
-        // and TryCreateDynamicProperty logged a warning and returned null.
-        var registeredSubject = subject.TryGetRegisteredSubject()!;
-        Assert.DoesNotContain(registeredSubject.Properties, p => p.Name == "BadObject");
     }
 
     [Fact]

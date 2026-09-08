@@ -9,7 +9,7 @@ using Opc.Ua.Client;
 
 namespace Namotion.Interceptor.OpcUa.Tests.Client;
 
-public class OpcUaSubjectLoaderDedupTests : OpcUaSubjectLoaderTestsBase
+public class OpcUaSubjectLoaderDeduplicationTests : OpcUaSubjectLoaderTestsBase
 {
     [Fact]
     public async Task WhenSameNodeAppearsAtMultiplePaths_ThenSubjectIsReused()
@@ -142,11 +142,15 @@ public class OpcUaSubjectLoaderDedupTests : OpcUaSubjectLoaderTestsBase
         var rootNode = CreateTestReferenceDescription("Root", new NodeId(1, 0));
 
         // Same node returned twice (simulating HasComponent + HasProperty references)
-        var mockSession = CreateMockSessionWithChildren(
-        [
-            CreateTestReferenceDescription("ServerStatus", sharedNodeId),
-            CreateTestReferenceDescription("ServerStatus", sharedNodeId)
-        ]);
+        var mockSession = CreateMockSession();
+        SetupBrowseAsync(mockSession, new Dictionary<NodeId, ReferenceDescription[]>
+        {
+            [new NodeId(1, 0)] =
+            [
+                CreateTestReferenceDescription("ServerStatus", sharedNodeId),
+                CreateTestReferenceDescription("ServerStatus", sharedNodeId)
+            ]
+        });
 
         // Act
         var result = await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
@@ -371,8 +375,8 @@ public class OpcUaSubjectLoaderDedupTests : OpcUaSubjectLoaderTestsBase
     [Fact]
     public async Task WhenTwoSubjectsShareDynamicVariable_ThenReadIsNotDuplicated()
     {
-        // Arrange: two parent Object nodes each have the same child Variable node.
-        // The loader should read DataType+ValueRank only once for the shared NodeId.
+        // Arrange: two parent Object nodes each have the same child Variable node. The loader must
+        // read DataType and ValueRank once for the shared NodeId.
         var rootId = new NodeId(1, 0);
         var parent1Id = new NodeId(1001, 2);
         var parent2Id = new NodeId(1002, 2);
@@ -389,28 +393,12 @@ public class OpcUaSubjectLoaderDedupTests : OpcUaSubjectLoaderTestsBase
             [parent2Id] = [CreateTestReferenceDescription("SharedVar", new ExpandedNodeId(sharedVarId))]
         };
 
-        var readCallCount = 0;
         var mockSession = CreateMockSession();
         SetupBrowseAsync(mockSession, browseTree);
-
-        mockSession
-            .Setup(s => s.ReadAsync(
-                It.IsAny<RequestHeader>(),
-                It.IsAny<double>(),
-                It.IsAny<TimestampsToReturn>(),
-                It.IsAny<ReadValueIdCollection>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync((RequestHeader _, double _, TimestampsToReturn _, ReadValueIdCollection nodesToRead, CancellationToken _) =>
-            {
-                Interlocked.Increment(ref readCallCount);
-                var results = new DataValueCollection();
-                for (var i = 0; i < nodesToRead.Count; i += 2)
-                {
-                    results.Add(new DataValue { Value = DataTypeIds.Float, StatusCode = StatusCodes.Good });
-                    results.Add(new DataValue { Value = -1, StatusCode = StatusCodes.Good });
-                }
-                return new ReadResponse { Results = results, DiagnosticInfos = [] };
-            });
+        SetupReadAsync(mockSession, new Dictionary<NodeId, (NodeId, int)>
+        {
+            [sharedVarId] = (DataTypeIds.Float, -1)
+        });
 
         var (loader, _, subject) = CreateLoader(
             shouldAddDynamicProperties: (_, _) => Task.FromResult(true));
@@ -420,8 +408,14 @@ public class OpcUaSubjectLoaderDedupTests : OpcUaSubjectLoaderTestsBase
         // Act
         await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
 
-        // Assert: ReadAsync should be called once (for 1 unique variable), not twice
-        Assert.Equal(1, readCallCount);
+        // Assert: two ReadValueIds in total, the DataType and ValueRank of the one distinct NodeId.
+        // Without the NodeId deduplication the shared variable is read once per parent, which is
+        // four ReadValueIds in a single batched call, so a call count of one could not tell the
+        // two apart.
+        var readRequestCount = mockSession.Invocations
+            .Where(invocation => invocation.Method.Name == nameof(ISession.ReadAsync))
+            .Sum(invocation => ((ReadValueIdCollection)invocation.Arguments[3]).Count);
+        Assert.Equal(2, readRequestCount);
     }
 
     [Fact]
@@ -452,7 +446,7 @@ public class OpcUaSubjectLoaderDedupTests : OpcUaSubjectLoaderTestsBase
         var browsedNodeIds = SetupBrowseAsyncWithTracking(mockSession, browseTree);
 
         var modelContext = CreateSubjectContext();
-        var container = new DuplicateSubjectRefContainer(modelContext);
+        var container = new DuplicateSubjectReferenceContainer(modelContext);
         var (loader, _, _) = CreateLoaderFor(container);
         var registry = modelContext.TryGetService<ISubjectRegistry>()!;
         var preLoadKeys = registry.KnownSubjects.Keys.ToHashSet();
@@ -575,7 +569,7 @@ public class OpcUaSubjectLoaderDedupTests : OpcUaSubjectLoaderTestsBase
 }
 
 [InterceptorSubject]
-public partial class DuplicateSubjectRefContainer
+public partial class DuplicateSubjectReferenceContainer
 {
     [OpcUaNode("Device")]
     public partial DictionaryReuseItem? Device { get; set; }

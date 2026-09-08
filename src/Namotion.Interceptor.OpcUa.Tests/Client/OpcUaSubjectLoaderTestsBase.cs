@@ -63,18 +63,21 @@ public class OpcUaSubjectLoaderTestsBase
         Func<ReferenceDescription, CancellationToken, Task<bool>>? shouldAddDynamicProperties = null,
         Func<ReferenceDescription, CancellationToken, Task<bool>>? shouldAddDynamicAttributes = null,
         OpcUaTypeResolver? typeResolver = null,
-        int? maxAttributeTraversals = null)
+        int? maxAttributeTraversals = null,
+        OpcUaSubjectFactory? subjectFactory = null,
+        int? maxBrowseContinuations = null)
     {
         var config = new OpcUaClientConfiguration
         {
             ServerUrl = BaseConfiguration.ServerUrl,
             TypeResolver = typeResolver ?? BaseConfiguration.TypeResolver,
             ValueConverter = BaseConfiguration.ValueConverter,
-            SubjectFactory = BaseConfiguration.SubjectFactory,
+            SubjectFactory = subjectFactory ?? BaseConfiguration.SubjectFactory,
             ShouldAddDynamicProperty = shouldAddDynamicProperties ?? BaseConfiguration.ShouldAddDynamicProperty,
             ShouldAddDynamicAttribute = shouldAddDynamicAttributes,
             DefaultNamespaceUri = BaseConfiguration.DefaultNamespaceUri,
-            MaxAttributeTraversals = maxAttributeTraversals ?? BaseConfiguration.MaxAttributeTraversals
+            MaxAttributeTraversals = maxAttributeTraversals ?? BaseConfiguration.MaxAttributeTraversals,
+            MaxBrowseContinuations = maxBrowseContinuations ?? BaseConfiguration.MaxBrowseContinuations
         };
 
         var source = new OpcUaSubjectClientSource(subject, config, NullLogger<OpcUaSubjectClientSource>.Instance);
@@ -116,6 +119,11 @@ public class OpcUaSubjectLoaderTestsBase
         };
     }
 
+    private protected static ReferenceDescription CreateObjectReferenceDescription(string name, NodeId nodeId)
+    {
+        return CreateObjectReferenceDescription(name, new ExpandedNodeId(nodeId));
+    }
+
     private protected static ReferenceDescription CreateObjectReferenceDescription(string name, ExpandedNodeId nodeId)
     {
         return new ReferenceDescription
@@ -142,10 +150,16 @@ public class OpcUaSubjectLoaderTestsBase
     }
 
     /// <summary>
-    /// Sets up ReadAsync on a mock session to return DataType + ValueRank for given node-to-DataTypeId mappings.
-    /// Handles both single-node and batch ReadAsync calls.
+    /// Sets up ReadAsync to answer the DataType and ValueRank pair of every node in
+    /// <paramref name="dataTypes"/>, whatever the batch size, and <c>BadNodeIdUnknown</c> for any
+    /// other node. A node for which <paramref name="failWhile"/> returns true at call time is
+    /// answered with <paramref name="failStatusCode"/> instead.
     /// </summary>
-    private protected static void SetupReadAsync(Mock<ISession> mockSession, Dictionary<NodeId, (NodeId DataTypeId, int ValueRank)> dataTypes)
+    private protected static void SetupReadAsync(
+        Mock<ISession> mockSession,
+        Dictionary<NodeId, (NodeId DataTypeId, int ValueRank)> dataTypes,
+        Func<NodeId, bool>? failWhile = null,
+        uint failStatusCode = StatusCodes.BadServerHalted)
     {
         mockSession
             .Setup(s => s.ReadAsync(
@@ -161,10 +175,15 @@ public class OpcUaSubjectLoaderTestsBase
                 for (var i = 0; i < nodesToRead.Count; i += 2)
                 {
                     var nodeId = nodesToRead[i].NodeId;
-                    if (dataTypes.TryGetValue(nodeId, out var dt))
+                    if (failWhile?.Invoke(nodeId) == true)
                     {
-                        results.Add(new DataValue { Value = dt.DataTypeId, StatusCode = StatusCodes.Good });
-                        results.Add(new DataValue { Value = dt.ValueRank, StatusCode = StatusCodes.Good });
+                        results.Add(new DataValue { StatusCode = failStatusCode });
+                        results.Add(new DataValue { StatusCode = failStatusCode });
+                    }
+                    else if (dataTypes.TryGetValue(nodeId, out var dataType))
+                    {
+                        results.Add(new DataValue { Value = dataType.DataTypeId, StatusCode = StatusCodes.Good });
+                        results.Add(new DataValue { Value = dataType.ValueRank, StatusCode = StatusCodes.Good });
                     }
                     else
                     {
@@ -177,10 +196,10 @@ public class OpcUaSubjectLoaderTestsBase
     }
 
     /// <summary>
-    /// Sets up BrowseAsync on a mock session to dispatch per NodeId, handling both single-node
-    /// and multi-node BrowseDescriptionCollections (as used by BrowseManyNodesAsync).
+    /// Sets up BrowseAsync to answer every requested NodeId with <paramref name="browseNode"/>,
+    /// whatever the batch size.
     /// </summary>
-    private protected static void SetupBrowseAsync(Mock<ISession> mockSession, Dictionary<NodeId, ReferenceDescription[]> browseTree)
+    private protected static void SetupBrowseAsync(Mock<ISession> mockSession, Func<NodeId, BrowseResult> browseNode)
     {
         mockSession
             .Setup(s => s.BrowseAsync(
@@ -192,96 +211,119 @@ public class OpcUaSubjectLoaderTestsBase
             .ReturnsAsync((RequestHeader _, ViewDescription _, uint _, BrowseDescriptionCollection browseDescriptions, CancellationToken _) =>
             {
                 var results = new BrowseResultCollection();
-                foreach (var desc in browseDescriptions)
+                foreach (var description in browseDescriptions)
                 {
-                    var children = new ReferenceDescriptionCollection();
-                    if (browseTree.TryGetValue(desc.NodeId, out var refs))
-                    {
-                        children.AddRange(refs);
-                    }
-                    results.Add(new BrowseResult { References = children });
+                    results.Add(browseNode(description.NodeId));
                 }
                 return new BrowseResponse { Results = results, DiagnosticInfos = [] };
             });
     }
 
     /// <summary>
-    /// Like <see cref="SetupBrowseAsync"/> but also records every browsed NodeId, so tests
-    /// can assert that specific subtrees were (not) visited.
+    /// Sets up BrowseAsync to serve <paramref name="browseTree"/>; a NodeId absent from it has no
+    /// children. A NodeId for which <paramref name="failWhile"/> returns true at call time is
+    /// answered with <paramref name="failStatusCode"/> instead.
+    /// </summary>
+    private protected static void SetupBrowseAsync(
+        Mock<ISession> mockSession,
+        Dictionary<NodeId, ReferenceDescription[]> browseTree,
+        Func<NodeId, bool>? failWhile = null,
+        uint failStatusCode = StatusCodes.BadServerHalted)
+    {
+        SetupBrowseAsync(mockSession, nodeId => failWhile?.Invoke(nodeId) == true
+            ? new BrowseResult { StatusCode = failStatusCode, References = [] }
+            : CreateBrowseResult(browseTree, nodeId));
+    }
+
+    /// <summary>
+    /// Like <see cref="SetupBrowseAsync(Mock{ISession}, Dictionary{NodeId, ReferenceDescription[]}, Func{NodeId, bool}?, uint)"/>,
+    /// but also records every browsed NodeId, so tests can assert that specific subtrees were (not) visited.
     /// </summary>
     private protected static HashSet<NodeId> SetupBrowseAsyncWithTracking(Mock<ISession> mockSession, Dictionary<NodeId, ReferenceDescription[]> browseTree)
     {
         var browsedNodeIds = new HashSet<NodeId>();
-        mockSession
-            .Setup(s => s.BrowseAsync(
-                It.IsAny<RequestHeader>(),
-                It.IsAny<ViewDescription>(),
-                It.IsAny<uint>(),
-                It.IsAny<BrowseDescriptionCollection>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync((RequestHeader _, ViewDescription _, uint _, BrowseDescriptionCollection browseDescriptions, CancellationToken _) =>
-            {
-                var results = new BrowseResultCollection();
-                foreach (var desc in browseDescriptions)
-                {
-                    browsedNodeIds.Add(desc.NodeId);
-                    var children = new ReferenceDescriptionCollection();
-                    if (browseTree.TryGetValue(desc.NodeId, out var refs))
-                    {
-                        children.AddRange(refs);
-                    }
-                    results.Add(new BrowseResult { References = children });
-                }
-                return new BrowseResponse { Results = results, DiagnosticInfos = [] };
-            });
+        SetupBrowseAsync(mockSession, nodeId =>
+        {
+            browsedNodeIds.Add(nodeId);
+            return CreateBrowseResult(browseTree, nodeId);
+        });
         return browsedNodeIds;
     }
 
-    private protected static Mock<ISession> CreateMockSessionWithNoChildren()
+    /// <summary>
+    /// Like <see cref="SetupBrowseAsync(Mock{ISession}, Dictionary{NodeId, ReferenceDescription[]}, Func{NodeId, bool}?, uint)"/>,
+    /// except that <paramref name="pagingNodeId"/> never finishes paging: its first page carries a
+    /// continuation point and every BrowseNext hands out a fresh one, so the node is omitted from
+    /// the load once <c>MaxBrowseContinuations</c> is spent.
+    /// </summary>
+    private protected static void SetupBrowseAsyncPagingForever(
+        Mock<ISession> mockSession,
+        Dictionary<NodeId, ReferenceDescription[]> browseTree,
+        NodeId pagingNodeId)
     {
-        var mockSession = CreateMockSession();
+        SetupBrowseAsync(mockSession, nodeId =>
+        {
+            var result = CreateBrowseResult(browseTree, nodeId);
+            if (nodeId == pagingNodeId)
+            {
+                result.ContinuationPoint = [0xFF];
+            }
+            return result;
+        });
 
         mockSession
-            .Setup(s => s.BrowseAsync(
+            .Setup(s => s.BrowseNextAsync(
                 It.IsAny<RequestHeader>(),
-                It.IsAny<ViewDescription>(),
-                It.IsAny<uint>(),
-                It.IsAny<BrowseDescriptionCollection>(),
+                It.IsAny<bool>(),
+                It.IsAny<ByteStringCollection>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new BrowseResponse
+            .ReturnsAsync((RequestHeader _, bool releaseContinuationPoints, ByteStringCollection continuationPoints, CancellationToken _) =>
             {
-                Results =
-                [
-                    new BrowseResult { References = [] }
-                ],
-                DiagnosticInfos = []
+                var results = new BrowseResultCollection();
+                foreach (var _ in continuationPoints)
+                {
+                    results.Add(new BrowseResult
+                    {
+                        References = [],
+                        ContinuationPoint = releaseContinuationPoints ? null : new byte[] { 0xFF }
+                    });
+                }
+                return new BrowseNextResponse { Results = results, DiagnosticInfos = [] };
             });
-
-        return mockSession;
     }
 
-    private protected static Mock<ISession> CreateMockSessionWithChildren(ReferenceDescription[] children)
+    private protected static BrowseResult CreateBrowseResult(Dictionary<NodeId, ReferenceDescription[]> browseTree, NodeId nodeId)
     {
-        var mockSession = CreateMockSession();
-        var childCollection = new ReferenceDescriptionCollection();
-        childCollection.AddRange(children);
+        var children = new ReferenceDescriptionCollection();
+        if (browseTree.TryGetValue(nodeId, out var references))
+        {
+            children.AddRange(references);
+        }
+        return new BrowseResult { References = children };
+    }
 
-        mockSession
-            .Setup(s => s.BrowseAsync(
-                It.IsAny<RequestHeader>(),
-                It.IsAny<ViewDescription>(),
-                It.IsAny<uint>(),
-                It.IsAny<BrowseDescriptionCollection>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new BrowseResponse
-            {
-                Results =
-                [
-                    new BrowseResult { References = childCollection }
-                ],
-                DiagnosticInfos = []
-            });
+    /// <summary>
+    /// Asserts that <paramref name="monitoredItems"/> covers exactly <paramref name="expectedNodeIds"/>,
+    /// that the source claims exactly as many properties, and that every claimed property carries
+    /// one of those NodeIds.
+    /// </summary>
+    private protected static void AssertMonitoredAndClaimed(
+        OpcUaSubjectClientSource source,
+        IReadOnlyList<MonitoredItem> monitoredItems,
+        params NodeId[] expectedNodeIds)
+    {
+        var expected = expectedNodeIds.ToHashSet();
+        Assert.Equal(expectedNodeIds.Length, monitoredItems.Count);
+        Assert.Equal(expected, monitoredItems.Select(item => item.StartNodeId).ToHashSet());
 
-        return mockSession;
+        var claimedProperties = source.Ownership.Properties;
+        var claimedNodeIds = new HashSet<NodeId>();
+        foreach (var property in claimedProperties)
+        {
+            Assert.True(source.TryGetNodeId(property, out var nodeId), $"{property.Name} is claimed but carries no NodeId.");
+            claimedNodeIds.Add(nodeId!);
+        }
+        Assert.Equal(expectedNodeIds.Length, claimedProperties.Count);
+        Assert.Equal(expected, claimedNodeIds);
     }
 }

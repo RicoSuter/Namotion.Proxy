@@ -183,15 +183,14 @@ public class OpcUaSubjectLoaderAttributeTests : OpcUaSubjectLoaderTestsBase
         // VarA has a dynamic attribute "Quality" -> NodeId 999 (a leaf).
         // VarB has a dynamic attribute "Status"  -> NodeId 100 (the SAME NodeId as VarA's parent).
         //
-        // Phase 5 / LoadAttributesAsync runs in rounds:
-        //   Round 1: browses parents [100, 200], visitedNodes = {100, 200}.
-        //   Round 2: input is [(VarA.Quality, 999), (VarB.Status, 100)].
-        //            visitedNodes already contains 100, so the second entry's parent isn't
-        //            re-browsed. Without the BrowseCache fallback, VarB.Status would be
-        //            silently dropped: its own sub-attributes (the children of NodeId 100)
-        //            would never be discovered. With the fix, the cached children from
-        //            round 1's browse of NodeId 100 are reused and VarB.Status gets its
-        //            "Quality" sub-attribute added.
+        // LoadAttributesAsync runs in rounds and skips an entry only when the same
+        // (property, parent NodeId) pair was processed in an earlier round:
+        //   Round 1: processes (VarA, 100) and (VarB, 200) and creates VarA.Quality and VarB.Status.
+        //   Round 2: processes (VarA.Quality, 999) and (VarB.Status, 100). The second pair is new
+        //            even though NodeId 100 was browsed in round 1, and the load context's browse
+        //            cache serves its children without a second browse, so VarB.Status gets its
+        //            own "Quality" sub-attribute. A traversal keyed on NodeIds alone would drop
+        //            the entry and its subtree.
         var rootId = new NodeId(1, 0);
         var varAId = new NodeId(100, 2);
         var varBId = new NodeId(200, 2);
@@ -241,7 +240,7 @@ public class OpcUaSubjectLoaderAttributeTests : OpcUaSubjectLoaderTestsBase
         Assert.NotNull(varAProperty.TryGetAttribute("Quality"));
 
         // Assert: VarB has a Status attribute, and crucially Status has its own Quality
-        // sub-attribute (loaded via the BrowseCache fallback for the already-visited parent).
+        // sub-attribute, served from the browse cache for the parent NodeId round 1 browsed.
         var varBProperty = registeredSubject.Properties.Single(p => p.Name == "VarB");
         var statusAttribute = varBProperty.TryGetAttribute("Status");
         Assert.NotNull(statusAttribute);
