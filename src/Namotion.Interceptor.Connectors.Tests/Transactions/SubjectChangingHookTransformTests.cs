@@ -1,9 +1,11 @@
+using System.ComponentModel.DataAnnotations;
 using Moq;
 using Namotion.Interceptor.Connectors.Tests.Models;
 using Namotion.Interceptor.Connectors.Transactions;
 using Namotion.Interceptor.Tracking;
 using Namotion.Interceptor.Tracking.Change;
 using Namotion.Interceptor.Tracking.Transactions;
+using Namotion.Interceptor.Validation;
 using Xunit;
 
 namespace Namotion.Interceptor.Connectors.Tests.Transactions;
@@ -260,5 +262,47 @@ public class SubjectChangingHookTransformTests : TransactionTestBase
         Assert.Single(valueChanges);
         Assert.Equal(100, valueChanges[0].GetNewValue<int>());
         Assert.Same(sourceMock.Object, valueChanges[0].Origin.Source);
+    }
+
+    [Fact]
+    public void WhenAHookTransformsAnInboundValue_ThenValidatorsAreToldTheOriginIsLocal()
+    {
+        // Arrange: validators are handed the effective origin, not the one the caller declared. A value
+        // the hook left alone is still the source's, but a clamped one was computed here, publishes as
+        // Local and flows back out, so a validator must see it as local rather than as source truth.
+        var validator = new OriginRecordingValidator();
+        var context = InterceptorSubjectContext
+            .Create()
+            .WithFullPropertyTracking()
+            .WithPropertyValidation()
+            .WithService<IPropertyValidator>(() => validator);
+
+        var device = new ClampingDevice(context);
+        var source = new object();
+        var property = new PropertyReference(device, nameof(ClampingDevice.Value));
+
+        // Act: 60 is stored as sent; 105 is clamped to 100 and is therefore locally computed.
+        property.SetValueFromSource(source, null, null, 60);
+        property.SetValueFromSource(source, null, null, 105);
+
+        // Assert
+        Assert.Equal(100, device.Value);
+        Assert.Equal([ChangeOriginKind.FromSource, ChangeOriginKind.Local], validator.SeenOrigins);
+    }
+
+    /// <summary>Records the origin each write to <see cref="ClampingDevice.Value"/> is reported with.</summary>
+    private sealed class OriginRecordingValidator : IPropertyValidator
+    {
+        public List<ChangeOriginKind> SeenOrigins { get; } = [];
+
+        public IEnumerable<ValidationResult> Validate<TProperty>(in PropertyValidationContext<TProperty> context)
+        {
+            if (context.Property.Name == nameof(ClampingDevice.Value))
+            {
+                SeenOrigins.Add(context.Origin.Kind);
+            }
+
+            return [];
+        }
     }
 }

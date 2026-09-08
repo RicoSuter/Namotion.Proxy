@@ -43,7 +43,7 @@ public class OriginWriteContextTests
             ref PropertyWriteContext<TProperty> context,
             WriteInterceptionDelegate<TProperty> next)
         {
-            ResolvedKind = context.GetFinalOrigin().Kind;
+            ResolvedKind = context.GetEffectiveOrigin().Kind;
             KindAfterResolution = context.Origin.Kind;
             next(ref context);
         }
@@ -94,7 +94,7 @@ public class OriginWriteContextTests
     }
 
     [Fact]
-    public void WhenFinalOriginIsResolvedBeforeWrite_ThenTheAttemptedOriginRemainsAvailableToTheTerminal()
+    public void WhenEffectiveOriginIsResolvedBeforeWrite_ThenTheAttemptedOriginRemainsAvailableToTheTerminal()
     {
         // Arrange
         var probe = new ResolvingOriginProbe();

@@ -225,6 +225,7 @@ namespace Namotion.Interceptor.Interceptors
         public Namotion.Interceptor.ChangeOrigin Origin { get; }
         public Namotion.Interceptor.PropertyReference Property { get; }
         public System.DateTimeOffset? WriteTimestamp { get; }
+        public Namotion.Interceptor.ChangeOrigin GetEffectiveOrigin() { }
         public TProperty GetFinalValue() { }
     }
     public delegate TProperty ReadInterceptionDelegate<TProperty>(ref Namotion.Interceptor.Interceptors.PropertyReadContext<TProperty> context);

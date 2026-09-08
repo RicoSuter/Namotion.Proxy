@@ -37,7 +37,8 @@ public interface ITransactionWriter
     /// so the commit's local apply and revert notifications are recognized as echoes by that source's
     /// outbound queue. Change only the slot's <see cref="SubjectPropertyChange.Origin"/>, never move a
     /// change to a different slot, and leave failed slots untouched. Not marking at all is allowed, but
-    /// the queue then re-pushes each committed value.
+    /// the queue then re-pushes each committed value, and the unmarked change replays as local, so any
+    /// registered validator runs against it again.
     /// <paramref name="changes"/> is a pooled buffer owned by the commit: do not retain or mutate it after
     /// the returned task completes. Parallel per-source writers must touch only their own source's slots.
     /// Enable <see cref="SubjectTransaction.ValidateWriterContract"/> while developing an implementation.

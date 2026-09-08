@@ -468,13 +468,13 @@ Changes are replayed in insertion order through the full interceptor chain again
 await transaction.CommitAsync(cancellationToken);
 
 Apply pending[MaxAllowedSpeed] = 200:
-    → ValidationInterceptor: validates 200 → OK
+    → ValidationInterceptor: origin is Local (no source bound) → validates 200 → OK
     → TransactionInterceptor: IsCommitting=true → calls next (no capture)
     → Field write: MaxAllowedSpeed = 200
     → Notifications fired
 
 Apply pending[MotorSpeed] = 150:
-    → ValidationInterceptor: validates 150
+    → ValidationInterceptor: origin is Local → validates 150
         reads MaxAllowedSpeed from real model → 200 (already committed above)
         150 <= 200 → OK
     → TransactionInterceptor: IsCommitting=true → calls next (no capture)
@@ -482,9 +482,11 @@ Apply pending[MotorSpeed] = 150:
     → Notifications fired
 ```
 
+**A change a source confirmed is not re-validated on replay.** The walkthrough above is a plain local transaction, so both changes replay as `Local` and are validated. A change a source accepted during the commit is marked `Confirmed` by the transaction writer and skips validation, because the model already validated it at capture and rejecting it would revert an accepted write. The distinction is per change, not per property and not per transaction: a single commit can mix confirmed changes that skip replay validation with local ones that do not. See [Validation](validation.md#what-is-not-validated).
+
 **Why insertion order matters:** If `MotorSpeed` were committed before `MaxAllowedSpeed`, the validator would read `MaxAllowedSpeed = 100` from the real model and reject the write.
 
-**Write order limitation:** Only the final value per property is stored (last write wins), and the commit position is determined by the *first* write to each property. If a property is re-written with a value that has different dependency requirements than the initial value, the commit order (based on first-write positions) may no longer match the dependency order needed by the final values. This can cause commit-time validation to fail even though the final set of values is consistent. To avoid this, ensure that re-writes do not shift dependency requirements relative to the original insertion order. See [#192](https://github.com/RicoSuter/Namotion.Interceptor/issues/192) for details and potential solutions.
+**Write order limitation:** Only the final value per property is stored (last write wins), and the commit position is determined by the *first* write to each property. If a property is re-written with a value that has different dependency requirements than the initial value, the commit order (based on first-write positions) may no longer match the dependency order needed by the final values. This can cause commit-time validation to fail even though the final set of values is consistent. It applies to changes that replay as local, since a change a source confirmed is not validated on replay. To avoid this, ensure that re-writes do not shift dependency requirements relative to the original insertion order. See [#192](https://github.com/RicoSuter/Namotion.Interceptor/issues/192) for details and potential solutions.
 
 ### Retry After Conflict Detection
 
@@ -632,7 +634,7 @@ Most applications use the built-in `SourceTransactionWriter` registered by `With
 
 Both writer callbacks execute while the caller's live ambient transaction is committing. Do not read or write subject properties from either callback, and do not suppress ambient execution-context flow to bypass this boundary. This includes getters: sibling or landed-model state is not represented by the supplied snapshot and can make source operations inconsistent with it. Construct writes from `changes` and `requirement`, and reverts from `written` and `revertState`, together with writer-owned configuration and any required subject state captured before `CommitAsync()`.
 
-A custom writer must follow the in-place marking contract documented in the XML documentation of `ITransactionWriter.WriteToSourcesAsync`. Moving or replacing a snapshot slot silently corrupts the local apply. Not marking an accepted slot is allowed, but its apply notification publishes without a `Confirmed` origin and the outbound queue pushes the committed value to the source again. While developing a writer, enable the runtime contract validation:
+A custom writer must follow the in-place marking contract documented in the XML documentation of `ITransactionWriter.WriteToSourcesAsync`. Declining to mark also means the change replays as local, so any registered validator runs against it again. Moving or replacing a snapshot slot silently corrupts the local apply. Not marking an accepted slot is allowed, but its apply notification publishes without a `Confirmed` origin and the outbound queue pushes the committed value to the source again. While developing a writer, enable the runtime contract validation:
 
 ```csharp
 SubjectTransaction.ValidateWriterContract = true;

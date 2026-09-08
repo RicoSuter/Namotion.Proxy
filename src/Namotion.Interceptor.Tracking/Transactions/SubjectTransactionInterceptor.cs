@@ -122,7 +122,7 @@ public sealed class SubjectTransactionInterceptor : IReadInterceptor, IWriteInte
         }
 
         // Origin comparison can run user equality code, so resolve it before taking the transaction lock.
-        var resolvedOrigin = context.GetFinalOrigin();
+        var resolvedOrigin = context.GetEffectiveOrigin();
         var changedTimestamp = context.WriteTimestampForPublishing;
         var receivedTimestamp = SubjectChangeContext.Current.ReceivedTimestamp;
 

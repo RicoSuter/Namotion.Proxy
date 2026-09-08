@@ -31,44 +31,93 @@ public class ValidationInterceptorTests
     }
 
     [Fact]
-    public void WhenValueComesFromSource_ThenProvenanceAwareValidatorCanSkipStrictValidation()
+    public void WhenOriginIsLocal_ThenValidatorIsInvokedAndRejects()
     {
         // Arrange
+        var validator = new RecordingValidator(nameof(Person.LastName));
         var context = InterceptorSubjectContext
             .Create()
             .WithPropertyValidation()
             .WithFullPropertyTracking()
-            .WithService<IPropertyValidator>(() => new LocalOnlyValidator());
+            .WithService<IPropertyValidator>(() => validator);
+
+        var person = new Person(context);
+
+        // Act & Assert
+        Assert.Throws<ValidationException>(() => person.LastName = "anything");
+        Assert.Null(person.LastName);
+        Assert.Equal([ChangeOriginKind.Local], validator.SeenOrigins);
+    }
+
+    [Fact]
+    public void WhenSourceWriteTriggersDerivedRecalculation_ThenTheDerivedWriteIsStillValidated()
+    {
+        // Arrange: FullName depends on LastName, and its recalculation is a separate locally computed
+        // write, so it reports Local rather than inheriting the inbound origin.
+        var validator = new RecordingValidator(nameof(Person.FullName));
+        var context = InterceptorSubjectContext
+            .Create()
+            .WithPropertyValidation()
+            .WithFullPropertyTracking()
+            .WithService<IPropertyValidator>(() => validator);
 
         var person = new Person(context);
         var source = new object();
 
-        // Act & Assert - a local write of "invalid" is rejected
-        Assert.Throws<ValidationException>(() => person.LastName = "invalid");
-        Assert.Null(person.LastName);
+        // Act & Assert
+        Assert.Throws<ValidationException>(() =>
+            new PropertyReference(person, nameof(Person.LastName))
+                .SetValueFromSource(source, null, null, "anything"));
 
-        // Act & Assert - the same value applied from a source is accepted
-        new PropertyReference(person, nameof(Person.LastName))
-            .SetValueFromSource(source, null, null, "invalid");
-        Assert.Equal("invalid", person.LastName);
+        Assert.Equal([ChangeOriginKind.Local], validator.SeenOrigins);
+
+        // The trigger write itself was not vetoed by this validator, which is scoped to FullName.
+        Assert.Equal("anything", person.LastName);
+    }
+
+    [Fact]
+    public void WhenOriginIsFromSource_ThenValidationStillApplies()
+    {
+        // Arrange: an inbound value from a source is validated like any other write. Rejecting it
+        // leaves the model disagreeing with its source, which is reported rather than repaired.
+        var validator = new RecordingValidator(nameof(Person.LastName));
+        var context = InterceptorSubjectContext
+            .Create()
+            .WithPropertyValidation()
+            .WithFullPropertyTracking()
+            .WithService<IPropertyValidator>(() => validator);
+
+        var person = new Person(context);
+        var peer = new object();
+
+        // Act & Assert
+        Assert.Throws<ValidationException>(() =>
+            new PropertyReference(person, nameof(Person.LastName))
+                .SetValueFromSource(peer, null, null, "anything"));
+
+        Assert.Null(person.LastName);
+        Assert.Equal([ChangeOriginKind.FromSource], validator.SeenOrigins);
     }
 
     /// <summary>
-    /// Rejects the value "invalid" only for locally originated writes; writes whose origin is a
-    /// source (or a transaction confirmation) are accepted, so provenance decides strictness.
+    /// Rejects every write to one property and records the origin it was handed for that property, so
+    /// a test can assert which origin the interceptor reported as well as that the write was rejected.
+    /// Scoped to a single property because a write also triggers derived recalculations, which are
+    /// local by design and would otherwise register here.
     /// </summary>
-    private sealed class LocalOnlyValidator : IPropertyValidator
+    private sealed class RecordingValidator(string propertyName) : IPropertyValidator
     {
+        public List<ChangeOriginKind> SeenOrigins { get; } = [];
+
         public IEnumerable<ValidationResult> Validate<TProperty>(in PropertyValidationContext<TProperty> context)
         {
-            if (context.Origin.Kind == ChangeOriginKind.Local &&
-                context.Value is string stringValue &&
-                stringValue == "invalid")
+            if (context.Property.Name != propertyName)
             {
-                return [new ValidationResult("Local writes may not set the value 'invalid'.")];
+                return [];
             }
 
-            return [];
+            SeenOrigins.Add(context.Origin.Kind);
+            return [new ValidationResult("Rejected unconditionally.")];
         }
     }
 }

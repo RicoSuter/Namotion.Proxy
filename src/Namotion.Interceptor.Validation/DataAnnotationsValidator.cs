@@ -17,8 +17,9 @@ public class DataAnnotationsValidator : IPropertyValidator
             return [];
         }
 
-        // Slow path: has attributes, must box for .NET Validator API. Origin is ignored:
-        // data annotations validate the value regardless of where the write came from.
+        // Slow path: has attributes, must box for .NET Validator API. Origin is ignored: a data
+        // annotation describes the value, not where the write came from, and this validator is also
+        // invoked directly by callers outside the write chain.
         return ValidateCore(property, context.Value);
     }
 

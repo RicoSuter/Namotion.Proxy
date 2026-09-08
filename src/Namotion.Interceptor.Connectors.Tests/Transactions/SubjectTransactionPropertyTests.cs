@@ -426,6 +426,72 @@ public class SubjectTransactionPropertyTests : TransactionTestBase
         Assert.Throws<ValidationException>(() => motor.MotorSpeed = 150);
     }
 
+    [Fact]
+    public async Task WhenConfirmedReplayWouldFailValidation_ThenValueLandsAndSourceIsNotReverted()
+    {
+        // Arrange: MaxAllowedSpeed is bound to a failing source, so it lands in failedSource and is
+        // excluded from the local apply. The landed limit therefore stays 100 while MotorSpeed, which
+        // its own source accepted, replays stamped Confirmed against that stale limit.
+        // BestEffort is required: Rollback returns before the local apply when a source write fails.
+        var context = CreateContextWithMotorValidation();
+        var motor = new Motor(context);
+
+        var speedSource = CreateSucceedingSource();
+        var limitSource = CreateFailingSource();
+
+        new PropertyReference(motor, nameof(Motor.MotorSpeed)).SetSource(speedSource.Object);
+        new PropertyReference(motor, nameof(Motor.MaxAllowedSpeed)).SetSource(limitSource.Object);
+
+        // Act
+        using var transaction = await context.BeginTransactionAsync(TransactionFailureHandling.BestEffort);
+        motor.MaxAllowedSpeed = 200;
+        motor.MotorSpeed = 150;
+
+        var exception = await Assert.ThrowsAsync<SubjectTransactionException>(
+            () => transaction.CommitAsync(CancellationToken.None).AsTask());
+
+        // Assert: the limit write genuinely failed and is still reported as such
+        Assert.Contains(exception.FailedChanges, c => c.Property.Name == nameof(Motor.MaxAllowedSpeed));
+
+        // Assert: the speed write was accepted by its source, so it lands locally and is not
+        // reported as failed. Re-validating it on replay would reject it against the stale limit.
+        Assert.Equal(150, motor.MotorSpeed);
+        Assert.DoesNotContain(exception.FailedChanges, c => c.Property.Name == nameof(Motor.MotorSpeed));
+
+        // Assert: no compensating write back to the source. A replay rejection makes the commit
+        // revert the accepted write, which other subscribers of that source observe as a flap.
+        speedSource.Verify(
+            s => s.WriteChangesAsync(It.IsAny<ReadOnlyMemory<SubjectPropertyChange>>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task WhenLocalCommitReplayViolatesAValidator_ThenTheChangeIsStillRejected()
+    {
+        // Arrange: no sources, so every change replays stamped Local and keeps its veto. The commit
+        // position of a property is its FIRST write, so re-writing the limit downwards makes the replay
+        // lower it before revalidating the speed against it. This pins the deliberate carve-out: only a
+        // change a source confirmed skips replay validation, never a local one. The re-write must differ
+        // from the landed value (100, set in the constructor), or the equality check drops it and the
+        // pending value stays at the first write.
+        var context = CreateContextWithMotorValidation();
+        var motor = new Motor(context);
+
+        // Act
+        using var transaction = await context.BeginTransactionAsync(TransactionFailureHandling.BestEffort);
+        motor.MaxAllowedSpeed = 200;
+        motor.MotorSpeed = 150;      // capture: 150 <= pending 200, accepted
+        motor.MaxAllowedSpeed = 120; // re-write, commit position stays ahead of MotorSpeed
+
+        var exception = await Assert.ThrowsAsync<SubjectTransactionException>(
+            () => transaction.CommitAsync(CancellationToken.None).AsTask());
+
+        // Assert: the replay lowered the limit first, then rejected the speed against it.
+        Assert.Contains(exception.FailedChanges, c => c.Property.Name == nameof(Motor.MotorSpeed));
+        Assert.Equal(120, motor.MaxAllowedSpeed);
+        Assert.Equal(0, motor.MotorSpeed);
+    }
+
     private static IInterceptorSubjectContext CreateContextWithMotorValidation()
     {
         return InterceptorSubjectContext
