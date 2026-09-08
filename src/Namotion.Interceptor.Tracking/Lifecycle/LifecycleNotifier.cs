@@ -8,13 +8,9 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 /// fan-out, for one context.
 /// </summary>
 /// <remarks>
-/// Separate from <see cref="LifecycleInterceptor"/> so that what the publishing classes are allowed
-/// to do is a property of a constructor signature: handing them the interceptor would put the write
-/// protocol and both attach entry points within reach of code running under the topology lock.
-///
-/// Every publication marks the thread through <see cref="CallbackReentrancyGuard.EnterScope"/>,
-/// which is what lets the structural write protocol reject a callback that writes a structural
-/// property.
+/// Graph descent runs inline. Other handlers and events are queued in their declared order and
+/// delivered at the outer gate boundary. Nested writes update ownership before returning, while
+/// their notifications join the queue. Callback failures do not roll back committed ownership.
 /// </remarks>
 internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, OwnershipGraph graph, ILifecycleHandler descentHandler)
 {

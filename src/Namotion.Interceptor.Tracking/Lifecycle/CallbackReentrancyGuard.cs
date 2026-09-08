@@ -1,27 +1,9 @@
 namespace Namotion.Interceptor.Tracking.Lifecycle;
 
 /// <summary>
-/// Enforces the callback contract: a lifecycle callback (an <see cref="ILifecycleHandler"/>
-/// invocation, a subject attach or detach event, a collection refresh, or a property lifecycle
-/// callback) may evaluate anything and may change no graph topology: no structural property
-/// write, and no explicit attach or detach. The lifecycle publishes callbacks while it holds the
-/// topology gate in the middle of reconciling an edge set, so a topology change from a callback
-/// would re-enter the reconciler on half-updated state. The depth is thread-local and shared
-/// across built-in lifecycle instances, so a callback writing into another context's graph is
-/// detected too, and the guard is live in every build because the silent failure mode is graph
-/// corruption. Reaching a second context's topology gate is rejected separately, by the
-/// one-transaction-per-thread rule in <see cref="LifecycleInterceptor"/>.
+/// Rejects topology writes from callbacks invoked inline during graph reconciliation. Queued
+/// delivery permits same-context writes; the lifecycle gate separately rejects a second context.
 /// </summary>
-/// <remarks>
-/// The rule is uniform at every graph depth: the property lifecycle callbacks
-/// (<see cref="IPropertyLifecycleHandler.AttachProperty"/> and
-/// <see cref="IPropertyLifecycleHandler.DetachProperty"/>) are not exempt, so the derived-property
-/// handler may evaluate user getters from its attach callback but may not write topology. Scalar
-/// writes from callbacks stay allowed. The guard does not bind code running at callback depth zero
-/// downstream of the lifecycle, such as a third-party write interceptor during <c>next</c>; the
-/// ownership check at <see cref="StructuralReconciler"/> entry and the released-parent exits inside
-/// its loops handle that shape.
-/// </remarks>
 internal static class CallbackReentrancyGuard
 {
     [ThreadStatic]
