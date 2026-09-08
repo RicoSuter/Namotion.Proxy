@@ -1,5 +1,7 @@
 ﻿using System.Reflection;
+using System.Runtime.CompilerServices;
 using Namotion.Interceptor.Attributes;
+using Namotion.Interceptor.Tracking;
 
 namespace Namotion.Interceptor;
 
@@ -56,6 +58,15 @@ public readonly record struct SubjectPropertyMetadata
     /// Gets the PropertyInfo for the property, if available.
     /// </summary>
     public PropertyInfo? PropertyInfo { get; }
+
+    // Generated intercepted properties have backing fields; dynamic getter-only derived values
+    // are projections. Routing and ownership must use the same declared-property classification.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool IsStructural<TProperty>()
+    {
+        return IsIntercepted && !(IsDerived && IsDynamic && SetValue is null) &&
+            (Type == typeof(TProperty) ? Type.CanContainSubjects<TProperty>() : Type.CanContainSubjects());
+    }
 
     public SubjectPropertyMetadata(
         PropertyInfo propertyInfo, 

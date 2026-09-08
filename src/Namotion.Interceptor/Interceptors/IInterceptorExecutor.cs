@@ -76,18 +76,11 @@ public interface IInterceptorExecutor
 
     /// <summary>
     /// Sets a property value through the interceptor chain with the current value already known.
-    /// The write routes at runtime on <typeparamref name="TProperty"/>: a type that can contain
-    /// subjects takes the structural write protocol, coordinating with the lifecycle that owns the
-    /// subject so an attach or detach racing this write orders against it rather than failing it;
-    /// any other type writes without that synchronization. Only a persistent conflict, a subject
-    /// genuinely owned by another context, throws, and it throws before the backing field is
-    /// written. A <typeparamref name="TProperty"/> that can contain subjects routes structurally,
-    /// so a boxed <c>object</c> fails closed to the structural side. Scalar generic writes also
-    /// take that route when the property's declared type can contain subjects. Callers whose values travel boxed instantiate
-    /// this entry with the declared property type via a cached typed delegate instead. The lock order
-    /// and the context-state pinning the structural route relies on are documented once, under
-    /// "The Write Protocol" in docs/design/tracking-lifecycle.md, rather than restated here where
-    /// they drift out of date.
+    /// Registered structural properties coordinate with their owning lifecycle so attachment
+    /// transitions order against the write. Routing uses the declared property metadata even
+    /// when <typeparamref name="TProperty"/> is narrower or boxed; registered scalar properties
+    /// write without structural synchronization. Without registered metadata, routing uses
+    /// <typeparamref name="TProperty"/>. An ownership conflict is rejected before storage changes.
     /// </summary>
     /// <param name="propertyName">The name of the property to write.</param>
     /// <param name="newValue">The new value to set.</param>

@@ -55,16 +55,15 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     /// A [Derived] property carries an edge where it is the store of record. The generator gives
     /// every intercepted property a backing field, so there IsIntercepted already means the
     /// property is the store; a dynamic property is intercepted unconditionally, so its setter
-    /// stands in instead, because a getter-only derived one can return nothing the properties it
-    /// reads do not already own. A subject reachable only through a property that carries no edge
+    /// stands in instead, because a getter-only derived value is a projection.
+    /// A subject reachable only through a property that carries no edge
     /// is not owned through that projection. It may be detached or owned by another context.
     /// See docs/design/tracking-lifecycle.md.
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool IsStructural(in SubjectPropertyMetadata metadata)
     {
-        return metadata is { IsIntercepted: true } and not { IsDerived: true, IsDynamic: true, SetValue: null } &&
-               metadata.Type.CanContainSubjects();
+        return metadata.IsStructural<object>();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
