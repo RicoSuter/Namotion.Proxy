@@ -1,3 +1,5 @@
+using Namotion.Interceptor.Tracking.Change;
+
 namespace Namotion.Interceptor.Tracking.Lifecycle;
 
 /// <summary>
@@ -13,10 +15,11 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 /// which is what lets the structural write protocol reject a callback that writes a structural
 /// property.
 /// </remarks>
-internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, OwnershipGraph graph)
+internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, OwnershipGraph graph, ILifecycleHandler descentHandler)
 {
-    private enum NotificationKind { Attached, Detaching, AddedHandlers, RemovedHandlers, Refresh, AttachProperty, DetachProperty, ReleaseClaim }
+    private enum NotificationKind { Attached, Detaching, LifecycleHandler, PropertyChange, Refresh, AttachProperty, DetachProperty, ReleaseClaim }
     private readonly record struct Notification(NotificationKind Kind, SubjectLifecycleChange Change, PropertyReference Property = default, object? Value = null);
+    private readonly List<PropertyChangeInterceptor.Publication> _propertyChanges = [];
     private readonly List<Notification> _notifications = [];
     private bool _draining;
 
@@ -25,8 +28,32 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
 
     public void RaiseSubjectAttached(SubjectLifecycleChange change) => _notifications.Add(new(NotificationKind.Attached, change));
     public void RaiseSubjectDetaching(SubjectLifecycleChange change) => _notifications.Add(new(NotificationKind.Detaching, change));
-    public void InvokeAddedLifecycleHandlers(IInterceptorSubject subject, SubjectLifecycleChange change) => _notifications.Add(new(NotificationKind.AddedHandlers, change));
-    public void InvokeRemovedLifecycleHandlers(IInterceptorSubject subject, SubjectLifecycleChange change) => _notifications.Add(new(NotificationKind.RemovedHandlers, change));
+    public void InvokeAddedLifecycleHandlers(IInterceptorSubject subject, SubjectLifecycleChange change)
+    {
+        QueueLifecycleHandlers(change);
+        if (subject is ILifecycleHandler handler) _notifications.Add(new(NotificationKind.LifecycleHandler, change, Value: handler));
+    }
+
+    public void InvokeRemovedLifecycleHandlers(IInterceptorSubject subject, SubjectLifecycleChange change)
+    {
+        if (subject is ILifecycleHandler handler) _notifications.Add(new(NotificationKind.LifecycleHandler, change, Value: handler));
+        QueueLifecycleHandlers(change);
+    }
+
+    private void QueueLifecycleHandlers(SubjectLifecycleChange change)
+    {
+        foreach (var handler in context.GetServices<ILifecycleHandler>())
+        {
+            if (ReferenceEquals(handler, descentHandler)) handler.HandleLifecycleChange(change);
+            else _notifications.Add(new(NotificationKind.LifecycleHandler, change, Value: handler));
+        }
+    }
+
+    public void QueuePropertyChange(PropertyChangeInterceptor.Publication publication)
+    {
+        _propertyChanges.Add(publication);
+        _notifications.Add(new(NotificationKind.PropertyChange, default));
+    }
     public void RefreshCollectionProperty(PropertyReference property, object? value) => _notifications.Add(new(NotificationKind.Refresh, default, property, value));
     public void QueueProperty(PropertyReference property, bool attach) => _notifications.Add(new(attach ? NotificationKind.AttachProperty : NotificationKind.DetachProperty, default, property));
     public void QueueRelease(IInterceptorSubject subject) => _notifications.Add(new(NotificationKind.ReleaseClaim, new SubjectLifecycleChange { Subject = subject, ReferenceCount = 0 }));
@@ -48,6 +75,7 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
         try
         {
             using var scope = CallbackReentrancyGuard.EnterDeliveryScope();
+            var propertyChangeIndex = 0;
             for (var index = 0; index < _notifications.Count; index++)
             {
                 var notification = _notifications[index];
@@ -65,17 +93,13 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
                             }
                         }
                         break;
-                    case NotificationKind.AddedHandlers:
-                    case NotificationKind.RemovedHandlers:
-                        var removed = notification.Kind == NotificationKind.RemovedHandlers;
-                        if (removed) InvokeSubjectHandler(notification.Change, ref failures);
-                        foreach (var handler in context.GetServices<ILifecycleHandler>())
-                        {
-                            if (handler is LifecycleInterceptor) continue;
-                            try { handler.HandleLifecycleChange(notification.Change); }
-                            catch (Exception exception) { (failures ??= []).Add(exception); }
-                        }
-                        if (!removed) InvokeSubjectHandler(notification.Change, ref failures);
+                    case NotificationKind.LifecycleHandler:
+                        try { ((ILifecycleHandler)notification.Value!).HandleLifecycleChange(notification.Change); }
+                        catch (Exception exception) { (failures ??= []).Add(exception); }
+                        break;
+                    case NotificationKind.PropertyChange:
+                        try { _propertyChanges[propertyChangeIndex++].Dispatch(); }
+                        catch (Exception exception) { (failures ??= []).Add(exception); }
                         break;
                     case NotificationKind.Refresh:
                     case NotificationKind.AttachProperty:
@@ -99,16 +123,10 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
         finally
         {
             _notifications.Clear();
+            _propertyChanges.Clear();
             _draining = false;
         }
         if (failures is not null) throw new AggregateException(failures);
-    }
-
-    private static void InvokeSubjectHandler(SubjectLifecycleChange change, ref List<Exception>? failures)
-    {
-        if (change.Subject is not ILifecycleHandler handler) return;
-        try { handler.HandleLifecycleChange(change); }
-        catch (Exception exception) { (failures ??= []).Add(exception); }
     }
 
     private static void InvokePropertyHandler(IPropertyLifecycleHandler handler, Notification notification, ref List<Exception>? failures)

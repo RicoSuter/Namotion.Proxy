@@ -192,17 +192,28 @@ public sealed class PropertyChangeInterceptor : IObservable<SubjectPropertyChang
             context.GetFinalValue(),
             context.Revision);
 
-        for (var i = 0; i < subscriptions.Length; i++)
-        {
-            subscriptions[i].Enqueue(in change);
-        }
+        Publish(new Publication(change, subscriptions, syncSubject, listeners));
+    }
 
-        syncSubject?.OnNext(change);
-
-        if (listeners is not null)
+    internal readonly record struct Publication(
+        SubjectPropertyChange Change,
+        PropertyChangeQueueSubscription[] QueueSubscriptions,
+        ISubject<SubjectPropertyChange>? SyncSubject,
+        PropertyChangeSubscription[]? Listeners)
+    {
+        public void Dispatch()
         {
-            PropertyChangeSubscription.Dispatch(listeners, in change);
+            var change = Change;
+            foreach (var subscription in QueueSubscriptions) subscription.Enqueue(in change);
+            SyncSubject?.OnNext(change);
+            if (Listeners is not null) PropertyChangeSubscription.Dispatch(Listeners, in change);
         }
+    }
+
+    private static void Publish(Publication publication)
+    {
+        if (publication.Change.Property.Subject.TryGetContext()?.TryGetLifecycleInterceptor()?.TryQueuePropertyChange(publication) == true) return;
+        publication.Dispatch();
     }
 
     /// <summary>
@@ -237,21 +248,7 @@ public sealed class PropertyChangeInterceptor : IObservable<SubjectPropertyChang
             finalValue,
             context.Revision);
 
-        if (state is not null)
-        {
-            var subscriptions = state.QueueSubscriptions;
-            for (var i = 0; i < subscriptions.Length; i++)
-            {
-                subscriptions[i].Enqueue(in change);
-            }
-
-            state.SyncSubject?.OnNext(change);
-        }
-
-        if (listeners is not null)
-        {
-            PropertyChangeSubscription.Dispatch(listeners, in change);
-        }
+        Publish(new Publication(change, state?.QueueSubscriptions ?? [], state?.SyncSubject, listeners));
     }
 
     // Post-commit listener resolution, shared by the two mutually exclusive entry paths and

@@ -148,7 +148,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     {
         _context = context;
         _graph = new OwnershipGraph(context);
-        _notifier = new LifecycleNotifier(context, _graph);
+        _notifier = new LifecycleNotifier(context, _graph, this);
         _reachability = new ReachabilityWalk(_graph);
         _attach = new AttachTraversal(_notifier, _graph, _reachability);
         _release = new ReleaseTraversal(_notifier, _graph, _reachability);
@@ -209,6 +209,13 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     {
         if (!_gate.IsHeldByCurrentThread) return false;
         _notifier.QueueProperty(property, attach);
+        return true;
+    }
+
+    internal bool TryQueuePropertyChange(Change.PropertyChangeInterceptor.Publication publication)
+    {
+        if (!_gate.IsHeldByCurrentThread) return false;
+        _notifier.QueuePropertyChange(publication);
         return true;
     }
 
