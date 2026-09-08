@@ -17,7 +17,7 @@ public class HostedServiceHandlerTests
         await RunWithAppLifecycleAsync(async context =>
         {
             person = new PersonWithBackgroundService(context);
-            await AsyncTestHelpers.WaitUntilAsync(() => person.FirstName == "John");
+            await AsyncTestHelpers.WaitUntilAsync(() => person.FirstName == "John" && person.LastName == "Doe");
 
             // Assert
             Assert.Equal("John", person.FirstName);
@@ -41,7 +41,7 @@ public class HostedServiceHandlerTests
             var hostedService = new PersonBackgroundService(person);
             person.AttachHostedService(hostedService);
 
-            await AsyncTestHelpers.WaitUntilAsync(() => person.FirstName == "John");
+            await AsyncTestHelpers.WaitUntilAsync(() => person.FirstName == "John" && person.LastName == "Doe");
 
             // Assert
             Assert.Equal("John", person.FirstName);
@@ -65,7 +65,7 @@ public class HostedServiceHandlerTests
             person.AttachHostedService(hostedService);
             var attachedHostedServices = person.GetAttachedHostedServices();
 
-            await AsyncTestHelpers.WaitUntilAsync(() => person.FirstName == "John");
+            await AsyncTestHelpers.WaitUntilAsync(() => person.FirstName == "John" && person.LastName == "Doe");
 
             Assert.Equal("John", person.FirstName);
             Assert.Equal("Doe", person.LastName);
@@ -95,7 +95,7 @@ public class HostedServiceHandlerTests
             person.AttachHostedService(hostedService);
             var attachedHostedServices = person.GetAttachedHostedServices();
 
-            await AsyncTestHelpers.WaitUntilAsync(() => person.FirstName == "John");
+            await AsyncTestHelpers.WaitUntilAsync(() => person.FirstName == "John" && person.LastName == "Doe");
             Assert.Single(attachedHostedServices);
 
             // Act: promote the constructor's provisional anchor and give it up, which releases

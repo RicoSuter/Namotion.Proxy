@@ -90,6 +90,62 @@ public class RootManagerTests
         Assert.Null(fixture.Manager.Root);
     }
 
+    [Theory]
+    [InlineData(SubjectAttachmentAnchorKind.Provisional, false)]
+    [InlineData(SubjectAttachmentAnchorKind.Explicit, false)]
+    [InlineData(SubjectAttachmentAnchorKind.Provisional, true)]
+    [InlineData(SubjectAttachmentAnchorKind.Explicit, true)]
+    public async Task WhenRootConstructorAttachesToAContext_ThenLoadingPreservesOnlyTheTargetContext(
+        SubjectAttachmentAnchorKind anchor, bool foreignContext)
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithFullPropertyTracking().WithRegistry();
+        var constructionContext = foreignContext
+            ? InterceptorSubjectContext.Create().WithFullPropertyTracking().WithRegistry()
+            : context;
+        var attachments = 0;
+        constructionContext.GetService<LifecycleInterceptor>().SubjectAttached += _ => attachments++;
+        var types = new TypeProvider();
+        types.AddTypes([typeof(AnchoredRootSubject)]);
+        using var services = new ServiceCollection()
+            .AddSingleton<IInterceptorSubjectContext>(constructionContext)
+            .AddSingleton(new RootAttachmentOptions(anchor))
+            .BuildServiceProvider();
+        var path = Path.Combine(Path.GetTempPath(), $"root-anchor-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, """{"$type":"HomeBlaze.Services.Tests.AnchoredRootSubject"}""");
+        var configuration = new Mock<IConfiguration>();
+        configuration.Setup(value => value["HomeBlaze:RootConfigFile"]).Returns(path);
+        RootManager? manager = null;
+        using var rootManager = manager = new RootManager(new SubjectTypeRegistry(types),
+            new ConfigurableSubjectSerializer(types, services), context,
+            new SubjectPathResolver(() => manager?.Root), configuration.Object);
+        try
+        {
+            // Act
+            await rootManager.StartAsync(CancellationToken.None);
+
+            // Assert
+            if (foreignContext)
+            {
+                await Assert.ThrowsAsync<InvalidOperationException>(
+                    () => rootManager.LoadingCompleted.WaitAsync(TimeSpan.FromSeconds(10)));
+                Assert.False(rootManager.IsLoaded);
+            }
+            else
+            {
+                await rootManager.LoadingCompleted.WaitAsync(TimeSpan.FromSeconds(10));
+                Assert.True(rootManager.IsLoaded);
+                Assert.Equal(SubjectAttachmentAnchorKind.Explicit, rootManager.Root!.Executor.AttachmentAnchor);
+            }
+            Assert.Same(constructionContext, rootManager.Root!.TryGetContext());
+            Assert.Equal(1, attachments);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private sealed class RootFixture : IDisposable
     {
         private readonly string _configurationPath = Path.Combine(Path.GetTempPath(), $"root-readiness-{Guid.NewGuid():N}.json");
@@ -143,5 +199,15 @@ public class RootManagerTests
             Release.Set();
             Release.Dispose();
         }
+    }
+}
+
+public record RootAttachmentOptions(SubjectAttachmentAnchorKind Anchor);
+
+public class AnchoredRootSubject : TestSubject
+{
+    public AnchoredRootSubject(IInterceptorSubjectContext context, RootAttachmentOptions options)
+    {
+        this.AttachToContext(context, options.Anchor);
     }
 }

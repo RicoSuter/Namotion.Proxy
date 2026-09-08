@@ -19,6 +19,9 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
     private readonly Func<ILogger?> _loggerResolver;
     private readonly BufferBlock<Func<CancellationToken, Task>> _actions = new();
     private readonly HashSet<IHostedService> _hostedServices = [];
+    private readonly AsyncLocal<HostedServiceStartupScope?> _startupScope = new();
+
+    internal HostedServiceStartupScope DeferStartup() => new(_startupScope);
 
     public HostedServiceHandler(Func<ILogger?> loggerResolver)
     {
@@ -75,6 +78,8 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
 
     private async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // The long-lived action loop must not inherit the scope in which the host was started.
+        _startupScope.Value = null;
         _logger ??= _loggerResolver();
 
         while (!stoppingToken.IsCancellationRequested)
@@ -244,15 +249,24 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
     private void PostStartService(
         IHostedService hostedService, TaskCompletionSource? tcs, IDisposable[]? startupHolds = null)
     {
+        // The action loop has a different execution flow from the code constructing the subject.
+        var startupScope = _startupScope.Value;
         _actions.Post(async token =>
         {
             try
             {
-                await Task.Delay(50, token); // TODO: Fix small delay to let sync property assignments/deserialization complete
+                if (startupScope is not null)
+                {
+                    await startupScope.WaitAsync(token).ConfigureAwait(false);
+                }
 
                 _logger?.LogInformation("Starting attached hosted service {Service}.", hostedService.ToString());
                 await hostedService.StartAsync(token);
                 tcs?.TrySetResult();
+            }
+            catch (OperationCanceledException exception)
+            {
+                tcs?.TrySetCanceled(exception.CancellationToken);
             }
             catch (Exception ex)
             {
