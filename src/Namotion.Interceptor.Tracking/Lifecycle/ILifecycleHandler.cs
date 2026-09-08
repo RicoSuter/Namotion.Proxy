@@ -9,13 +9,14 @@
 /// and wait for it from here: a dispatched structural write, attach or detach needs the same gate
 /// this thread is holding, so the two wait on each other. Dispatching a read, a scalar write or
 /// input and output and waiting for it is safe, and so is handing structural work off without
-/// waiting. Changing topology directly from here is rejected outright.
+/// waiting. Same-context topology changes are supported during queued delivery; their notifications
+/// are deferred. Entering another context's topology gate is rejected.
 /// </remarks>
 public interface ILifecycleHandler
 {
     /// <summary>
     /// Called when a lifecycle event occurs for a subject.
-    /// Check the IsAttached, IsPropertyReferenceAdded, IsPropertyReferenceRemoved, and IsDetached flags
+    /// Check the IsContextAttach, IsPropertyReferenceAdded, IsPropertyReferenceRemoved, and IsContextDetach flags
     /// to determine which events occurred.
     /// </summary>
     void HandleLifecycleChange(SubjectLifecycleChange change);

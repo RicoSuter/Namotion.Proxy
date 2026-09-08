@@ -355,10 +355,10 @@ The `HandleLifecycleChange` method receives a `SubjectLifecycleChange` with flag
 
 | Flag | Description |
 |------|-------------|
-| `IsContextAttach` | Subject **first entered** the graph (first property reference) |
+| `IsContextAttach` | Subject entered the graph, through a root anchor or an incoming edge |
 | `IsPropertyReferenceAdded` | A property reference to the subject was added |
 | `IsPropertyReferenceRemoved` | A property reference to the subject was removed |
-| `IsContextDetach` | Subject is **leaving** the graph (last reference removed) |
+| `IsContextDetach` | Subject left the graph after losing anchor reachability |
 
 Flags can be combined. For example, when a child is first assigned to a property:
 - `IsContextAttach = true` and `IsPropertyReferenceAdded = true`
@@ -396,14 +396,15 @@ lifecycleInterceptor.SubjectDetaching += change =>
 
 **Important distinction:**
 - `ILifecycleHandler.HandleLifecycleChange`: Called for **every** lifecycle change (context attach, property add, property remove, context detach)
-- `SubjectAttached` event: Fires **once** when subject first enters the graph
-- `SubjectDetaching` event: Fires **once** when subject is about to leave the graph
+- `SubjectAttached` event: Reports entry into the graph once per ownership lifetime
+- `SubjectDetaching` event: Reports departure from the graph once per ownership lifetime
 
-**Event timing (symmetry):**
-- `SubjectAttached` fires **after** `ILifecycleHandler.HandleLifecycleChange(attach)` - all handlers have initialized
-- `SubjectDetaching` fires **before** `ILifecycleHandler.HandleLifecycleChange(detach)` - handlers can still access full graph
+**Event timing:**
 
-This symmetry ensures that both events fire when the full object graph is accessible, which is useful for handlers that need to traverse relationships or access child subjects during cleanup.
+- `SubjectAttached` fires after the subject's attach lifecycle handlers have been attempted.
+- `SubjectDetaching` fires before the subject's detach lifecycle handlers.
+
+These queued events describe historical transitions. Current ownership queries may already reflect removal, a later write, or reattachment; the full historical graph is not preserved. The subject retains its context through queued teardown. A handler that threw may not have completed its initialization.
 
 Events are useful for:
 - Cache invalidation when subjects are removed from the object graph
@@ -420,7 +421,7 @@ The lifecycle interceptor is fully thread-safe. Multiple threads can concurrentl
 
 > **Important**: Both `ILifecycleHandler` methods and lifecycle events are invoked **synchronously inside a lock**. Handlers must follow these requirements:
 
-1. **Must be exception-free**: Throwing exceptions will break the lifecycle pipeline for other handlers. Wrap any potentially failing operations in try-catch internally.
+1. **Failures are post-commit errors**: Callback failures do not roll back committed changes. Remaining queued notifications and cleanup are attempted. One failure is rethrown; multiple failures are aggregated with the primary operation failure first. See the [callback contract](design/tracking-lifecycle.md#callback-contract) for property observer boundaries and error grouping.
 
 2. **Must be fast**: The lock is held during invocation, so blocking operations will degrade performance across the entire system. Keep handlers to prompt in-memory bookkeeping such as dictionary operations.
 
@@ -641,7 +642,7 @@ public partial class Car
 
 A generated `partial` property cannot be lazy in the first place, because the generator writes the getter. Two shapes do supply a getter of their own and can therefore be lazy: a hand-written `IInterceptorSubject` that builds its own `SubjectPropertyMetadata` (see [hand-written base classes](generator.md#hand-written-base-classes-and-subclasses)) and a dynamic property registered through [`AddProperty`](registry.md#add-properties).
 
-**Where a lazy structural getter is supported, `??=` is required rather than merely allowed.** The framework reads a structural getter more than once per operation: twice when the subject enters the graph, once more on every structural write to that property, and twice again on each re-attach. A getter that answers with a fresh graph each call is a contract violation.
+**Where a lazy structural getter is supported, `??=` is required rather than merely allowed.** Discovery, seeding, and reconciliation can read structural getters repeatedly. Reentry, retained claims, resurrection, and retry can change which reads occur; callers must not depend on an exact count. A getter that answers with a fresh graph each call is a contract violation.
 
 ```csharp
 // Correct: the same instance on every read.
@@ -655,7 +656,7 @@ registered.AddProperty("Tires", typeof(Tire[]),
     setValue: (_, value) => _tires = (Tire[])value!);
 ```
 
-Caching from inside the getter is safe, including when the getter writes its value back through the property's own intercepted setter: the first read happens during the attach's discovery pass, before the subject is attached and before any callback scope is open, so the store is invisible to interception.
+Caching from inside the getter is supported, including when it writes its value back through the property's own intercepted setter. Discovery of an unattached subject reads before claiming it, so a store at that point is invisible to interception. Retained claims, resurrection, and retry can instead reach seeding while attached. A setter invoked from its own active seeding getter stores the value and defers that property's reconciliation until the getter returns.
 
 An unstable getter costs a discarded subject. Discovery claims the first value and seeding commits the second, so the first never joins the graph: it is unregistered, has a reference count of 0, and its claim is handed back at the end of the attach, which leaves it unattached and reusable rather than stranded on the context. No exception is raised, so the wasted work is invisible.
 
