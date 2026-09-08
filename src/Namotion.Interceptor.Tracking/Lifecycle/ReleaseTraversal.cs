@@ -102,6 +102,7 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
     private void Release(IInterceptorSubject subject, SubjectOwnership ownership, PropertyReference? property, object? index)
     {
         var children = LifecycleScratch.RentChildList();
+        var releaseQueued = false;
         try
         {
             graph.CollectStructuralChildren(subject, children, seed: false);
@@ -139,12 +140,12 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
 
             // Only after the subject's own teardown callbacks completed, so they still resolve the
             // context they are being torn down from.
-            graph.ReleaseClaim(subject);
+            notifier.QueueRelease(subject);
+            releaseQueued = true;
 
             // Handing the claim back ends the attached-but-unowned ambiguity the marker exists to
             // resolve. Cleared here rather than only in the finally so it does not cover the
             // children drain below, which is no longer this subject's window.
-            graph.ClearReleasing(subject);
 
             foreach (var (childProperty, occurrence) in children)
             {
@@ -153,7 +154,7 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
         }
         finally
         {
-            graph.ClearReleasing(subject);
+            if (!releaseQueued) graph.ClearReleasing(subject);
             LifecycleScratch.Return(children);
         }
     }

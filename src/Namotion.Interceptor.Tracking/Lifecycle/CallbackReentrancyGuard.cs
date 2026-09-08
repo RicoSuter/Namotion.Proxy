@@ -25,6 +25,20 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 internal static class CallbackReentrancyGuard
 {
     [ThreadStatic]
+    private static int _deliveryDepth;
+
+    public static DeliveryScope EnterDeliveryScope()
+    {
+        _deliveryDepth++;
+        return default;
+    }
+
+    internal readonly struct DeliveryScope : IDisposable
+    {
+        public void Dispose() => _deliveryDepth--;
+    }
+
+    [ThreadStatic]
     private static int _callbackDepth;
 
     [ThreadStatic]
@@ -51,7 +65,7 @@ internal static class CallbackReentrancyGuard
     /// explicit attach and an explicit detach.</summary>
     public static void ThrowIfInsideCallback()
     {
-        if (IsInsideAnyCallback)
+        if (IsInsideAnyCallback && _deliveryDepth == 0)
         {
             throw new LifecycleContractViolationException(
                 "A lifecycle callback must not change graph topology: no structural " +

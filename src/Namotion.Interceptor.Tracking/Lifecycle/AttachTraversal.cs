@@ -120,6 +120,7 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
             return;
         }
 
+        SeedChildrenIfNeeded(subject);
         notifier.RaiseSubjectAttached(change);
         foreach (var propertyName in properties)
         {

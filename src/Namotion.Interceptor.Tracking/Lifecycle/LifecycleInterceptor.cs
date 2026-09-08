@@ -147,8 +147,8 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     public LifecycleInterceptor(IInterceptorSubjectContext context)
     {
         _context = context;
-        _notifier = new LifecycleNotifier(context);
         _graph = new OwnershipGraph(context);
+        _notifier = new LifecycleNotifier(context, _graph);
         _reachability = new ReachabilityWalk(_graph);
         _attach = new AttachTraversal(_notifier, _graph, _reachability);
         _release = new ReleaseTraversal(_notifier, _graph, _reachability);
@@ -205,7 +205,26 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         return new GateScope(this);
     }
 
+    internal bool TryQueuePropertyCallback(PropertyReference property, bool attach)
+    {
+        if (!_gate.IsHeldByCurrentThread) return false;
+        _notifier.QueueProperty(property, attach);
+        return true;
+    }
+
     private void ExitGate()
+    {
+        try
+        {
+            if (_heldGateCount == 1) _notifier.Drain();
+        }
+        finally
+        {
+            ReleaseGate();
+        }
+    }
+
+    private void ReleaseGate()
     {
         // Decrement first, so an unbalanced exit leaves the count too low rather than too high: a
         // count stranded above zero on a pooled thread would reject that thread's next unrelated
@@ -388,22 +407,27 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             {
                 ClaimProposedComponent(metadata.Type, context.NewValue, claimed);
 
-                next(ref context);
-
-                // The authoritative getter output rather than the proposed value: a normalizing or
-                // derived setter may store a different graph than the caller passed.
-                var getValue = metadata.GetValue;
-                var storedValue = getValue is not null ? getValue(subject) : context.NewValue;
-                if (!IsTheProposedValue(storedValue, context.NewValue))
+                try
                 {
-                    // The terminal stored something else, so the claim above covers a graph that is
-                    // not the one now in the property. Claiming what was actually stored keeps the
-                    // foreign-subject rejection ahead of every graph mutation: the baseline, the
-                    // ownership records and the attach notifications all come after this point.
-                    ClaimProposedComponent(metadata.Type, storedValue, claimed);
+                    next(ref context);
                 }
+                finally
+                {
+                    // The authoritative getter output rather than the proposed value: a normalizing or
+                    // derived setter may store a different graph than the caller passed.
+                    var getValue = metadata.GetValue;
+                    var storedValue = getValue is not null ? getValue(subject) : context.NewValue;
+                    if (!IsTheProposedValue(storedValue, context.NewValue))
+                    {
+                        // The terminal stored something else, so the claim above covers a graph that is
+                        // not the one now in the property. Claiming what was actually stored keeps the
+                        // foreign-subject rejection ahead of every graph mutation: the baseline, the
+                        // ownership records and the attach notifications all come after this point.
+                        ClaimProposedComponent(metadata.Type, storedValue, claimed);
+                    }
 
-                _reconciler.Reconcile(property, metadata, storedValue);
+                    _reconciler.Reconcile(property, metadata, storedValue);
+                }
             }
             finally
             {
