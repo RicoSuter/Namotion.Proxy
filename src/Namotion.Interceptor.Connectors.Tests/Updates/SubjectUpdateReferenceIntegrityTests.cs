@@ -142,6 +142,36 @@ public class SubjectUpdateReferenceIntegrityTests
         Assert.Equal("Updated", target.FirstName);
     }
 
+    [Fact]
+    public void WhenABatchUpdatesAChildAndThenClearsItsReference_ThenTheClearedReferenceCarriesNoStaleId()
+    {
+        // Arrange: the child's own change builds the path back to the root, which stamps the parent
+        // reference with the child's ID, and the clear then reuses that same property update.
+        var source = new Person(InterceptorSubjectContext.Create().WithFullPropertyTracking().WithRegistry());
+        var mother = new Person { FirstName = "Ada" };
+        source.Mother = mother;
+        var timestamp = DateTimeOffset.UtcNow;
+        SubjectPropertyChange[] changes =
+        [
+            SubjectPropertyChange.Create<string?>(new PropertyReference(mother, nameof(Person.FirstName)),
+                ChangeOrigin.Local, timestamp, null, "Ada", "Grace"),
+            SubjectPropertyChange.Create<Person?>(new PropertyReference(source, nameof(Person.Mother)),
+                ChangeOrigin.Local, timestamp, null, mother, null)
+        ];
+        var target = new Person(InterceptorSubjectContext.Create().WithRegistry())
+        {
+            Mother = new Person { FirstName = "Existing" }
+        };
+
+        // Act
+        var update = SubjectUpdate.CreatePartialUpdateFromChanges(source, changes, []);
+        target.ApplySubjectUpdate(update, DefaultSubjectFactory.Instance, ChangeOrigin.Local);
+
+        // Assert
+        Assert.Null(update.Subjects[update.Root][nameof(Person.Mother)].Id);
+        Assert.Null(target.Mother);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -177,13 +207,15 @@ public class SubjectUpdateReferenceIntegrityTests
         Assert.Empty(dictionary ? (System.Collections.IEnumerable)target.Relationships! : target.Children);
     }
 
-    [Fact]
-    public void WhenAnEarlierReferenceIsReplacedBeforeBatchCreation_ThenOnlyTheFinalReferenceIsRequired()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void WhenAnEarlierReferenceIsReplacedBeforeBatchCreation_ThenOnlyTheFinalReferenceIsRequired(bool clear)
     {
         // Arrange
         var source = new Person(InterceptorSubjectContext.Create().WithFullPropertyTracking().WithRegistry());
         var first = new Person { FirstName = "First" };
-        var final = new Person { FirstName = "Final" };
+        var final = clear ? null : new Person { FirstName = "Final" };
         source.Father = first;
         source.Father = final;
         var property = new PropertyReference(source, nameof(Person.Father));
@@ -192,7 +224,7 @@ public class SubjectUpdateReferenceIntegrityTests
             SubjectPropertyChange.Create<Person?>(property, ChangeOrigin.Local, DateTimeOffset.UtcNow, null, null, first),
             SubjectPropertyChange.Create<Person?>(property, ChangeOrigin.Local, DateTimeOffset.UtcNow, null, first, final)
         ];
-        var target = new Person(InterceptorSubjectContext.Create().WithRegistry());
+        var target = new Person(InterceptorSubjectContext.Create().WithRegistry()) { Father = new Person() };
 
         // Act
         var update = SubjectUpdate.CreatePartialUpdateFromChanges(source, changes, []);
@@ -200,7 +232,15 @@ public class SubjectUpdateReferenceIntegrityTests
 
         // Assert
         Assert.Null(first.TryGetRegisteredSubject());
-        Assert.Equal("Final", target.Father!.FirstName);
+        if (clear)
+        {
+            Assert.Null(update.Subjects[update.Root][nameof(Person.Father)].Id);
+            Assert.Null(target.Father);
+        }
+        else
+        {
+            Assert.Equal("Final", target.Father!.FirstName);
+        }
     }
 
     [Theory]

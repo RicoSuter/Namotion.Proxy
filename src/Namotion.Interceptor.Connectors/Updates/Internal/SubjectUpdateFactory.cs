@@ -240,6 +240,7 @@ internal static class SubjectUpdateFactory
         SubjectUpdateBuilder builder)
     {
         update.Kind = SubjectPropertyUpdateKind.Object;
+        update.Id = null;
 
         if (item is not null)
         {
