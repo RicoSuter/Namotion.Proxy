@@ -12,6 +12,8 @@ internal sealed class SubjectUpdateBuilder
     private readonly Dictionary<IInterceptorSubject, string> _subjectToId = new();
     private readonly Dictionary<SubjectPropertyUpdate, (RegisteredSubjectProperty Property, IDictionary<string, SubjectPropertyUpdate> Parent)> _propertyUpdates = new();
 
+    public bool HasUnregisteredSubjects { get; set; }
+
     public ISubjectUpdateProcessor[] Processors { get; private set; } = [];
     
     public Dictionary<string, Dictionary<string, SubjectPropertyUpdate>> Subjects { get; private set; } = new();
@@ -101,7 +103,51 @@ internal sealed class SubjectUpdateBuilder
             update = Processors[i].TransformSubjectUpdate(subject, update);
         }
 
+        // A later batch change can overwrite a reference whose subject has already detached.
+        if (HasUnregisteredSubjects)
+        {
+            ValidateSubjectId(update.Root, update.Subjects);
+            foreach (var properties in update.Subjects.Values)
+            {
+                foreach (var property in properties.Values)
+                    ValidateReferences(property, update.Subjects);
+            }
+        }
+
         return update;
+    }
+
+    private static void ValidateReferences(SubjectPropertyUpdate property, Dictionary<string, Dictionary<string, SubjectPropertyUpdate>> subjects)
+    {
+        if (property.Kind == SubjectPropertyUpdateKind.Object)
+            ValidateSubjectId(property.Id, subjects);
+        else if (property.Kind is SubjectPropertyUpdateKind.Collection or SubjectPropertyUpdateKind.Dictionary)
+        {
+            if (property.Items is not null)
+            {
+                foreach (var item in property.Items)
+                    ValidateSubjectId(item.Id, subjects);
+            }
+            if (property.Operations is not null)
+            {
+                foreach (var operation in property.Operations)
+                {
+                    if (operation.Action == SubjectCollectionOperationType.Insert)
+                        ValidateSubjectId(operation.Id, subjects);
+                }
+            }
+        }
+        if (property.Attributes is not null)
+        {
+            foreach (var attribute in property.Attributes.Values)
+                ValidateReferences(attribute, subjects);
+        }
+    }
+
+    private static void ValidateSubjectId(string? subjectId, Dictionary<string, Dictionary<string, SubjectPropertyUpdate>> subjects)
+    {
+        if (subjectId is not null && !subjects.ContainsKey(subjectId))
+            throw new NotSupportedException($"Subject '{subjectId}' selected for an update has no Registry metadata. Register the subject or exclude its referencing property with an ISubjectUpdateProcessor.");
     }
 
     /// <summary>
@@ -110,6 +156,7 @@ internal sealed class SubjectUpdateBuilder
     public void Clear()
     {
         _nextId = 0;
+        HasUnregisteredSubjects = false;
         _subjectToId.Clear();
         _propertyUpdates.Clear();
         ProcessedSubjects.Clear();

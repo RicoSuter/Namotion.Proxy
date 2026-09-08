@@ -164,9 +164,9 @@ internal static class SubjectUpdateApplier
         SubjectPropertyUpdate propertyUpdate,
         SubjectUpdateApplyContext context)
     {
-        if (propertyUpdate.Id is not null &&
-            context.Subjects.TryGetValue(propertyUpdate.Id, out var itemProperties))
+        if (propertyUpdate.Id is not null)
         {
+            var itemProperties = context.GetSubjectProperties(propertyUpdate.Id);
             if (property.GetValue() is IInterceptorSubject existingItem)
             {
                 if (context.TryMarkAsProcessed(propertyUpdate.Id))

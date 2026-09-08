@@ -63,6 +63,11 @@ internal sealed class SubjectUpdateApplyContext
         }
     }
 
+    public Dictionary<string, SubjectPropertyUpdate> GetSubjectProperties(string subjectId)
+        => Subjects.TryGetValue(subjectId, out var properties)
+            ? properties
+            : throw new InvalidOperationException($"Subject update references missing subject '{subjectId}'.");
+
     public bool TryMarkAsProcessed(string subjectId)
         => _processedSubjectIds.Add(subjectId);
 

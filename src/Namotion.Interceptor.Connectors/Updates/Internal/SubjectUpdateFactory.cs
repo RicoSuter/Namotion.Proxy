@@ -74,7 +74,10 @@ internal static class SubjectUpdateFactory
 
         var registeredSubject = subject.TryGetRegisteredSubject();
         if (registeredSubject is null)
+        {
+            builder.HasUnregisteredSubjects = true;
             return;
+        }
 
         var properties = builder.GetOrCreateProperties(subjectId);
 

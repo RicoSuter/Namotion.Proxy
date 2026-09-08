@@ -372,7 +372,9 @@ Circular references are handled naturally by the flat structure. Each subject ap
 }
 ```
 
-No special `reference` field is needed - the `id` field always points to a subject in the dictionary.
+No special `reference` field is needed - the `id` field always points to a subject in the dictionary. A non-null object, inserted item, or sparse item ID missing from `subjects` is an invalid update: applying it reports a property failure and preserves that property, while sibling property updates continue. A null object ID intentionally clears the reference. Remove operations need only the index or key, without subject payload.
+
+Every subject referenced by the final update must have Registry metadata, including subjects returned by derived properties. Intermediate references overwritten while building a batch do not require a payload. A detached local projection remains valid to read, but update creation rejects it instead of emitting a dangling ID. Register the projected subject or exclude the referencing property with an `ISubjectUpdateProcessor`. Projections of subjects registered in another context are supported.
 
 ## Null Collections and Dictionaries
 
