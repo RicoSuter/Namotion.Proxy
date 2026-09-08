@@ -701,27 +701,11 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         }
     }
 
-    /// <summary>
-    /// Hands back everything a rejected attach had already written. Discovery reads user values
-    /// before the claim publishes anything, so a concurrent write can install a child that seeding
-    /// then refuses, and the anchor, the seeded baselines and the claims taken in between must not
-    /// outlive that refusal.
-    /// </summary>
+    /// <summary>Removes a rejected root anchor and releases the component that loses its support.</summary>
     /// <remarks>
-    /// Whatever the seed managed to publish hangs off the root's committed baselines, so removing
-    /// those edges releases it the ordinary way, cascade and detach callbacks included. That is also
-    /// the only handle on a subject a concurrent write installed after the scan: it is published but
-    /// was never in the claimed set, so a claim-only rollback would leave it attached.
-    ///
-    /// The order is deliberate: the root keeps its anchor, its baselines and its claim until the
-    /// drain has actually finished, so a rollback that cannot complete leaves the root attached and
-    /// detachable rather than stripped of the very state <c>DetachFromContext</c> needs.
-    ///
-    /// A provisional anchor the seed consumed goes back before the drain, because the edge that
-    /// consumed it is among the edges drained, and without the anchor that removal would release a
-    /// subject that was attached and held before the attach began, together with everything it
-    /// holds. The restore is a compare-and-swap against the revision the consumption produced, so
-    /// a subject whose attachment moved since (promoted, detached, released) keeps what it has.
+    /// Restore consumed provisional anchors before release so pre-existing roots keep their support.
+    /// A root retained by an independently committed edge keeps its installed children and failed-seed
+    /// state for retry; draining those children would invalidate that surviving ownership lifetime.
     /// </remarks>
     private void RollbackRejectedAttach(
         IInterceptorSubject subject,
@@ -729,7 +713,6 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         List<IInterceptorSubject> claimed,
         List<(IInterceptorSubject Subject, long Revision)> consumedAnchors)
     {
-        var children = LifecycleScratch.RentChildList();
         try
         {
             foreach (var (consumedSubject, revision) in consumedAnchors)
@@ -737,18 +720,8 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 consumedSubject.Executor.TryUpdateAttachment(revision, _context, SubjectAttachmentAnchorKind.Provisional, out _);
             }
 
-            _graph.CollectStructuralChildren(subject, children, seed: false);
-            foreach (var (property, occurrence, _) in children)
-            {
-                _release.RemoveEdge(occurrence.Subject, property, occurrence.Index);
-            }
-
             _graph.SetAnchor(subject, SubjectAttachmentAnchorKind.None);
 
-            // The drain above ran while the anchor was still set, so a back edge inside the
-            // component kept the root anchor-reachable and nothing released it. Re-evaluate now
-            // that the anchor is gone, or the root stays owned with no anchor and no way to
-            // detach it.
             var ownership = _graph.TryGetOwnership(subject);
             if (ownership is null)
             {
@@ -804,10 +777,6 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 $"failed with {exception.GetType().Name}: {exception.Message}. The attach's own " +
                 "exception is propagating and this one is not, so part of the attach is still " +
                 "published and the root is still attached; detach it explicitly to clean up.");
-        }
-        finally
-        {
-            LifecycleScratch.Return(children);
         }
     }
 
