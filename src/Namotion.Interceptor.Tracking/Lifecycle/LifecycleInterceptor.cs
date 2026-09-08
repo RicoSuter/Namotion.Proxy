@@ -626,7 +626,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         try
         {
             var executor = subject.Executor;
-            executor.TryGetAttachment(out var attachedContext, out var currentAnchor, out _);
+            executor.TryGetAttachment(out var attachedContext, out var currentAnchor, out var rootAttachmentRevision);
             InterceptorSubjectExtensions.ValidateRootAnchor(attachedContext, currentAnchor, context, anchor);
 
             if (attachedContext is not null)
@@ -658,6 +658,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             try
             {
                 ClaimComponentForRoot(subject, anchor, claimed);
+                executor.TryGetAttachment(out _, out _, out rootAttachmentRevision);
                 SeedAndAttachComponent(subject);
                 published = true;
             }
@@ -675,7 +676,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 }
                 else
                 {
-                    RollbackRejectedAttach(subject, anchor, claimed, consumedAnchors);
+                    RollbackRejectedAttach(subject, anchor, rootAttachmentRevision, claimed, consumedAnchors);
                 }
 
                 LifecycleScratch.Return(claimed);
@@ -702,36 +703,44 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     private void RollbackRejectedAttach(
         IInterceptorSubject subject,
         SubjectAttachmentAnchorKind anchor,
+        long rootAttachmentRevision,
         List<IInterceptorSubject> claimed,
         List<(IInterceptorSubject Subject, long Revision)> consumedAnchors)
     {
         try
         {
+            // A getter can detach and explicitly reattach this root, even while outside support
+            // retains its ownership record. That newer anchor does not belong to this rollback.
+            subject.Executor.TryGetAttachment(out _, out _, out var currentRootRevision);
+            var ownsRootAnchor = currentRootRevision == rootAttachmentRevision;
             foreach (var (consumedSubject, revision) in consumedAnchors)
             {
                 consumedSubject.Executor.TryUpdateAttachment(revision, _context, SubjectAttachmentAnchorKind.Provisional, out _);
             }
 
-            _graph.SetAnchor(subject, SubjectAttachmentAnchorKind.None);
+            if (ownsRootAnchor)
+            {
+                _graph.SetAnchor(subject, SubjectAttachmentAnchorKind.None);
 
-            var ownership = _graph.TryGetOwnership(subject);
-            if (ownership is null)
-            {
-                _graph.ReleaseClaim(subject);
-            }
-            else if (ownership.IncomingCount == 0 || !_reachability.IsAnchorReachable(subject, null))
-            {
-                try
+                var ownership = _graph.TryGetOwnership(subject);
+                if (ownership is null)
                 {
-                    _release.ReleaseRoot(subject);
+                    _graph.ReleaseClaim(subject);
                 }
-                catch
+                else if (ownership.IncomingCount == 0 || !_reachability.IsAnchorReachable(subject, null))
                 {
-                    // The release runs detach callbacks, so it can fail partway. Put the anchor
-                    // back: the trace below tells the caller to detach the root explicitly, and
-                    // without an anchor that is exactly what DetachFromContext refuses to do.
-                    _graph.SetAnchor(subject, anchor);
-                    throw;
+                    try
+                    {
+                        _release.ReleaseRoot(subject);
+                    }
+                    catch
+                    {
+                        // The release runs detach callbacks, so it can fail partway. Put the anchor
+                        // back: the trace below tells the caller to detach the root explicitly, and
+                        // without an anchor that is exactly what DetachFromContext refuses to do.
+                        _graph.SetAnchor(subject, anchor);
+                        throw;
+                    }
                 }
             }
 
