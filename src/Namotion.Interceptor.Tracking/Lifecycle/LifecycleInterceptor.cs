@@ -411,23 +411,23 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 {
                     next(ref context);
                 }
-                finally
+                catch (Exception writeException) when (context.IsWritten)
                 {
-                    // The authoritative getter output rather than the proposed value: a normalizing or
-                    // derived setter may store a different graph than the caller passed.
-                    var getValue = metadata.GetValue;
-                    var storedValue = getValue is not null ? getValue(subject) : context.NewValue;
-                    if (!IsTheProposedValue(storedValue, context.NewValue))
+                    // A downstream interceptor can throw after the terminal committed its value.
+                    try
                     {
-                        // The terminal stored something else, so the claim above covers a graph that is
-                        // not the one now in the property. Claiming what was actually stored keeps the
-                        // foreign-subject rejection ahead of every graph mutation: the baseline, the
-                        // ownership records and the attach notifications all come after this point.
-                        ClaimProposedComponent(metadata.Type, storedValue, claimed);
+                        ReconcileStoredValue(ref context, metadata, claimed);
+                    }
+                    catch (Exception reconciliationException)
+                    {
+                        throw new AggregateException("The write and its lifecycle reconciliation both failed.",
+                            writeException, reconciliationException);
                     }
 
-                    _reconciler.Reconcile(property, metadata, storedValue);
+                    throw;
                 }
+
+                ReconcileStoredValue(ref context, metadata, claimed);
             }
             finally
             {
@@ -437,6 +437,26 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 LifecycleScratch.Return(claimed);
             }
         }
+    }
+
+    private void ReconcileStoredValue<TProperty>(ref PropertyWriteContext<TProperty> context, SubjectPropertyMetadata metadata, List<IInterceptorSubject> claimed)
+    {
+        var property = context.Property;
+
+        // The authoritative getter output rather than the proposed value: a normalizing or
+        // derived setter may store a different graph than the caller passed.
+        var getValue = metadata.GetValue;
+        var storedValue = getValue is not null ? getValue(property.Subject) : context.NewValue;
+        if (!IsTheProposedValue(storedValue, context.NewValue))
+        {
+            // The terminal stored something else, so the claim above covers a graph that is
+            // not the one now in the property. Claiming what was actually stored keeps the
+            // foreign-subject rejection ahead of every graph mutation: the baseline, the
+            // ownership records and the attach notifications all come after this point.
+            ClaimProposedComponent(metadata.Type, storedValue, claimed);
+        }
+
+        _reconciler.Reconcile(property, metadata, storedValue);
     }
 
     /// <summary>
