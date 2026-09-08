@@ -132,11 +132,9 @@ internal static class SubjectMetadataExtractor
         // Collect methods from all partial declarations
         var methods = CollectMethods(typeSymbol, semanticModel, location, diagnostics, cancellationToken);
 
-        // Detect constructor state
-        var (needsGeneratedParameterlessConstructor, hasOrWillHaveParameterlessConstructor,
-            parameterlessConstructorSetsRequiredMembers) = DetectConstructorState(typeSymbol, allTypeDeclarations);
-
         var constructors = CollectConstructors(allTypeDeclarations, semanticModel, cancellationToken);
+        var (needsGeneratedParameterlessConstructor, hasOrWillHaveParameterlessConstructor,
+            parameterlessConstructorSetsRequiredMembers) = DetectConstructorState(typeSymbol, allTypeDeclarations, constructors);
 
         return new ExtractionResult(
             new SubjectMetadata(
@@ -826,19 +824,17 @@ internal static class SubjectMetadataExtractor
     /// </summary>
     private static (bool NeedsGeneratedParameterlessConstructor, bool HasOrWillHaveParameterlessConstructor, bool ParameterlessConstructorSetsRequiredMembers) DetectConstructorState(
         INamedTypeSymbol typeSymbol,
-        TypeDeclarationSyntax[] allTypeDeclarations)
+        TypeDeclarationSyntax[] allTypeDeclarations,
+        IReadOnlyList<SubjectConstructor> constructors)
     {
-        // A static constructor is not an instance constructor, so nothing can chain to it and it
-        // never stands in for the parameterless one the emitted constructors need.
-        var firstConstructor = allTypeDeclarations
-            .SelectMany(c => c.Members)
+        // Unsupported instance signatures still suppress an implicit parameterless constructor;
+        // static constructors do not. Only eligible parameterless targets enable the context form.
+        var needsGeneratedParameterlessConstructor = !allTypeDeclarations
+            .SelectMany(declaration => declaration.Members)
             .OfType<ConstructorDeclarationSyntax>()
-            .FirstOrDefault(constructor => !constructor.Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.StaticKeyword)));
-
-        // No constructor at all: generate a parameterless one. A first constructor with parameters
-        // means there is no parameterless one to chain to, so nothing is generated.
-        var needsGeneratedParameterlessConstructor = firstConstructor is null;
-        var hasOrWillHaveParameterlessConstructor = firstConstructor is null or { ParameterList.Parameters.Count: 0 };
+            .Any(constructor => !constructor.Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.StaticKeyword)));
+        var hasOrWillHaveParameterlessConstructor = needsGeneratedParameterlessConstructor ||
+            constructors.Any(constructor => constructor.Parameters.Count == 0 && !constructor.IsObsolete);
 
         return (
             needsGeneratedParameterlessConstructor,
