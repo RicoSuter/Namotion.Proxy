@@ -386,3 +386,6 @@ src/HomeBlaze/HomeBlaze/PluginsCache/
 # Performance pass artifacts
 benchmark_*.md
 .claude/scheduled_tasks.lock
+
+# Git worktrees
+.worktrees/
