@@ -116,7 +116,7 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
 
             // Attached but unowned is also what a claimed, not yet published attach looks like, and
             // property admission has to publish edges for that one and none for this one.
-            graph.MarkReleasing(subject);
+            graph.MarkReleasing(subject, ownership);
 
             foreach (var entry in subject.Properties)
             {
@@ -140,7 +140,7 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
 
             // Only after the subject's own teardown callbacks completed, so they still resolve the
             // context they are being torn down from.
-            notifier.QueueRelease(subject);
+            notifier.QueueRelease(subject, ownership);
             releaseQueued = true;
 
             // Handing the claim back ends the attached-but-unowned ambiguity the marker exists to
@@ -154,7 +154,7 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
         }
         finally
         {
-            if (!releaseQueued) graph.ClearReleasing(subject);
+            if (!releaseQueued) graph.ClearReleasing(subject, ownership);
             LifecycleScratch.Return(children);
         }
     }

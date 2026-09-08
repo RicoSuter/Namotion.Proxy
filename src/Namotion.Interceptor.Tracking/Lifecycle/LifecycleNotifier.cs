@@ -57,7 +57,7 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
     }
     public void RefreshCollectionProperty(PropertyReference property, object? value) => _notifications.Add(new(NotificationKind.Refresh, default, property, value));
     public void QueueProperty(PropertyReference property, bool attach) => _notifications.Add(new(attach ? NotificationKind.AttachProperty : NotificationKind.DetachProperty, default, property));
-    public void QueueRelease(IInterceptorSubject subject) => _notifications.Add(new(NotificationKind.ReleaseClaim, new SubjectLifecycleChange { Subject = subject, ReferenceCount = 0 }));
+    public void QueueRelease(IInterceptorSubject subject, SubjectOwnership ownership) => _notifications.Add(new(NotificationKind.ReleaseClaim, new SubjectLifecycleChange { Subject = subject, ReferenceCount = 0 }, Value: ownership));
 
     public void PublishEdgeRemoved(IInterceptorSubject subject, PropertyReference property, object? index, int referenceCount)
     {
@@ -115,8 +115,13 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
                         }
                         break;
                     case NotificationKind.ReleaseClaim:
-                        if (!graph.IsOwned(notification.Change.Subject)) graph.ReleaseClaim(notification.Change.Subject);
-                        graph.ClearReleasing(notification.Change.Subject);
+                        var subject = notification.Change.Subject;
+                        var ownership = (SubjectOwnership)notification.Value!;
+                        if (graph.IsCurrentRelease(subject, ownership))
+                        {
+                            if (!graph.IsOwned(subject)) graph.ReleaseClaim(subject);
+                            graph.ClearReleasing(subject, ownership);
+                        }
                         break;
                 }
             }

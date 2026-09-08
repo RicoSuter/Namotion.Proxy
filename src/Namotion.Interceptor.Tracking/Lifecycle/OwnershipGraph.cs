@@ -38,9 +38,11 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     // A nested write can replace a value and restore the exact same instance before returning.
     private long _nextBaselineRevision;
 
-    // Derived readers consult this outside the topology gate to distinguish a retained teardown
-    // claim from a newly claimed component. Its monitor is a leaf and never invokes user code.
-    private readonly HashSet<IInterceptorSubject> _releasing = new(ReferenceEqualityComparer.Instance);
+    // Writers hold the topology gate. The leaf lock also protects derived readers outside that
+    // gate; no executor or user code runs while it is held. Ownership identity distinguishes a
+    // newer release queued by reattachment from the older release still awaiting delivery.
+    private readonly Lock _releasingLock = new();
+    private readonly Dictionary<IInterceptorSubject, SubjectOwnership> _releasing = new(ReferenceEqualityComparer.Instance);
 
     public IInterceptorSubjectContext Context { get; } = context;
 
@@ -99,27 +101,38 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     /// </remarks>
     public bool IsReleasing(IInterceptorSubject subject)
     {
-        lock (_releasing)
+        lock (_releasingLock)
         {
-            return _releasing.Contains(subject);
+            return _releasing.ContainsKey(subject);
+        }
+    }
+
+    public bool IsCurrentRelease(IInterceptorSubject subject, SubjectOwnership ownership)
+    {
+        lock (_releasingLock)
+        {
+            return _releasing.TryGetValue(subject, out var current) && ReferenceEquals(current, ownership);
         }
     }
 
     /// <inheritdoc cref="IsReleasing"/>
-    public void MarkReleasing(IInterceptorSubject subject)
+    public void MarkReleasing(IInterceptorSubject subject, SubjectOwnership ownership)
     {
-        lock (_releasing)
+        lock (_releasingLock)
         {
-            _releasing.Add(subject);
+            _releasing[subject] = ownership;
         }
     }
 
     /// <inheritdoc cref="IsReleasing"/>
-    public void ClearReleasing(IInterceptorSubject subject)
+    public void ClearReleasing(IInterceptorSubject subject, SubjectOwnership ownership)
     {
-        lock (_releasing)
+        lock (_releasingLock)
         {
-            _releasing.Remove(subject);
+            if (_releasing.TryGetValue(subject, out var current) && ReferenceEquals(current, ownership))
+            {
+                _releasing.Remove(subject);
+            }
         }
     }
 
