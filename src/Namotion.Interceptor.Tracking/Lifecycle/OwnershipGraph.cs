@@ -37,7 +37,7 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 
     // A nested write can replace a value and restore the exact same instance before returning.
     private long _nextBaselineRevision;
-    private readonly Dictionary<PropertyReference, int> _activeSeedingGetters = new(PropertyReference.Comparer);
+    private readonly Dictionary<(PropertyReference Property, SubjectOwnership? Ownership), int> _activeSeedingGetters = new();
 
     // Writers hold the topology gate. The leaf lock also protects derived readers outside that
     // gate; no executor or user code runs while it is held. Ownership identity distinguishes a
@@ -293,21 +293,23 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 
     public bool IsEvaluatingSeedingGetter(PropertyReference property)
     {
-        return _activeSeedingGetters.Count > 0 && _activeSeedingGetters.ContainsKey(property);
+        return _activeSeedingGetters.Count > 0 && _activeSeedingGetters.ContainsKey((property, TryGetOwnership(property.Subject)));
     }
 
     private object? ReadSeedingGetter(PropertyReference property, SubjectPropertyMetadata metadata)
     {
-        _activeSeedingGetters[property] = _activeSeedingGetters.GetValueOrDefault(property) + 1;
+        // A released owner can be reattached while an older getter frame is still running.
+        var evaluation = (property, TryGetOwnership(property.Subject));
+        _activeSeedingGetters[evaluation] = _activeSeedingGetters.GetValueOrDefault(evaluation) + 1;
         try
         {
             return metadata.GetValue?.Invoke(property.Subject);
         }
         finally
         {
-            var remaining = _activeSeedingGetters[property] - 1;
-            if (remaining == 0) _activeSeedingGetters.Remove(property);
-            else _activeSeedingGetters[property] = remaining;
+            var remaining = _activeSeedingGetters[evaluation] - 1;
+            if (remaining == 0) _activeSeedingGetters.Remove(evaluation);
+            else _activeSeedingGetters[evaluation] = remaining;
         }
     }
 
