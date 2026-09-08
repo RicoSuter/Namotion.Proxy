@@ -23,12 +23,19 @@ public class RootManager : BackgroundService, IConfigurationWriter
     /// <summary>
     /// The root subject loaded from configuration.
     /// </summary>
+    /// <remarks>Available during attachment for path resolution. Await <see cref="LoadingCompleted"/> before browsing the graph.</remarks>
     public IInterceptorSubject? Root { get; internal set; }
 
     /// <summary>
-    /// Whether the root has been loaded.
+    /// Whether root loading, attachment and service registration completed successfully.
     /// </summary>
-    public bool IsLoaded => Root != null;
+    public bool IsLoaded => ExecuteTask?.IsCompletedSuccessfully == true;
+
+    /// <summary>
+    /// Completes after root loading, attachment and service registration finish, or reports the loading failure or cancellation.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The hosted service has not been started.</exception>
+    public Task LoadingCompleted => ExecuteTask ?? throw new InvalidOperationException("Root loading has not started.");
 
     public RootManager(
         SubjectTypeRegistry typeRegistry,
