@@ -35,14 +35,14 @@ public class OpcUaSubjectLoaderTestsBase
     /// lifecycle interceptor the loaded graph never touches, and every subject-detach path would go
     /// untested.
     /// </summary>
-    private protected (OpcUaSubjectLoader Loader, SourceOwnershipManager PropertyTracker, IInterceptorSubject Subject) CreateLoader(
+    private protected (OpcUaSubjectLoader Loader, SourceOwnershipManager Ownership, IInterceptorSubject Subject) CreateLoader(
         Func<ReferenceDescription, CancellationToken, Task<bool>>? shouldAddDynamicProperties = null,
         Func<ReferenceDescription, CancellationToken, Task<bool>>? shouldAddDynamicAttributes = null,
         OpcUaTypeResolver? typeResolver = null,
         int? maxAttributeTraversals = null)
     {
         var subject = new DynamicSubject(CreateSubjectContext());
-        var (loader, ownership) = CreateLoaderFor(
+        var (loader, ownership, _) = CreateLoaderFor(
             subject,
             shouldAddDynamicProperties,
             shouldAddDynamicAttributes,
@@ -58,7 +58,7 @@ public class OpcUaSubjectLoaderTestsBase
     /// a context created by <see cref="CreateSubjectContext"/> so the source sees the same
     /// lifecycle interceptor as the loaded graph.
     /// </summary>
-    private protected (OpcUaSubjectLoader Loader, SourceOwnershipManager PropertyTracker) CreateLoaderFor(
+    private protected (OpcUaSubjectLoader Loader, SourceOwnershipManager Ownership, OpcUaSubjectClientSource Source) CreateLoaderFor(
         IInterceptorSubject subject,
         Func<ReferenceDescription, CancellationToken, Task<bool>>? shouldAddDynamicProperties = null,
         Func<ReferenceDescription, CancellationToken, Task<bool>>? shouldAddDynamicAttributes = null,
@@ -84,7 +84,7 @@ public class OpcUaSubjectLoaderTestsBase
             source.Ownership,
             source,
             NullLogger<OpcUaSubjectClientSource>.Instance);
-        return (loader, source.Ownership);
+        return (loader, source.Ownership, source);
     }
 
     /// <summary>

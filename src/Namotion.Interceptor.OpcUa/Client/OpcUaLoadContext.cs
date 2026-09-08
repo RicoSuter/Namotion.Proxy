@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Namotion.Interceptor.Connectors;
+using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Registry.Abstractions;
 using Namotion.Interceptor.Tracking.Lifecycle;
 using Opc.Ua;
@@ -8,23 +9,17 @@ using Opc.Ua.Client;
 namespace Namotion.Interceptor.OpcUa.Client;
 
 /// <summary>
-/// Per-load staged context. All claims and root mutations are queued during
-/// discovery and committed via <see cref="Apply"/> on success. If <see cref="Dispose"/>
-/// runs before <see cref="Apply"/>, the rollback path detaches the staged subjects that
-/// nothing references, so the registry sheds them.
-/// <para>
-/// Rollback is deliberately not all-or-nothing. A staged subject that was bound to a property
-/// during the load is left attached, because the model references it and it is no longer an
-/// orphan. Detaching it would evict it from the registry while its parent property still pointed
-/// at it, and nothing reconciles those two. So a failed load can leave a partially populated
-/// subtree in place, registered and monitored, which the next successful load completes.
-/// </para>
+/// Per-load staged context. All ownership claims and property bindings are queued during
+/// discovery and applied by <see cref="Commit"/>. A failure before <see cref="Commit"/> leaves the
+/// model at its pre-load state, except for the dynamic properties and attributes that discovery
+/// adds eagerly, and <see cref="Dispose"/> then detaches the staged subjects so the registry sheds
+/// them. A failure inside <see cref="Commit"/> releases the claims it established and restores the
+/// bindings it applied.
 /// Unrelated to <c>Namotion.Interceptor.Tracking.Transactions.SubjectTransaction</c>,
 /// which captures property-change scopes for the tracking layer.
 /// </summary>
 internal sealed class OpcUaLoadContext : IDisposable
 {
-    private readonly IInterceptorSubject _rootSubject;
     private readonly SourceOwnershipManager _ownership;
     private readonly OpcUaSubjectClientSource _source;
     private readonly uint _maxReferencesPerNode;
@@ -32,14 +27,13 @@ internal sealed class OpcUaLoadContext : IDisposable
     private readonly ILogger _logger;
     private readonly Dictionary<NodeId, IReadOnlyList<ReferenceDescription>> _browseCache = new();
     private readonly List<(PropertyReference Property, NodeId NodeId, MonitoredItem MonitoredItem)> _pendingClaims = new();
-    private readonly Dictionary<PropertyReference, int> _queuedClaimIndices = new(PropertyReference.Comparer);
-    private readonly List<Action> _pendingRootOps = new();
+    private readonly Dictionary<PropertyReference, int> _pendingClaimIndices = new(PropertyReference.Comparer);
+    private readonly List<(RegisteredSubjectProperty Property, object? Value)> _pendingBindings = new();
     private readonly List<(IInterceptorSubject Subject, IInterceptorSubjectContext ParentContext)> _stagedSubjects = new();
     private bool _committed;
 
     public OpcUaLoadContext(
         ISession session,
-        IInterceptorSubject rootSubject,
         SourceOwnershipManager ownership,
         OpcUaSubjectClientSource source,
         uint maxReferencesPerNode,
@@ -48,7 +42,6 @@ internal sealed class OpcUaLoadContext : IDisposable
         CancellationToken cancellationToken)
     {
         Session = session;
-        _rootSubject = rootSubject;
         _ownership = ownership;
         _source = source;
         _maxReferencesPerNode = maxReferencesPerNode;
@@ -117,9 +110,9 @@ internal sealed class OpcUaLoadContext : IDisposable
 
     /// <summary>
     /// Queues a source-ownership claim and its associated monitored item. Both are
-    /// applied atomically during <see cref="Apply"/>: the monitored item is only added
+    /// applied atomically during <see cref="Commit"/>: the monitored item is only added
     /// to <see cref="MonitoredItems"/> on successful claim, so a property that's owned
-    /// by a different source by the time Apply runs never gets monitored. Duplicate
+    /// by a different source by the time Commit runs never gets monitored. Duplicate
     /// claims for the same property (graph-shaped address spaces where the same
     /// PropertyReference is reached via multiple paths) are deduped so a property
     /// never gets monitored twice; when the duplicate carries a different NodeId,
@@ -128,7 +121,7 @@ internal sealed class OpcUaLoadContext : IDisposable
     /// </summary>
     public void QueueClaim(PropertyReference property, NodeId nodeId, MonitoredItem monitoredItem)
     {
-        if (_queuedClaimIndices.TryGetValue(property, out var index))
+        if (_pendingClaimIndices.TryGetValue(property, out var index))
         {
             var existing = _pendingClaims[index];
             if (existing.NodeId != nodeId)
@@ -143,42 +136,27 @@ internal sealed class OpcUaLoadContext : IDisposable
             }
             return;
         }
-        _queuedClaimIndices[property] = _pendingClaims.Count;
+        _pendingClaimIndices[property] = _pendingClaims.Count;
         _pendingClaims.Add((property, nodeId, monitoredItem));
     }
 
     /// <summary>
-    /// Queues a <c>SetValueFromSource</c> if the property is owned by the root subject,
-    /// otherwise applies it live. Centralized so loader call sites don't have to mention
-    /// the root-deferral rule directly.
+    /// Queues a property binding that <see cref="Commit"/> applies in queue order through
+    /// <c>SetValueFromSource</c>. On rollback, the entry is discarded.
     /// </summary>
-    public void QueueOrApplySetValue(object source, RegisteredSubjectProperty property, object? value)
+    public void QueueBinding(RegisteredSubjectProperty property, object? value)
     {
-        if (ReferenceEquals(property.Subject, _rootSubject))
-        {
-            _pendingRootOps.Add(() => property.SetValueFromSource(source, null, null, value));
-        }
-        else
-        {
-            property.SetValueFromSource(source, null, null, value);
-        }
+        _pendingBindings.Add((property, value));
     }
 
     /// <summary>
-    /// Registers a newly constructed subject and adds the parent context as fallback so
-    /// the subject can resolve services (registry, interceptors) during discovery. Uses the
-    /// immediate parent context rather than the root context, so that in the ordinary tree case
-    /// the link matches the one <c>ContextInheritanceHandler</c> removes when the subject's last
-    /// property reference goes away.
-    /// <para>
-    /// The handler does not add a link of its own for a staged subject: its add is gated on the
-    /// subject not already being context-attached, and staging makes that false. So this link is
-    /// the only one, and whoever removes it must use this same parent context. That holds for a
-    /// tree. In a graph-shaped address space the per-load NodeId cache can bind the subject under a
-    /// different parent, and the handler's removal is then keyed to that other parent and does
-    /// nothing, which <see cref="Dispose"/>'s second pass exists to clean up.
-    /// </para>
-    /// On rollback we undo this add, but only for subjects that no property references by then.
+    /// Registers a newly constructed subject and adds the parent context as fallback so the
+    /// subject can resolve services (registry, interceptors) during discovery. Uses the immediate
+    /// parent context rather than the root context, so that in the ordinary tree case the link
+    /// matches the one <c>ContextInheritanceHandler</c> removes when the subject's last property
+    /// reference goes away. The handler adds no link of its own for a staged subject, because its
+    /// add is gated on the subject not already being context-attached, so this link is the only
+    /// one. <see cref="Dispose"/> undoes it for every staged subject that nothing references.
     /// </summary>
     public void RegisterStagedSubject(IInterceptorSubject subject, IInterceptorSubjectContext parentContext)
     {
@@ -198,36 +176,36 @@ internal sealed class OpcUaLoadContext : IDisposable
     }
 
     /// <summary>
-    /// Commits the load: claims source ownership for every queued property, then
-    /// runs the queued root mutations. Claims run first so an observer that sees
-    /// a new root child appear finds all of the child's leaves already source-owned.
+    /// Commits the load: claims source ownership for every queued property, then applies the
+    /// queued bindings in queue order. Claims run first so an observer that sees a new child
+    /// appear finds all of the child's leaves already source-owned. A queued claim whose subject
+    /// the application detached during the load is dropped.
     /// </summary>
     /// <remarks>
-    /// Atomicity is best-effort, not all-or-nothing. The catch-path releases only the
-    /// source claims newly established during this Apply call (ownership that predates
-    /// this Apply, e.g. from a previous successful load, is retained), but root mutations
-    /// (<see cref="QueueOrApplySetValue"/> ops on the root subject) that ran before
-    /// the throw cannot be undone because prior values were not captured. After a
-    /// mid-Apply throw, expect: (a) ownership consistent (this Apply's new claims
-    /// released, pre-existing ownership kept), (b) some root properties may hold subject
-    /// references whose <see cref="Dispose"/> rollback then detaches their staged
-    /// subjects from the registry. A retry then re-creates fresh subjects and
-    /// re-assigns the same root properties.
+    /// If anything throws, the claims this call established are released while ownership from a
+    /// previous load is kept, the bindings this call applied are restored in reverse order unless
+    /// the property has been re-set since, and <see cref="MonitoredItems"/> is cleared before the
+    /// exception is rethrown.
     /// </remarks>
-    public void Apply()
+    public void Commit()
     {
-        // Best-effort atomicity: if an op throws mid-Apply, release any source claims
-        // we already committed so the next retry isn't blocked by stale ownership.
-        // Root mutations that already ran can't be undone (we don't know prior values),
-        // but releasing claims at least keeps source ownership consistent.
         var committedClaims = new List<PropertyReference>(_pendingClaims.Count);
+        var appliedBindings = new List<(RegisteredSubjectProperty Property, object? PreviousValue, object? AssignedValue)>(_pendingBindings.Count);
         try
         {
             foreach (var (property, nodeId, monitoredItem) in _pendingClaims)
             {
+                if (property.Subject.TryGetRegisteredSubject() is null)
+                {
+                    _logger.LogDebug(
+                        "Skipping claim for {Subject}.{Property}: the subject was detached during the load.",
+                        property.Subject.GetType().Name, property.Name);
+                    continue;
+                }
+
                 // A reload re-claims properties this source already owns from a previous
                 // successful load (ClaimSource is idempotent-true for the same source).
-                // Track only claims newly established by THIS Apply so the rollback below
+                // Track only claims newly established by THIS Commit so the rollback below
                 // cannot strip pre-existing ownership it never created, which would leave
                 // application writes unrouted until the next successful retry.
                 var alreadyOwned = property.TryGetSource(out var existingSource) &&
@@ -248,9 +226,10 @@ internal sealed class OpcUaLoadContext : IDisposable
                 MonitoredItems.Add(monitoredItem);
             }
 
-            foreach (var op in _pendingRootOps)
+            foreach (var (property, value) in _pendingBindings)
             {
-                op();
+                appliedBindings.Add((property, property.GetValue(), value));
+                property.SetValueFromSource(_source, null, null, value);
             }
 
             _committed = true;
@@ -263,10 +242,30 @@ internal sealed class OpcUaLoadContext : IDisposable
                 catch (Exception releaseException)
                 {
                     _logger.LogWarning(releaseException,
-                        "Failed to release source ownership for {Subject}.{Property} during Apply rollback.",
+                        "Failed to release source ownership for {Subject}.{Property} during Commit rollback.",
                         property.Subject.GetType().Name, property.Name);
                 }
             }
+
+            // A property that no longer holds this load's value was re-set by the application
+            // since the write, and that value wins over the pre-load one.
+            for (var i = appliedBindings.Count - 1; i >= 0; i--)
+            {
+                var (property, previousValue, assignedValue) = appliedBindings[i];
+                if (!ReferenceEquals(property.GetValue(), assignedValue))
+                {
+                    continue;
+                }
+
+                try { property.SetValueFromSource(_source, null, null, previousValue); }
+                catch (Exception restoreException)
+                {
+                    _logger.LogWarning(restoreException,
+                        "Failed to restore {Subject}.{Property} during Commit rollback.",
+                        property.Subject.GetType().Name, property.Name);
+                }
+            }
+
             MonitoredItems.Clear();
             throw;
         }
@@ -276,75 +275,41 @@ internal sealed class OpcUaLoadContext : IDisposable
     {
         if (_committed) return;
 
-        // Rollback in reverse order. Nested staged subjects (e.g. ChildB under ParentA)
-        // reach the lifecycle interceptor through their parent context's fallback chain.
-        // If we removed ParentA's fallback to root first, ChildB.Context.RemoveFallbackContext
-        // would no longer find any ILifecycleInterceptor through parentA.Context and the
-        // detach (and registry removal) would be skipped. Removing deepest-first preserves
-        // the chain until each staged subject has detached.
-        //
-        // Each iteration is guarded so one failed detach doesn't strand the rest (which
-        // would leak staged subjects into the registry) or mask the load's original
-        // exception (Dispose runs via using, and a throw here would supersede).
-        for (var i = _stagedSubjects.Count - 1; i >= 0; i--)
+        // Only a staged subject that nothing references is shed: one that gained a property
+        // reference belongs to the model now, and detaching it would evict it from the registry
+        // while that property still points at it. Deepest first, because a nested staged subject
+        // reaches the lifecycle interceptor through its parent's fallback chain. The loop repeats
+        // because detaching one subject releases its own references and can drop another staged
+        // subject to zero. Each detach is guarded so one failure neither strands the rest nor
+        // masks the load's own exception.
+        bool removedAny;
+        do
         {
-            var (staged, parentContext) = _stagedSubjects[i];
+            removedAny = false;
+            for (var i = _stagedSubjects.Count - 1; i >= 0; i--)
+            {
+                var (staged, parentContext) = _stagedSubjects[i];
+                if (staged.GetReferenceCount() != 0)
+                {
+                    continue;
+                }
 
-            // A staged subject that acquired a property reference during the load is no longer
-            // staged: the model references it, so it is not an orphan to shed. Detaching it here
-            // would evict it from the registry while the parent property still points at it, and
-            // nothing reconciles those two. ContextInheritanceHandler is otherwise the only caller
-            // that removes a fallback context, and it only does so once the last property
-            // reference is gone, so this is what keeps that invariant true for the loader too.
-            if (staged.GetReferenceCount() > 0)
-            {
-                continue;
+                try
+                {
+                    removedAny |= staged.Context.RemoveFallbackContext(parentContext);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "Failed to detach staged subject {Subject} from parent context during rollback.",
+                        staged.GetType().Name);
+                }
             }
-
-            try
-            {
-                staged.Context.RemoveFallbackContext(parentContext);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex,
-                    "Failed to detach staged subject {Subject} from parent context during rollback.",
-                    staged.GetType().Name);
-            }
-        }
-        // Second pass, once the detaches above have settled. Removing one staged subject can
-        // cascade into another that was skipped a moment ago for still having a reference, and the
-        // cascade's own removal is keyed to the parent holding the property reference, which is not
-        // necessarily the parent it was staged under: the per-load NodeId cache binds an
-        // already-staged subject under a second parent in graph-shaped address spaces. When those
-        // differ, the handler's removal is a no-op and the staging link survives, keeping the
-        // subject reachable from that parent's context for good. Re-checking here catches it.
-        // Removal only, never an add, so this cannot introduce a delegation cycle, and
-        // RemoveFallbackContext is a no-op when the link is already gone, so it is order
-        // independent and safe to run over entries the first pass already handled.
-        for (var i = _stagedSubjects.Count - 1; i >= 0; i--)
-        {
-            var (staged, parentContext) = _stagedSubjects[i];
-            if (staged.GetReferenceCount() != 0)
-            {
-                continue;
-            }
-
-            try
-            {
-                staged.Context.RemoveFallbackContext(parentContext);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex,
-                    "Failed to release the staging context of subject {Subject} during rollback.",
-                    staged.GetType().Name);
-            }
-        }
+        } while (removedAny);
 
         _stagedSubjects.Clear();
-        _queuedClaimIndices.Clear();
+        _pendingClaimIndices.Clear();
         _pendingClaims.Clear();
-        _pendingRootOps.Clear();
+        _pendingBindings.Clear();
     }
 }

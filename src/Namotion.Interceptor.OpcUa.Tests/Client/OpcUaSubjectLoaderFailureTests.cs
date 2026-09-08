@@ -66,10 +66,10 @@ public class OpcUaSubjectLoaderFailureTests
         await Assert.ThrowsAsync<OpcUaTransientServiceException>(
             () => loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None));
 
-        // Assert: with partial deferral, dynamic property slots may exist on root, but
-        // they have no values (no SetValueFromSource happened) and no source claims
-        // (deferred to Apply, never reached). On retry the same slots get filled
-        // cleanly. The orphan and retry tests cover registry cleanliness.
+        // Assert: dynamic property slots may exist on root, but they have no values and no
+        // source claims, because both are deferred to a Commit that was never reached. On
+        // retry the same slots get filled cleanly. The orphan and retry tests cover registry
+        // cleanliness.
         Assert.Empty(source.Ownership.Properties);
         foreach (var property in registeredSubject.Properties)
         {
@@ -117,33 +117,35 @@ public class OpcUaSubjectLoaderFailureTests
         var orphans = postFailureKeys.Except(preLoadKeys).ToArray();
         Assert.Empty(orphans);
 
-        // Assert: no source-ownership claims committed (Apply never ran past
-        // discovery; rollback discarded pending claims).
+        // Assert: no source-ownership claims committed (Commit was never reached; rollback
+        // discarded the pending claims).
         Assert.Empty(source.Ownership.Properties);
     }
 
     [Fact]
-    public void WhenApplyFailsMidway_ThenOwnershipFromPreviousLoadIsRetained()
+    public void WhenCommitFailsMidway_ThenOnlyItsOwnClaimsAndBindingsAreRolledBack()
     {
-        // Arrange: simulate a reload. "PreOwned" is already owned by this source from a
-        // previous successful load; "NewlyClaimed" is claimed for the first time by this
-        // Apply. A queued root op then throws mid-Apply. The rollback must release only
-        // the claim this Apply established: releasing pre-existing ownership would leave
-        // application writes unrouted until the next successful retry.
+        // Arrange: simulate a reload. "PreOwned" is already owned by this source from a previous
+        // successful load; "NewlyClaimed" is claimed for the first time by this Commit; "Bound" is
+        // written before "Throwing" aborts the Commit. The rollback must release only the claim
+        // this Commit established, because releasing pre-existing ownership would leave
+        // application writes unrouted until the next successful retry, and restore only what it
+        // wrote.
         var (_, source, subject) = CreateFixture();
         var registeredSubject = subject.TryGetRegisteredSubject()!;
 
         var preOwned = registeredSubject.AddProperty("PreOwned", typeof(int), _ => 0, (_, _) => { });
         var newlyClaimed = registeredSubject.AddProperty("NewlyClaimed", typeof(int), _ => 0, (_, _) => { });
+        object? boundValue = "before";
+        var bound = registeredSubject.AddProperty("Bound", typeof(string), _ => boundValue, (_, value) => boundValue = value);
         var throwing = registeredSubject.AddProperty("Throwing", typeof(int), _ => 0,
-            (_, _) => throw new InvalidOperationException("Setter failure aborts Apply."));
+            (_, _) => throw new InvalidOperationException("Setter failure aborts Commit."));
 
         Assert.True(source.Ownership.ClaimSource(preOwned.Reference));
 
         var mockSession = CreateMockSession();
         using var context = new OpcUaLoadContext(
             mockSession.Object,
-            subject,
             source.Ownership,
             source,
             maxReferencesPerNode: 1000,
@@ -153,16 +155,17 @@ public class OpcUaSubjectLoaderFailureTests
 
         context.QueueClaim(preOwned.Reference, new NodeId(9001, 2), new MonitoredItem(NullTelemetryContext.Instance));
         context.QueueClaim(newlyClaimed.Reference, new NodeId(9002, 2), new MonitoredItem(NullTelemetryContext.Instance));
-        context.QueueOrApplySetValue(source, throwing, 42);
+        context.QueueBinding(bound, "after");
+        context.QueueBinding(throwing, 42);
 
         // Act & Assert
-        Assert.Throws<InvalidOperationException>(() => context.Apply());
+        Assert.Throws<InvalidOperationException>(() => context.Commit());
 
-        // The pre-existing ownership survives the rollback; the claim newly established
-        // by this Apply is released.
         Assert.True(preOwned.Reference.TryGetSource(out var owner));
         Assert.Same(source, owner);
         Assert.False(newlyClaimed.Reference.TryGetSource(out _));
+        Assert.Empty(context.MonitoredItems);
+        Assert.Equal("before", bound.GetValue());
     }
 
     [Fact]
@@ -308,19 +311,19 @@ public class OpcUaSubjectLoaderFailureTests
 
         // Assert: subscription fired (browseCountAtSensorAssignment >= 0) and captured
         // the FINAL browse count. Equality proves no further browses happened between
-        // the assignment and method return, which is what Apply-after-discovery guarantees.
+        // the assignment and method return, which is what Commit-after-discovery guarantees.
         Assert.True(browseCount > 0);
         Assert.Equal(browseCount, browseCountAtSensorAssignment);
     }
 
     [Fact]
-    public async Task WhenLoadSucceeds_ThenSourceClaimsHappenBeforeRootAssignmentInApply()
+    public async Task WhenLoadSucceeds_ThenSourceClaimsHappenBeforeRootAssignmentInCommit()
     {
         // Arrange: include a variable property on root so a claim is queued, plus a
         // sub-subject so a root assignment is queued. Subscribe to root's property change
         // observable and capture ownership count synchronously at the moment Sensor
-        // is assigned. If Apply ordering is correct (claims before root ops), the captured
-        // count equals the final claim count. A regression that runs root ops first would
+        // is assigned. If Commit ordering is correct (claims before bindings), the captured
+        // count equals the final claim count. A regression that applies bindings first would
         // capture 0 here.
         var (loader, source, subject) = CreateFixture();
 
@@ -373,7 +376,7 @@ public class OpcUaSubjectLoaderFailureTests
         var monitoredItems = await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
 
         // Assert: observer fired AND saw Temperature already claimed at the moment Sensor
-        // appeared. If Apply reversed its loops (root ops before claims), the observer
+        // appeared. If Commit reversed its loops (bindings before claims), the observer
         // would have captured 0 here.
         Assert.Single(monitoredItems);
         Assert.Single(source.Ownership.Properties);
@@ -501,10 +504,9 @@ public class OpcUaSubjectLoaderFailureTests
         // Arrange: Root.Parent is assigned before the load, so the parent is reused rather than
         // staged and therefore survives a failed load. Parent.Items is a collection whose two
         // elements are created and staged during discovery, and the second element's browse fails
-        // transiently on the first attempt. Because the parent is not the root subject, anything
-        // the loader binds to Parent.Items applies live, so a container bound before its children
-        // finish loading would still reference the staged elements after the rollback detached
-        // them, leaving them referenced by the model but absent from the registry.
+        // transiently on the first attempt. A container bound to Parent.Items before Commit would
+        // still reference the staged elements after the rollback detached them, leaving them
+        // referenced by the model but absent from the registry.
         var parentId = new NodeId(4001, 2);
         var itemsId = new NodeId(4002, 2);
         var firstItemId = new NodeId(4003, 2);
@@ -528,6 +530,8 @@ public class OpcUaSubjectLoaderFailureTests
         var modelContext = InterceptorSubjectContext.Create().WithRegistry().WithLifecycle();
         var root = new RollbackCollectionRoot(modelContext);
         root.Parent = new RollbackCollectionParent(modelContext);
+        var registry = modelContext.TryGetService<ISubjectRegistry>()!;
+        var preLoadKeys = registry.KnownSubjects.Keys.ToHashSet();
 
         var (loader, source) = CreateSourceAndLoaderFor(root, shouldAddDynamicProperties: false);
 
@@ -563,18 +567,22 @@ public class OpcUaSubjectLoaderFailureTests
 
         var rootNode = MakeReference("Root", RootId, NodeClass.Object);
 
-        // Act: the first load rolls back, the second runs against a healthy server.
+        // Act: the first load rolls back.
         await Assert.ThrowsAsync<OpcUaTransientServiceException>(
             () => loader.LoadSubjectAsync(root, rootNode, mockSession.Object, CancellationToken.None));
 
+        // Assert: nothing of the failed load is visible.
+        Assert.Null(root.Parent!.Items);
+        Assert.Equal(preLoadKeys, registry.KnownSubjects.Keys.ToHashSet());
+
+        // Act: the second load runs against a healthy server.
         failSecondItemBrowse = false;
         var monitoredItems = await loader.LoadSubjectAsync(
             root, rootNode, mockSession.Object, CancellationToken.None);
 
-        // Assert: both collection elements are back in the registry and monitored. A child left
-        // over from the rolled-back load is reused from property.Children without being re-staged,
-        // so it is never re-attached and its subtree is dropped for good, which shows up here as a
-        // null registration and a missing monitored item.
+        // Assert: both collection elements are registered and monitored. A binding that survived
+        // the rollback would be reused from property.Children without re-staging, never re-attached,
+        // and show up here as a null registration and a missing monitored item.
         var items = Assert.IsType<RollbackCollectionItem[]>(root.Parent!.Items);
         Assert.Equal(2, items.Length);
         Assert.All(items, item => Assert.NotNull(item.TryGetRegisteredSubject()));
@@ -590,8 +598,9 @@ public class OpcUaSubjectLoaderFailureTests
     public async Task WhenADictionaryEntryLoadFailsUnderANonRootParent_ThenALaterLoadStillRegistersTheEntry()
     {
         // Arrange: identical in shape to the collection case above, but through the dictionary
-        // branch of BatchLoadCollectionsAndDictionariesAsync, which binds its container separately
-        // and so needs its own regression pin. Bracketed browse names carry the dictionary keys.
+        // branch of LoadCollectionsAndDictionariesAsync, which queues its container binding
+        // separately and so needs its own regression pin. Bracketed browse names carry the
+        // dictionary keys.
         var parentId = new NodeId(4101, 2);
         var entriesId = new NodeId(4102, 2);
         var firstEntryId = new NodeId(4103, 2);
@@ -615,6 +624,8 @@ public class OpcUaSubjectLoaderFailureTests
         var modelContext = InterceptorSubjectContext.Create().WithRegistry().WithLifecycle();
         var root = new RollbackDictionaryRoot(modelContext);
         root.Parent = new RollbackDictionaryParent(modelContext);
+        var registry = modelContext.TryGetService<ISubjectRegistry>()!;
+        var preLoadKeys = registry.KnownSubjects.Keys.ToHashSet();
 
         var (loader, source) = CreateSourceAndLoaderFor(root, shouldAddDynamicProperties: false);
 
@@ -650,17 +661,21 @@ public class OpcUaSubjectLoaderFailureTests
 
         var rootNode = MakeReference("Root", RootId, NodeClass.Object);
 
-        // Act: the first load rolls back, the second runs against a healthy server.
+        // Act: the first load rolls back.
         await Assert.ThrowsAsync<OpcUaTransientServiceException>(
             () => loader.LoadSubjectAsync(root, rootNode, mockSession.Object, CancellationToken.None));
 
+        // Assert: nothing of the failed load is visible.
+        Assert.Null(root.Parent!.Entries);
+        Assert.Equal(preLoadKeys, registry.KnownSubjects.Keys.ToHashSet());
+
+        // Act: the second load runs against a healthy server.
         failSecondEntryBrowse = false;
         var monitoredItems = await loader.LoadSubjectAsync(
             root, rootNode, mockSession.Object, CancellationToken.None);
 
-        // Assert: both entries are back in the registry and monitored. An entry left over from the
-        // rolled-back load is reused without being re-staged, so it is never re-attached and its
-        // subtree is dropped for good.
+        // Assert: both entries are registered and monitored. A binding that survived the rollback
+        // would be reused without re-staging and never re-attached.
         var entries = Assert.IsAssignableFrom<IReadOnlyDictionary<string, RollbackCollectionItem>>(root.Parent!.Entries);
         Assert.Equal(2, entries.Count);
         Assert.All(entries.Values, entry => Assert.NotNull(entry.TryGetRegisteredSubject()));
@@ -676,15 +691,13 @@ public class OpcUaSubjectLoaderFailureTests
     public async Task WhenASubjectReferenceLoadFailsUnderANonRootParent_ThenALaterLoadStillRegistersTheChild()
     {
         // Arrange: identical in shape to the collection and dictionary cases above, but through the
-        // single subject reference branch, which LoadPendingSubjectReferencesAsync binds on its own
+        // single subject reference branch, which LoadPendingSubjectReferencesAsync queues on its own
         // and so needs its own regression pin. Root.Parent is assigned before the load, so the
         // parent is reused rather than staged and survives a failed load. Parent.Child is staged
-        // during discovery and its browse fails transiently on the first attempt. Because the parent
-        // is not the root subject, anything the loader binds to Parent.Child applies live, so a
-        // reference bound before its child finished loading would still point at the staged child
-        // after the rollback detached it. The next load then reuses that child from
-        // property.Children without re-staging it, so it is never re-attached and its subtree stays
-        // unregistered and unmonitored for good.
+        // during discovery and its browse fails transiently on the first attempt. A reference bound
+        // to Parent.Child before Commit would still point at the staged child after the rollback
+        // detached it; the next load would then reuse that child from property.Children without
+        // re-staging it, never re-attach it, and leave its subtree unregistered and unmonitored.
         var parentId = new NodeId(4201, 2);
         var childId = new NodeId(4202, 2);
         var valueId = new NodeId(4203, 2);
@@ -699,6 +712,8 @@ public class OpcUaSubjectLoaderFailureTests
         var modelContext = InterceptorSubjectContext.Create().WithRegistry().WithLifecycle();
         var root = new RollbackReferenceRoot(modelContext);
         root.Parent = new RollbackReferenceParent(modelContext);
+        var registry = modelContext.TryGetService<ISubjectRegistry>()!;
+        var preLoadKeys = registry.KnownSubjects.Keys.ToHashSet();
 
         var (loader, source) = CreateSourceAndLoaderFor(root, shouldAddDynamicProperties: false);
 
@@ -734,16 +749,21 @@ public class OpcUaSubjectLoaderFailureTests
 
         var rootNode = MakeReference("Root", RootId, NodeClass.Object);
 
-        // Act: the first load rolls back, the second runs against a healthy server.
+        // Act: the first load rolls back.
         await Assert.ThrowsAsync<OpcUaTransientServiceException>(
             () => loader.LoadSubjectAsync(root, rootNode, mockSession.Object, CancellationToken.None));
 
+        // Assert: nothing of the failed load is visible.
+        Assert.Null(root.Parent!.Child);
+        Assert.Equal(preLoadKeys, registry.KnownSubjects.Keys.ToHashSet());
+
+        // Act: the second load runs against a healthy server.
         failChildBrowse = false;
         var monitoredItems = await loader.LoadSubjectAsync(
             root, rootNode, mockSession.Object, CancellationToken.None);
 
-        // Assert: the child is back in the registry and monitored. A child left over from the
-        // rolled-back load shows up here as a null registration and a missing monitored item.
+        // Assert: the child is registered and monitored. A binding that survived the rollback would
+        // show up here as a null registration and a missing monitored item.
         var child = root.Parent!.Child;
         Assert.NotNull(child);
         Assert.NotNull(child.TryGetRegisteredSubject());
@@ -754,18 +774,15 @@ public class OpcUaSubjectLoaderFailureTests
     }
 
     [Fact]
-    public async Task WhenALaterPhaseFailsAfterContainersAreBound_ThenALaterLoadStillRegistersTheChildren()
+    public async Task WhenALaterPhaseFailsAfterAContainerIsResolved_ThenNothingIsBoundUntilALaterLoadSucceeds()
     {
         // Arrange: the collection, dictionary and subject reference rollback tests above all fail
-        // while BatchLoadCollectionsAndDictionariesAsync is still loading the container's children,
-        // and that phase deliberately defers its binding until afterwards, so nothing is bound when
-        // they roll back. This test targets the window the deferral does not cover: the collection
-        // loads cleanly and binds to the non-root parent, and only then does a later phase throw.
-        //
-        // Parent.Status is a plain value property, so LoadChildPropertiesAsync queues it for
+        // while LoadCollectionsAndDictionariesAsync is still loading the container's children. Here
+        // the collection loads cleanly and its binding is queued, and only then does a later phase
+        // throw. Parent.Status is a plain value property, so LoadChildPropertiesAsync queues it for
         // LoadAttributesAsync, which is the last phase of the level and therefore runs after the
-        // container assignment. Failing its browse transiently on the first load reproduces a
-        // rollback whose staged collection elements are already referenced by Parent.Items.
+        // container has been resolved. Failing its browse transiently on the first load rolls back
+        // a load whose container binding is already queued for Commit.
         var parentId = new NodeId(4301, 2);
         var itemsId = new NodeId(4302, 2);
         var firstItemId = new NodeId(4303, 2);
@@ -794,6 +811,8 @@ public class OpcUaSubjectLoaderFailureTests
         var modelContext = InterceptorSubjectContext.Create().WithRegistry().WithLifecycle();
         var root = new RollbackLatePhaseRoot(modelContext);
         root.Parent = new RollbackLatePhaseParent(modelContext);
+        var registry = modelContext.TryGetService<ISubjectRegistry>()!;
+        var preLoadKeys = registry.KnownSubjects.Keys.ToHashSet();
 
         var (loader, source) = CreateSourceAndLoaderFor(root, shouldAddDynamicProperties: false);
 
@@ -829,20 +848,22 @@ public class OpcUaSubjectLoaderFailureTests
 
         var rootNode = MakeReference("Root", RootId, NodeClass.Object);
 
-        // Act: the first load rolls back after Parent.Items was already bound, the second runs
-        // against a healthy server.
+        // Act: the first load rolls back.
         await Assert.ThrowsAsync<OpcUaTransientServiceException>(
             () => loader.LoadSubjectAsync(root, rootNode, mockSession.Object, CancellationToken.None));
 
+        // Assert: nothing of the failed load is visible.
+        Assert.Null(root.Parent!.Items);
+        Assert.Equal(preLoadKeys, registry.KnownSubjects.Keys.ToHashSet());
+
+        // Act: the second load runs against a healthy server.
         failStatusAttributeBrowse = false;
         var monitoredItems = await loader.LoadSubjectAsync(
             root, rootNode, mockSession.Object, CancellationToken.None);
 
-        // Assert: both collection elements are back in the registry and monitored. A rollback that
-        // detaches a subject the model already references leaves it unregistered while Parent.Items
-        // still points at it, so the second load reuses it from property.Children without
-        // re-staging it, never re-attaches it, and then skips it as unregistered. That shows up
-        // here as a null registration and the two missing item monitored items.
+        // Assert: both collection elements are registered and monitored. A container binding that
+        // survived the rollback would be reused from property.Children without re-staging, never
+        // re-attached, and show up here as a null registration and two missing monitored items.
         var items = Assert.IsType<RollbackCollectionItem[]>(root.Parent!.Items);
         Assert.Equal(2, items.Length);
         Assert.All(items, item => Assert.NotNull(item.TryGetRegisteredSubject()));
@@ -861,26 +882,17 @@ public class OpcUaSubjectLoaderFailureTests
         // Arrange: a graph-shaped address space rather than a tree. Root has two Object children,
         // Holder and Shared, browsed in that order, so both are staged under the root subject's
         // context in that order. Holder's only child reference resolves to Shared's NodeId, which
-        // hits the per-load SubjectsByNodeId cache and binds the already-staged Shared live under
-        // Holder. It binds live because Holder is not the root subject, so QueueOrApplySetValue
-        // does not defer it, while both of root's own bindings stay deferred to an Apply that a
-        // failed load never reaches. Shared's value property then fails its attribute-phase browse,
-        // which is the last phase of the level, so the load rolls back with Shared already
-        // referenced by Holder.
-        //
-        // The rollback walks the staged subjects in reverse. Shared still holds Holder's reference
-        // so the first pass skips it, then Holder drops to zero and is detached, and that cascade
-        // drops Shared to zero as well. The cascade's own cleanup is keyed to Holder's context,
-        // which is not the context Shared was staged under, so the staging link to the root context
-        // survives unless a second pass re-checks after the detaches have settled.
+        // hits the per-load SubjectsByNodeId cache and queues a binding of the already-staged
+        // Shared under Holder. Shared's value property then fails its attribute-phase browse, which
+        // is the last phase of the level, so the load rolls back with that binding queued but a
+        // staging link that is keyed to the root context, not to Holder's.
         var holderId = new NodeId(4401, 2);
         var sharedId = new NodeId(4402, 2);
         var sharedValueId = new NodeId(4403, 2);
 
         var browseTree = new Dictionary<NodeId, ReferenceDescription[]>
         {
-            // Holder first: staging order is browse order, and the cascade is only reachable when
-            // the subject that gains the second parent is staged after the parent that gains it.
+            // Holder first: staging order is browse order, so Shared is rolled back first.
             [RootId] =
             [
                 MakeReference("Holder", holderId, NodeClass.Object),
@@ -954,6 +966,59 @@ public class OpcUaSubjectLoaderFailureTests
             "outlived its presence in the graph. The root context keeps a strong reference to every context that uses " +
             "it, so the orphan is retained for the process lifetime and every failed load of this address space leaks " +
             "one more.");
+    }
+
+    [Fact]
+    public async Task WhenLoadFailsAfterACycleIsDiscovered_ThenNoStagedSubjectSurvives()
+    {
+        // Arrange: Root -> ChildA -> ChildB -> BackToRoot, where BackToRoot resolves to ChildA's
+        // NodeId, so the two subjects created for this load reference each other. Root's Status
+        // variable is browsed by the attribute phase, which runs after the subject-reference
+        // recursion has discovered the cycle, and that browse fails transiently. Were the two
+        // subjects bound to each other before the failure, each would hold the other at reference
+        // count one and a rollback that only sheds unreferenced subjects would reach neither.
+        var childAId = new NodeId(4501, 2);
+        var childBId = new NodeId(4502, 2);
+        var statusId = new NodeId(4503, 2);
+
+        var browseTree = new Dictionary<NodeId, ReferenceDescription[]>
+        {
+            [RootId] =
+            [
+                MakeReference("ChildA", childAId, NodeClass.Object),
+                MakeReference("Status", statusId, NodeClass.Variable)
+            ],
+            [childAId] = [MakeReference("ChildB", childBId, NodeClass.Object)],
+            [childBId] = [MakeReference("BackToRoot", childAId, NodeClass.Object)]
+        };
+
+        var subjectContext = InterceptorSubjectContext.Create().WithRegistry().WithLifecycle();
+        IInterceptorSubject root = new DynamicSubject(subjectContext);
+        var registry = subjectContext.TryGetService<ISubjectRegistry>()!;
+
+        var subjectFactory = new RecordingOpcUaSubjectFactory();
+        var (loader, _) = CreateSourceAndLoaderFor(root, shouldAddDynamicProperties: true, subjectFactory);
+
+        var mockSession = CreateMockSession();
+        ConfigureBrowseTree(mockSession, failOnNodeId: statusId, browseTree);
+        ConfigureReadAsync(mockSession, new Dictionary<NodeId, NodeId> { [statusId] = DataTypeIds.Double });
+
+        var rootNode = MakeReference("Root", RootId, NodeClass.Object);
+
+        // Act
+        await Assert.ThrowsAsync<OpcUaTransientServiceException>(
+            () => loader.LoadSubjectAsync(root, rootNode, mockSession.Object, CancellationToken.None));
+
+        // Assert: the registry is back at its pre-load state and no staging link outlived the
+        // rollback. RemoveFallbackContext reports whether there was a link to remove, so `true`
+        // would mean the root context still retains the orphan's context, and with it the orphan.
+        var knownSubject = Assert.Single(registry.KnownSubjects.Keys);
+        Assert.Same(root, knownSubject);
+
+        Assert.Equal(2, subjectFactory.CreatedSubjects.Count);
+        Assert.All(subjectFactory.CreatedSubjects, created =>
+            Assert.False(created.Context.RemoveFallbackContext(root.Context),
+                $"The rolled-back subject '{created.GetType().Name}' still had the root subject's context as a fallback."));
     }
 
     [Fact]
@@ -1196,9 +1261,9 @@ public class OpcUaSubjectLoaderFailureTests
 
     /// <summary>
     /// Records every subject the loader materializes for a single subject reference, keyed by the
-    /// browse name it was created for. A staged subject whose binding to the root subject is
-    /// deferred to <c>Apply</c> is unreachable from the model after a failed load, so recording it
-    /// at creation time is the only handle a rollback assertion has on it.
+    /// browse name it was created for. A staged subject whose binding is deferred to <c>Commit</c>
+    /// is unreachable from the model after a failed load, so recording it at creation time is the
+    /// only handle a rollback assertion has on it.
     /// </summary>
     private sealed class RecordingOpcUaSubjectFactory : OpcUaSubjectFactory
     {
@@ -1219,6 +1284,8 @@ public class OpcUaSubjectLoaderFailureTests
             _createdSubjectsByBrowseName[node.BrowseName.Name] = subject;
             return subject;
         }
+
+        public IReadOnlyCollection<IInterceptorSubject> CreatedSubjects => _createdSubjectsByBrowseName.Values;
 
         public IInterceptorSubject GetCreatedSubject(string browseName)
         {

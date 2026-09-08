@@ -154,7 +154,7 @@ public class OpcUaSubjectLoaderTests : OpcUaSubjectLoaderTestsBase
     public async Task WhenAPropertyIsMonitored_ThenItsNodeIdIsTrackedAgainstThePropertyReference()
     {
         // Arrange
-        var (loader, propertyTracker, subject) = CreateLoader();
+        var (loader, ownership, subject) = CreateLoader();
         var registeredSubject = subject.TryGetRegisteredSubject()!;
 
         registeredSubject.AddProperty(
@@ -178,7 +178,7 @@ public class OpcUaSubjectLoaderTests : OpcUaSubjectLoaderTestsBase
         await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
 
         // Assert - Should track the property reference
-        Assert.Single(propertyTracker.Properties);
+        Assert.Single(ownership.Properties);
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.OpcUa.Attributes;
 using Opc.Ua;
+using Opc.Ua.Client;
 
 namespace Namotion.Interceptor.OpcUa.Tests.Client;
 
@@ -245,5 +246,55 @@ public class OpcUaSubjectLoaderAttributeTests : OpcUaSubjectLoaderTestsBase
         var statusAttribute = varBProperty.TryGetAttribute("Status");
         Assert.NotNull(statusAttribute);
         Assert.NotNull(statusAttribute.TryGetAttribute("Quality"));
+    }
+
+    [Fact]
+    public async Task WhenAttributeGraphHasCycle_ThenTraversalTerminatesBeforeTheCap()
+    {
+        // Arrange: Root -> Value, whose attribute A has the child B, and B's child is A again by
+        // NodeId. Following NodeIds alone nests A under B under A without end, and with
+        // MaxAttributeTraversals = 100 the cap alone would still create a hundred attributes.
+        var valueId = new NodeId(7101, 2);
+        var attributeAId = new NodeId(7102, 2);
+        var attributeBId = new NodeId(7103, 2);
+
+        var browseTree = new Dictionary<NodeId, ReferenceDescription[]>
+        {
+            [new NodeId(1, 0)] = [CreateTestReferenceDescription("Value", new ExpandedNodeId(valueId))],
+            [valueId] = [CreateTestReferenceDescription("A", new ExpandedNodeId(attributeAId))],
+            [attributeAId] = [CreateTestReferenceDescription("B", new ExpandedNodeId(attributeBId))],
+            [attributeBId] = [CreateTestReferenceDescription("A", new ExpandedNodeId(attributeAId))]
+        };
+
+        var mockSession = CreateMockSession();
+        SetupBrowseAsync(mockSession, browseTree);
+        SetupReadAsync(mockSession, new Dictionary<NodeId, (NodeId, int)>
+        {
+            [valueId] = (DataTypeIds.Int32, -1),
+            [attributeAId] = (DataTypeIds.Int32, -1),
+            [attributeBId] = (DataTypeIds.Int32, -1)
+        });
+
+        var (loader, _, subject) = CreateLoader(
+            shouldAddDynamicProperties: (_, _) => Task.FromResult(true),
+            shouldAddDynamicAttributes: (_, _) => Task.FromResult(true),
+            maxAttributeTraversals: 100);
+
+        var rootNode = CreateTestReferenceDescription("Root", new NodeId(1, 0));
+
+        // Act
+        await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
+
+        // Assert: exactly Value.A and Value.A.B exist, and the traversal stopped on its own rather
+        // than on the cap.
+        var registeredSubject = subject.TryGetRegisteredSubject()!;
+        var value = registeredSubject.Properties.Single(property => property.Name == "Value");
+        var attributeA = Assert.Single(value.Attributes);
+        var attributeB = Assert.Single(attributeA.Attributes);
+        Assert.Empty(attributeB.Attributes);
+        Assert.Equal(2, registeredSubject.Properties.Count(property => property.IsAttribute));
+
+        var browseCallCount = mockSession.Invocations.Count(invocation => invocation.Method.Name == nameof(ISession.BrowseAsync));
+        Assert.InRange(browseCallCount, 1, 9);
     }
 }

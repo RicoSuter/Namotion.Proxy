@@ -39,7 +39,7 @@ public class OpcUaSubjectLoaderDictionaryReuseTests : OpcUaSubjectLoaderTestsBas
 
         var modelContext = CreateSubjectContext();
         var container = new DictionaryReuseContainer(modelContext);
-        var (loader, _) = CreateLoaderFor(container);
+        var (loader, _, _) = CreateLoaderFor(container);
 
         var itemOne = new DictionaryReuseItem(modelContext) { Name = "one" };
         var itemTwo = new DictionaryReuseItem(modelContext) { Name = "two" };
@@ -101,7 +101,7 @@ public class OpcUaSubjectLoaderDictionaryReuseTests : OpcUaSubjectLoaderTestsBas
 
         var modelContext = CreateSubjectContext();
         var container = new DictionaryReuseContainer(modelContext);
-        var (loader, _) = CreateLoaderFor(container);
+        var (loader, _, _) = CreateLoaderFor(container);
 
         var itemOne = new DictionaryReuseItem(modelContext) { Name = "one" };
         var itemTwo = new DictionaryReuseItem(modelContext) { Name = "two" };
@@ -149,7 +149,7 @@ public class OpcUaSubjectLoaderDictionaryReuseTests : OpcUaSubjectLoaderTestsBas
 
         var modelContext = CreateSubjectContext();
         var container = new StringKeyDictionaryContainer(modelContext);
-        var (loader, _) = CreateLoaderFor(container);
+        var (loader, _, _) = CreateLoaderFor(container);
         var registry = modelContext.TryGetService<ISubjectRegistry>()!;
         var preLoadKeys = registry.KnownSubjects.Keys.ToHashSet();
 

@@ -453,7 +453,7 @@ public class OpcUaSubjectLoaderDedupTests : OpcUaSubjectLoaderTestsBase
 
         var modelContext = CreateSubjectContext();
         var container = new DuplicateSubjectRefContainer(modelContext);
-        var (loader, _) = CreateLoaderFor(container);
+        var (loader, _, _) = CreateLoaderFor(container);
         var registry = modelContext.TryGetService<ISubjectRegistry>()!;
         var preLoadKeys = registry.KnownSubjects.Keys.ToHashSet();
 
@@ -504,7 +504,7 @@ public class OpcUaSubjectLoaderDedupTests : OpcUaSubjectLoaderTestsBase
 
         var modelContext = CreateSubjectContext();
         var container = new DuplicateCollectionContainer(modelContext);
-        var (loader, _) = CreateLoaderFor(container);
+        var (loader, _, _) = CreateLoaderFor(container);
         var registry = modelContext.TryGetService<ISubjectRegistry>()!;
         var preLoadKeys = registry.KnownSubjects.Keys.ToHashSet();
 
@@ -555,7 +555,7 @@ public class OpcUaSubjectLoaderDedupTests : OpcUaSubjectLoaderTestsBase
 
         var modelContext = CreateSubjectContext();
         var container = new StringKeyDictionaryContainer(modelContext);
-        var (loader, _) = CreateLoaderFor(container);
+        var (loader, _, _) = CreateLoaderFor(container);
         var registry = modelContext.TryGetService<ISubjectRegistry>()!;
         var preLoadKeys = registry.KnownSubjects.Keys.ToHashSet();
 

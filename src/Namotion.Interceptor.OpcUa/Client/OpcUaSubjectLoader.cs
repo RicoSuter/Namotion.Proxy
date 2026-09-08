@@ -35,11 +35,7 @@ internal sealed class OpcUaSubjectLoader
 
     internal void MonitorValueNode(NodeId nodeId, RegisteredSubjectProperty property, OpcUaLoadContext context)
     {
-        // Pre-check skips MonitoredItem creation work for properties already owned by
-        // another source. The authoritative claim happens inside Apply via the queue,
-        // which adds the MonitoredItem to context.MonitoredItems only on successful
-        // claim. If ownership changes between this pre-check and Apply, the property
-        // still cannot get a monitored item attached without the corresponding claim.
+        // Early exit only; the authoritative claim is made by Commit.
         if (property.Reference.TryGetSource(out var existing) && existing != _source)
         {
             _logger.LogError(
@@ -62,7 +58,7 @@ internal sealed class OpcUaSubjectLoader
         RegisteredSubject Registered,
         List<ChildEntry> ChildEntries);
 
-    private readonly record struct PendingSubjectRef(
+    private readonly record struct PendingSubjectReference(
         RegisteredSubjectProperty Property,
         ReferenceDescription NodeReference,
         IInterceptorSubject SubjectToLoad,
@@ -76,7 +72,6 @@ internal sealed class OpcUaSubjectLoader
     {
         using var context = new OpcUaLoadContext(
             session,
-            subject,
             _ownership,
             _source,
             _configuration.MaxReferencesPerNode,
@@ -85,7 +80,7 @@ internal sealed class OpcUaSubjectLoader
             cancellationToken);
 
         await LoadSubjectsAsync([(node, subject)], context).ConfigureAwait(false);
-        context.Apply();
+        context.Commit();
         return context.MonitoredItems;
     }
 
@@ -112,15 +107,12 @@ internal sealed class OpcUaSubjectLoader
 
         foreach (var (subject, registeredSubject, subjectNodeId) in validSubjects)
         {
-            var browseResults = subjectNodeId is not null &&
-                allBrowseResults.TryGetValue(subjectNodeId, out var collection) ? collection : [];
-
-            var distinctReferences = context.DistinctByResolvedNodeId(browseResults);
+            var distinctReferences = context.DistinctByResolvedNodeId(allBrowseResults[subjectNodeId]);
 
             var childEntries = await ClassifyChildReferencesAsync(
                 registeredSubject, distinctReferences,
                 allDynamicObjectNodeIds, allDynamicVariableNodes,
-                context.Session, context.CancellationToken).ConfigureAwait(false);
+                context).ConfigureAwait(false);
 
             subjectStates.Add(new SubjectState(subject, registeredSubject, childEntries));
         }
@@ -137,13 +129,13 @@ internal sealed class OpcUaSubjectLoader
     }
 
     private async Task<(
-        List<(IInterceptorSubject Subject, RegisteredSubject RegisteredSubject, NodeId? NodeId)> ValidSubjects,
+        List<(IInterceptorSubject Subject, RegisteredSubject RegisteredSubject, NodeId NodeId)> ValidSubjects,
         Dictionary<NodeId, IReadOnlyList<ReferenceDescription>> BrowseResults)>
         FilterAndBrowseSubjectsAsync(
             IReadOnlyList<(ReferenceDescription Node, IInterceptorSubject Subject)> subjects,
             OpcUaLoadContext context)
     {
-        var validSubjects = new List<(IInterceptorSubject Subject, RegisteredSubject RegisteredSubject, NodeId? NodeId)>(subjects.Count);
+        var validSubjects = new List<(IInterceptorSubject Subject, RegisteredSubject RegisteredSubject, NodeId NodeId)>(subjects.Count);
         var subjectNodeIds = new List<NodeId>(subjects.Count);
 
         foreach (var (node, subject) in subjects)
@@ -163,17 +155,33 @@ internal sealed class OpcUaSubjectLoader
             if (resolved is null)
             {
                 _logger.LogWarning(
-                    "Could not resolve NodeId '{NodeId}' for subject '{Subject}': the namespace URI is not registered in the session's NamespaceTable. The subject will be loaded with no children.",
-                    node.NodeId, subject.GetType().Name);
+                    "Skipping subject '{Subject}' (NodeId: {NodeId}): the namespace URI is not registered in the session's NamespaceTable. Its properties keep their current values and the next load reloads it.",
+                    subject.GetType().Name, node.NodeId);
+                continue;
             }
+
             validSubjects.Add((subject, registeredSubject, resolved));
-            if (resolved is not null)
-            {
-                subjectNodeIds.Add(resolved);
-            }
+            subjectNodeIds.Add(resolved);
         }
 
         var browseResults = await context.BrowseAsync(subjectNodeIds).ConfigureAwait(false);
+
+        // A NodeId absent from the result was not browsed to completion. The subject is skipped:
+        // its properties keep their current values and the next load reloads it.
+        for (var i = validSubjects.Count - 1; i >= 0; i--)
+        {
+            var (subject, _, nodeId) = validSubjects[i];
+            if (browseResults.ContainsKey(nodeId))
+            {
+                continue;
+            }
+
+            _logger.LogWarning(
+                "Skipping subject '{Subject}' (NodeId: {NodeId}): its browse did not complete this load. Its properties keep their current values and the next load reloads it.",
+                subject.GetType().Name, nodeId);
+            validSubjects.RemoveAt(i);
+        }
+
         return (validSubjects, browseResults);
     }
 
@@ -183,8 +191,7 @@ internal sealed class OpcUaSubjectLoader
             List<(ReferenceDescription Reference, NodeId NodeId)> distinctReferences,
             HashSet<NodeId> dynamicObjectNodeIds,
             Dictionary<NodeId, ReferenceDescription> dynamicVariableNodes,
-            ISession session,
-            CancellationToken cancellationToken)
+            OpcUaLoadContext context)
     {
         var childEntries = new List<ChildEntry>(distinctReferences.Count);
         var stagedDynamicNames = new HashSet<string>();
@@ -194,7 +201,7 @@ internal sealed class OpcUaSubjectLoader
             var (nodeReference, resolvedNodeId) = distinctReferences[i];
 
             var property = await _configuration.Mapper
-                .TryGetPropertyAsync(new OpcUaLookupKey(nodeReference, session, _subject), registeredSubject, cancellationToken)
+                .TryGetPropertyAsync(new OpcUaLookupKey(nodeReference, context.Session, _subject), registeredSubject, context.CancellationToken)
                 .ConfigureAwait(false);
 
             if (property is not null)
@@ -212,7 +219,7 @@ internal sealed class OpcUaSubjectLoader
             }
 
             var addAsDynamic = _configuration.ShouldAddDynamicProperty is not null &&
-                await _configuration.ShouldAddDynamicProperty(nodeReference, cancellationToken).ConfigureAwait(false);
+                await _configuration.ShouldAddDynamicProperty(nodeReference, context.CancellationToken).ConfigureAwait(false);
 
             if (!addAsDynamic)
             {
@@ -277,7 +284,7 @@ internal sealed class OpcUaSubjectLoader
         OpcUaLoadContext context)
     {
         var allAttributeVariableNodes = new List<(RegisteredSubjectProperty Property, NodeId NodeId)>();
-        var allPendingSubjectRefs = new List<PendingSubjectRef>();
+        var allPendingSubjectReferences = new List<PendingSubjectReference>();
         var pendingVariableSubjects = new List<(RegisteredSubjectProperty Property, NodeId NodeId)>();
         var pendingCollections = new List<(RegisteredSubjectProperty Property, NodeId NodeId)>();
         var pendingDictionaries = new List<(RegisteredSubjectProperty Property, NodeId NodeId)>();
@@ -290,11 +297,11 @@ internal sealed class OpcUaSubjectLoader
         // destination property; the first reference wins (browse order), matching the
         // dynamic-property sibling dedup. Plain values and Variable-typed subject
         // references keep their own smaller-NodeId dedup rules downstream.
-        var structuredPropertyTargets = new HashSet<RegisteredSubjectProperty>();
+        var reservedStructuredTargets = new HashSet<RegisteredSubjectProperty>();
 
-        bool TryClaimStructuredTarget(RegisteredSubjectProperty targetProperty, ReferenceDescription reference, NodeId nodeId)
+        bool TryReserveStructuredTarget(RegisteredSubjectProperty targetProperty, ReferenceDescription reference, NodeId nodeId)
         {
-            if (structuredPropertyTargets.Add(targetProperty))
+            if (reservedStructuredTargets.Add(targetProperty))
             {
                 return true;
             }
@@ -315,7 +322,7 @@ internal sealed class OpcUaSubjectLoader
 
                 property ??= TryCreateDynamicProperty(
                     stateRegisteredSubject, nodeReference, resolvedNodeId,
-                    objectTypeMap, variableTypeMap, context.Session);
+                    objectTypeMap, variableTypeMap, context);
 
                 if (property is null)
                 {
@@ -335,7 +342,7 @@ internal sealed class OpcUaSubjectLoader
                     }
                     else
                     {
-                        if (!TryClaimStructuredTarget(property, nodeReference, resolvedNodeId))
+                        if (!TryReserveStructuredTarget(property, nodeReference, resolvedNodeId))
                         {
                             continue;
                         }
@@ -347,13 +354,13 @@ internal sealed class OpcUaSubjectLoader
                         if (result is not null)
                         {
                             var (subjectToLoad, isNew) = result.Value;
-                            allPendingSubjectRefs.Add(new PendingSubjectRef(property, nodeReference, subjectToLoad, isNew));
+                            allPendingSubjectReferences.Add(new PendingSubjectReference(property, nodeReference, subjectToLoad, isNew));
                         }
                     }
                 }
                 else if (property.IsSubjectCollection)
                 {
-                    if (!TryClaimStructuredTarget(property, nodeReference, resolvedNodeId))
+                    if (!TryReserveStructuredTarget(property, nodeReference, resolvedNodeId))
                     {
                         continue;
                     }
@@ -362,7 +369,7 @@ internal sealed class OpcUaSubjectLoader
                 }
                 else if (property.IsSubjectDictionary)
                 {
-                    if (!TryClaimStructuredTarget(property, nodeReference, resolvedNodeId))
+                    if (!TryReserveStructuredTarget(property, nodeReference, resolvedNodeId))
                     {
                         continue;
                     }
@@ -377,9 +384,9 @@ internal sealed class OpcUaSubjectLoader
             }
         }
 
-        await BatchLoadVariableNodesAsync(pendingVariableSubjects, context).ConfigureAwait(false);
-        await BatchLoadCollectionsAndDictionariesAsync(pendingCollections, pendingDictionaries, context).ConfigureAwait(false);
-        await LoadPendingSubjectReferencesAsync(allPendingSubjectRefs, context).ConfigureAwait(false);
+        await LoadVariableSubjectReferencesAsync(pendingVariableSubjects, context).ConfigureAwait(false);
+        await LoadCollectionsAndDictionariesAsync(pendingCollections, pendingDictionaries, context).ConfigureAwait(false);
+        await LoadPendingSubjectReferencesAsync(allPendingSubjectReferences, context).ConfigureAwait(false);
         await _attributeLoader.LoadAttributesAsync(allAttributeVariableNodes, context).ConfigureAwait(false);
     }
 
@@ -389,7 +396,7 @@ internal sealed class OpcUaSubjectLoader
         NodeId resolvedNodeId,
         Dictionary<NodeId, Type> objectTypeMap,
         IReadOnlyDictionary<NodeId, Type?> variableTypeMap,
-        ISession session)
+        OpcUaLoadContext context)
     {
         Type? inferredType = null;
         if (nodeReference.NodeClass == NodeClass.Object)
@@ -420,7 +427,7 @@ internal sealed class OpcUaSubjectLoader
             inferredType,
             _ => value,
             (_, o) => value = o,
-            _configuration.TypeResolver!.GetDynamicPropertyAttributes(nodeReference, session));
+            _configuration.TypeResolver!.GetDynamicPropertyAttributes(nodeReference, context.Session));
     }
 
     private async Task<(IInterceptorSubject Subject, bool IsNew)?> PrepareSubjectReferenceAsync(
@@ -432,7 +439,7 @@ internal sealed class OpcUaSubjectLoader
     {
         if (context.SubjectsByNodeId.TryGetValue(resolvedNodeId, out var reusedSubject))
         {
-            context.QueueOrApplySetValue(_source, property, reusedSubject);
+            context.QueueBinding(property, reusedSubject);
             return null;
         }
 
@@ -455,7 +462,7 @@ internal sealed class OpcUaSubjectLoader
     // properties of the Variable subject, which the child-name match below handles. C# `.Attributes`
     // declared on the Value property are not discovered here, by design, to avoid the model-vs-protocol
     // ambiguity when a browse-child matches both a peer property and an attribute name.
-    private async Task BatchLoadVariableNodesAsync(
+    private async Task LoadVariableSubjectReferencesAsync(
         List<(RegisteredSubjectProperty Property, NodeId NodeId)> variableNodes,
         OpcUaLoadContext context)
     {
@@ -548,7 +555,7 @@ internal sealed class OpcUaSubjectLoader
         }
     }
 
-    private async Task BatchLoadCollectionsAndDictionariesAsync(
+    private async Task LoadCollectionsAndDictionariesAsync(
         List<(RegisteredSubjectProperty Property, NodeId NodeId)> pendingCollections,
         List<(RegisteredSubjectProperty Property, NodeId NodeId)> pendingDictionaries,
         OpcUaLoadContext context)
@@ -565,17 +572,8 @@ internal sealed class OpcUaSubjectLoader
         var browseResults = await context.BrowseAsync(allNodeIds).ConfigureAwait(false);
         var allChildrenToLoad = new List<(ReferenceDescription Node, IInterceptorSubject Subject)>();
 
-        // Containers are bound to their property only after their children have loaded, which is
-        // what keeps rollback complete for a failure during that load. Binding first would leave a
-        // staged child referenced by the parent property while Dispose detaches it from the
-        // registry, and nothing removes the parent's reference, so the subject would survive as an
-        // unregistered zombie that later loads reuse (skipping re-staging) and then drop. Same
-        // order as LoadPendingSubjectReferencesAsync.
-        //
-        // This closes the dominant window, not every one: the sibling phases that follow
-        // (LoadPendingSubjectReferencesAsync, LoadAttributesAsync, and any outer level) also browse
-        // and can throw after these bindings have applied. The children's load is where the bulk of
-        // the browse IO is, so it is where the exposure was.
+        // Queued after the children's own bindings so Commit applies the tree bottom-up, matching
+        // LoadPendingSubjectReferencesAsync.
         var pendingContainerAssignments = new List<(RegisteredSubjectProperty Property, object Container)>();
 
         foreach (var (property, nodeId) in pendingCollections)
@@ -649,20 +647,15 @@ internal sealed class OpcUaSubjectLoader
 
         await LoadSubjectsAsync(allChildrenToLoad, context).ConfigureAwait(false);
 
-        // Staged children stay reachable for the load above through the fallback context that
-        // RegisterStagedSubject added, so they do not need to be bound to reach this point.
         foreach (var (property, container) in pendingContainerAssignments)
         {
-            context.QueueOrApplySetValue(_source, property, container);
+            context.QueueBinding(property, container);
         }
     }
 
     // Reuses existing children when possible: dictionaries match by browse name,
     // collections match by index position (so server-side reordering between loads
-    // rebinds existing subjects to new items). Note: if DistinctByResolvedNodeId drops
-    // a reference (logged), later collection positions shift and can rebind to a
-    // different existing subject; only the object NodeId would be a drop-stable key,
-    // and it is not retained across loads.
+    // rebinds existing subjects to new items).
     private async Task<List<(ReferenceDescription Node, IInterceptorSubject Subject)>> ResolveChildSubjectsAsync(
         RegisteredSubjectProperty property,
         List<(ReferenceDescription Reference, NodeId NodeId)> childNodes,
@@ -729,26 +722,26 @@ internal sealed class OpcUaSubjectLoader
     }
 
     private async Task LoadPendingSubjectReferencesAsync(
-        List<PendingSubjectRef> pendingRefs,
+        List<PendingSubjectReference> pendingReferences,
         OpcUaLoadContext context)
     {
-        if (pendingRefs.Count == 0)
+        if (pendingReferences.Count == 0)
         {
             return;
         }
 
-        var refsToLoad = new List<(ReferenceDescription Node, IInterceptorSubject Subject)>(pendingRefs.Count);
-        foreach (var pending in pendingRefs)
+        var referencesToLoad = new List<(ReferenceDescription Node, IInterceptorSubject Subject)>(pendingReferences.Count);
+        foreach (var pending in pendingReferences)
         {
-            refsToLoad.Add((pending.NodeReference, pending.SubjectToLoad));
+            referencesToLoad.Add((pending.NodeReference, pending.SubjectToLoad));
         }
-        await LoadSubjectsAsync(refsToLoad, context).ConfigureAwait(false);
+        await LoadSubjectsAsync(referencesToLoad, context).ConfigureAwait(false);
 
-        foreach (var pending in pendingRefs)
+        foreach (var pending in pendingReferences)
         {
             if (pending.IsNew)
             {
-                context.QueueOrApplySetValue(_source, pending.Property, pending.SubjectToLoad);
+                context.QueueBinding(pending.Property, pending.SubjectToLoad);
             }
         }
     }

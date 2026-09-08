@@ -10,8 +10,7 @@ namespace Namotion.Interceptor.OpcUa.Client;
 /// discovered at runtime) for a batch of variable nodes. Drives the multi-round traversal that
 /// walks attributes of attributes until no new nodes appear or the configured limit is reached.
 /// Holds a back-reference to the owning <see cref="OpcUaSubjectLoader"/> so monitored-item
-/// claims go through the same ownership path as the rest of the loader. Has no mutable
-/// instance state; all per-load state lives in <see cref="OpcUaLoadContext"/> or method locals.
+/// claims go through the same ownership path as the rest of the loader.
 /// </summary>
 internal sealed class OpcUaAttributeLoader
 {
@@ -33,11 +32,21 @@ internal sealed class OpcUaAttributeLoader
     }
 
     /// <summary>
+    /// One node of the traversal: the property it maps to and the variable property whose
+    /// chain of attributes led to it.
+    /// </summary>
+    private readonly record struct TraversalEntry(
+        RegisteredSubjectProperty Property,
+        NodeId NodeId,
+        RegisteredSubjectProperty RootProperty);
+
+    /// <summary>
     /// Candidate dynamic attribute discovered in a round, deferred until the batch
     /// type-resolution step at the end of the round.
     /// </summary>
     private readonly record struct DynamicAttributeNode(
         RegisteredSubjectProperty OwnerProperty,
+        RegisteredSubjectProperty RootProperty,
         NodeId ChildNodeId,
         ReferenceDescription ChildNode,
         string BrowseName);
@@ -64,7 +73,17 @@ internal sealed class OpcUaAttributeLoader
         // different parent NodeIds, but processing the SAME pair twice would re-claim
         // already-monitored sub-attribute references.
         var processedEntries = new HashSet<(RegisteredSubjectProperty Property, NodeId ParentNodeId)>();
-        var currentRound = new List<(RegisteredSubjectProperty Property, NodeId NodeId)>(variableNodes);
+
+        // Tracks the NodeIds already traversed under each variable property. A dynamic attribute
+        // pointing back at one of them would rebuild the chain from that node without end, so it
+        // is skipped; MaxAttributeTraversals stays as the backstop.
+        var visitedNodeIds = new HashSet<(RegisteredSubjectProperty RootProperty, NodeId NodeId)>();
+
+        var currentRound = new List<TraversalEntry>(variableNodes.Count);
+        foreach (var (property, nodeId) in variableNodes)
+        {
+            currentRound.Add(new TraversalEntry(property, nodeId, property));
+        }
 
         var traversal = 0;
         while (currentRound.Count > 0)
@@ -81,19 +100,20 @@ internal sealed class OpcUaAttributeLoader
                 break;
             }
 
-            currentRound = await ProcessAttributeRoundAsync(currentRound, processedEntries, context).ConfigureAwait(false);
+            currentRound = await ProcessAttributeRoundAsync(currentRound, processedEntries, visitedNodeIds, context).ConfigureAwait(false);
         }
     }
 
-    private async Task<List<(RegisteredSubjectProperty Property, NodeId NodeId)>> ProcessAttributeRoundAsync(
-        List<(RegisteredSubjectProperty Property, NodeId ParentNodeId)> currentRound,
+    private async Task<List<TraversalEntry>> ProcessAttributeRoundAsync(
+        List<TraversalEntry> currentRound,
         HashSet<(RegisteredSubjectProperty Property, NodeId ParentNodeId)> processedEntries,
+        HashSet<(RegisteredSubjectProperty RootProperty, NodeId NodeId)> visitedNodeIds,
         OpcUaLoadContext context)
     {
         var parentIds = new HashSet<NodeId>(currentRound.Count);
-        foreach (var (_, parentNodeId) in currentRound)
+        foreach (var entry in currentRound)
         {
-            parentIds.Add(parentNodeId);
+            parentIds.Add(entry.NodeId);
         }
 
         var browseResults = await context.BrowseAsync(parentIds).ConfigureAwait(false);
@@ -106,22 +126,24 @@ internal sealed class OpcUaAttributeLoader
         }
 
         var dynamicAttributeNodes = new List<DynamicAttributeNode>();
-        var nextRound = new List<(RegisteredSubjectProperty Property, NodeId NodeId)>();
+        var nextRound = new List<TraversalEntry>();
 
-        foreach (var (property, parentNodeId) in currentRound)
+        foreach (var entry in currentRound)
         {
-            if (!processedEntries.Add((property, parentNodeId)))
+            if (!processedEntries.Add((entry.Property, entry.NodeId)))
             {
                 continue;
             }
 
-            if (!distinctChildren.TryGetValue(parentNodeId, out var childNodes) || childNodes.Count == 0)
+            visitedNodeIds.Add((entry.RootProperty, entry.NodeId));
+
+            if (!distinctChildren.TryGetValue(entry.NodeId, out var childNodes) || childNodes.Count == 0)
             {
                 continue;
             }
 
-            var processedBrowseNames = MatchKnownAttributes(property, childNodes, nextRound, context);
-            await CollectDynamicAttributesAsync(property, parentNodeId, childNodes, processedBrowseNames, dynamicAttributeNodes, context).ConfigureAwait(false);
+            var processedBrowseNames = MatchKnownAttributes(entry, childNodes, nextRound, context);
+            await CollectDynamicAttributesAsync(entry, childNodes, processedBrowseNames, visitedNodeIds, dynamicAttributeNodes, context).ConfigureAwait(false);
         }
 
         await CreateDynamicAttributesAsync(dynamicAttributeNodes, nextRound, context).ConfigureAwait(false);
@@ -129,9 +151,9 @@ internal sealed class OpcUaAttributeLoader
     }
 
     private HashSet<string> MatchKnownAttributes(
-        RegisteredSubjectProperty property,
+        TraversalEntry entry,
         List<(ReferenceDescription Reference, NodeId NodeId)> childNodes,
-        List<(RegisteredSubjectProperty Property, NodeId NodeId)> nextRound,
+        List<TraversalEntry> nextRound,
         OpcUaLoadContext context)
     {
         // childNodes have non-null BrowseName.Name (filtered at the session boundary in DistinctByResolvedNodeId).
@@ -142,7 +164,7 @@ internal sealed class OpcUaAttributeLoader
         }
 
         var processedBrowseNames = new HashSet<string>();
-        foreach (var attribute in property.Attributes)
+        foreach (var attribute in entry.Property.Attributes)
         {
             if (!_configuration.Mapper.TryGetMapping(attribute, _subject, out var attributeConfiguration))
             {
@@ -157,19 +179,20 @@ internal sealed class OpcUaAttributeLoader
 
             processedBrowseNames.Add(attributeBrowseName);
             _loader.MonitorValueNode(matchingNodeId, attribute, context);
-            nextRound.Add((attribute, matchingNodeId));
+            nextRound.Add(new TraversalEntry(attribute, matchingNodeId, entry.RootProperty));
         }
         return processedBrowseNames;
     }
 
     private async Task CollectDynamicAttributesAsync(
-        RegisteredSubjectProperty property,
-        NodeId parentNodeId,
+        TraversalEntry entry,
         List<(ReferenceDescription Reference, NodeId NodeId)> childNodes,
         HashSet<string> processedBrowseNames,
+        HashSet<(RegisteredSubjectProperty RootProperty, NodeId NodeId)> visitedNodeIds,
         List<DynamicAttributeNode> dynamicAttributeNodes,
         OpcUaLoadContext context)
     {
+        var (property, parentNodeId, rootProperty) = entry;
         foreach (var (childNode, childNodeId) in childNodes)
         {
             if (childNode.NodeClass != NodeClass.Variable)
@@ -180,6 +203,14 @@ internal sealed class OpcUaAttributeLoader
             var browseName = childNode.BrowseName.Name;
             if (!processedBrowseNames.Add(browseName))
             {
+                continue;
+            }
+
+            if (visitedNodeIds.Contains((rootProperty, childNodeId)))
+            {
+                _logger.LogDebug(
+                    "Skipping OPC UA child '{AttributeName}' on '{PropertyName}' (parent {ParentNodeId}, child {ChildNodeId}): the child node was already traversed under '{RootPropertyName}', so the attribute chain cycles.",
+                    browseName, property.Name, parentNodeId, childNodeId, rootProperty.Name);
                 continue;
             }
 
@@ -198,13 +229,13 @@ internal sealed class OpcUaAttributeLoader
                 continue;
             }
 
-            dynamicAttributeNodes.Add(new DynamicAttributeNode(property, childNodeId, childNode, browseName));
+            dynamicAttributeNodes.Add(new DynamicAttributeNode(property, rootProperty, childNodeId, childNode, browseName));
         }
     }
 
     private async Task CreateDynamicAttributesAsync(
         List<DynamicAttributeNode> dynamicAttributeNodes,
-        List<(RegisteredSubjectProperty Property, NodeId NodeId)> nextRound,
+        List<TraversalEntry> nextRound,
         OpcUaLoadContext context)
     {
         if (dynamicAttributeNodes.Count == 0)
@@ -256,7 +287,7 @@ internal sealed class OpcUaAttributeLoader
                 _configuration.TypeResolver!.GetDynamicPropertyAttributes(entry.ChildNode, context.Session));
 
             _loader.MonitorValueNode(entry.ChildNodeId, dynamicAttribute, context);
-            nextRound.Add((dynamicAttribute, entry.ChildNodeId));
+            nextRound.Add(new TraversalEntry(dynamicAttribute, entry.ChildNodeId, entry.RootProperty));
         }
     }
 }
