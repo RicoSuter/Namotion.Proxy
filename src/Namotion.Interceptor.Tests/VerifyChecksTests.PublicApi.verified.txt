@@ -223,6 +223,7 @@ namespace Namotion.Interceptor.Interceptors
         public bool TryGetAttachment(out Namotion.Interceptor.IInterceptorSubjectContext? context, out Namotion.Interceptor.SubjectAttachmentAnchorKind anchor, out long revision) { }
         public bool TryUpdateAttachment(long expectedRevision, Namotion.Interceptor.IInterceptorSubjectContext? context, Namotion.Interceptor.SubjectAttachmentAnchorKind anchor, out long currentRevision) { }
         public static Namotion.Interceptor.Interceptors.IInterceptorExecutor GetOrCreate(ref Namotion.Interceptor.Interceptors.IInterceptorExecutor? context, Namotion.Interceptor.IInterceptorSubject subject) { }
+        public static TProperty ReadBackingField<TProperty>(Namotion.Interceptor.IInterceptorSubject subject, System.Func<Namotion.Interceptor.IInterceptorSubject, TProperty> readValue) { }
     }
     public delegate object? InvokeMethodInterceptionDelegate(ref Namotion.Interceptor.Interceptors.MethodInvocationContext context);
     public struct MethodInvocationContext

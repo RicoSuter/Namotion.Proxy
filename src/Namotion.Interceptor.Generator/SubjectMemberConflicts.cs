@@ -32,7 +32,7 @@ internal static class SubjectMemberConflicts
 
         var hidden = new List<string>();
 
-        foreach (var accessorHelper in GeneratedMemberTable.AccessorHelpers)
+        foreach (var accessorHelper in GeneratedMemberTable.AccessorHelpers.Where(helper => !helper.IsOptional))
         {
             var isHidden = SymbolExtensions.HidableMembers(baseType, subject, compilation, accessorHelper.Name)
                 .Any(member => IsHiddenByEmittedMember(member, accessorHelper));
@@ -73,6 +73,10 @@ internal static class SubjectMemberConflicts
 
         return hidden;
     }
+
+    public static bool HidesBackingFieldReader(INamedTypeSymbol? baseType, INamedTypeSymbol subject, Compilation compilation) =>
+        baseType is not null && SymbolExtensions.HidableMembers(baseType, subject, compilation, MemberNames.GetPropertyValue)
+            .Any(member => member is not IMethodSymbol method || GeneratedMemberTable.HasBackingFieldReaderParameters(method));
 
     /// <summary>
     /// A method is hidden only when its signature matches the emitted one, so an unrelated overload of

@@ -99,9 +99,9 @@ using System.Text.Json.Serialization;
                 var newValue = value;
                 var cancel = false;
                 OnTemperatureChanging(ref newValue, ref cancel);
-                if (!cancel && SetPropertyValue(nameof(Temperature), newValue, _Temperature, static (o, v) => ((WeatherStation)o)._Temperature = v))
+                if (!cancel && SetPropertyValue(nameof(Temperature), newValue, GetPropertyValue(static o => ((WeatherStation)o)._Temperature), static (o, v) => ((WeatherStation)o)._Temperature = v))
                 {
-                    OnTemperatureChanged(_Temperature);
+                    OnTemperatureChanged(GetPropertyValue(static o => ((WeatherStation)o)._Temperature));
                     RaisePropertyChanged(nameof(Temperature));
                 }
             }
@@ -124,9 +124,9 @@ using System.Text.Json.Serialization;
                 var newValue = value;
                 var cancel = false;
                 OnHumidityChanging(ref newValue, ref cancel);
-                if (!cancel && SetPropertyValue(nameof(Humidity), newValue, _Humidity, static (o, v) => ((WeatherStation)o)._Humidity = v))
+                if (!cancel && SetPropertyValue(nameof(Humidity), newValue, GetPropertyValue(static o => ((WeatherStation)o)._Humidity), static (o, v) => ((WeatherStation)o)._Humidity = v))
                 {
-                    OnHumidityChanged(_Humidity);
+                    OnHumidityChanged(GetPropertyValue(static o => ((WeatherStation)o)._Humidity));
                     RaisePropertyChanged(nameof(Humidity));
                 }
             }
@@ -138,6 +138,12 @@ using System.Text.Json.Serialization;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         protected IReadOnlyDictionary<string, SubjectPropertyMetadata>? GetInstanceProperties() => _properties;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        protected TProperty GetPropertyValue<TProperty>(Func<IInterceptorSubject, TProperty> readValue)
+        {
+            return _executor is not null ? InterceptorExecutor.ReadBackingField(this, readValue) : readValue(this);
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         protected TProperty GetPropertyValue<TProperty>(string propertyName, Func<IInterceptorSubject, TProperty> readValue)

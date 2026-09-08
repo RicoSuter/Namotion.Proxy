@@ -5,8 +5,8 @@ namespace Namotion.Interceptor.Cache;
 
 internal static class ReadInterceptorFactory<TProperty>
 {
-    private static readonly bool RequiresTerminalLock = RequiresReadLock(typeof(TProperty));
-    private static readonly bool CanBoxValueTypes = typeof(TProperty) == typeof(object) ||
+    internal static readonly bool RequiresTerminalLock = RequiresReadLock(typeof(TProperty));
+    internal static readonly bool CanBoxValueTypes = typeof(TProperty) == typeof(object) ||
         typeof(TProperty).IsInterface || typeof(TProperty) == typeof(ValueType) || typeof(TProperty) == typeof(Enum);
 
     private static bool RequiresReadLock(Type type) => type.IsValueType &&

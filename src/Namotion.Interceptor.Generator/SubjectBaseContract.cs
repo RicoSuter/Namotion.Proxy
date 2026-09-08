@@ -99,13 +99,39 @@ internal static class SubjectBaseContract
                 : SubjectMemberConflicts.FindHiddenInterceptionMembers(typeSymbol.BaseType, typeSymbol, compilation, !baseClassHasInpc);
         }
 
+        var inheritsGeneratedBackingFieldReader = InheritsGeneratedBackingFieldReader(typeSymbol, compilation, cancellationToken);
+
         return new SubjectBaseClass(
             baseClassTypeName,
             baseClassHasInterceptorSubject,
             baseClassHasInpc,
             hasCallableRaisePropertyChanged,
             emitsInterceptionMembers,
-            hiddenMembers);
+            hiddenMembers,
+            HasInheritedBackingFieldReader: inheritsGeneratedBackingFieldReader || typeSymbol.BaseType is { } baseType &&
+                HasAccessibleMethod(baseType, typeSymbol, compilation, GeneratedMemberTable.BackingFieldReader),
+            HidesBackingFieldReader: inheritsGeneratedBackingFieldReader ||
+                SubjectMemberConflicts.HidesBackingFieldReader(typeSymbol.BaseType, typeSymbol, compilation));
+    }
+
+    private static bool InheritsGeneratedBackingFieldReader(INamedTypeSymbol subject, Compilation compilation, CancellationToken cancellationToken)
+    {
+        foreach (var ancestor in SymbolExtensions.EnumerateChain(subject.BaseType))
+        {
+            if (!SubjectAncestry.HasInterceptorSubjectAttribute(ancestor) ||
+                !SubjectAncestry.WillBeGeneratedInThisCompilation(ancestor, cancellationToken)) continue;
+
+            var provider = SubjectAncestry.FindNearestSubjectAncestor(ancestor);
+            if (provider is null) return true;
+            if (SubjectAncestry.HasInterceptorSubjectAttribute(provider) &&
+                SubjectAncestry.WillBeGeneratedInThisCompilation(provider, cancellationToken)) continue;
+
+            // Only root-mode ancestors emit this overload. Do not recursively resolve their
+            // inherited reader: revisiting every ancestor makes deep hierarchies exponential.
+            if (!SatisfiesContract(provider, ancestor, compilation, out _) &&
+                HasUsableDefaultProperties(provider, ancestor, compilation)) return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -135,7 +161,7 @@ internal static class SubjectBaseContract
             missing.Add(KnownTypes.IRaisePropertyChanged);
         }
 
-        foreach (var accessorHelper in GeneratedMemberTable.AccessorHelpers)
+        foreach (var accessorHelper in GeneratedMemberTable.AccessorHelpers.Where(helper => !helper.IsOptional))
         {
             if (!HasAccessibleMethod(ancestor, subject, compilation, accessorHelper))
             {
@@ -226,7 +252,15 @@ internal static class SubjectBaseContract
                  method.Parameters[method.Parameters.Length - 1].IsParams) &&
                 (!accessorHelper.RequiresLeadingString ||
                  method.Parameters[0].Type.SpecialType == SpecialType.System_String) &&
-                HasExpectedReturnType(method, accessorHelper, compilation));
+                HasExpectedReturnType(method, accessorHelper, compilation) &&
+                (!accessorHelper.IsOptional ||
+                 GeneratedMemberTable.HasBackingFieldReaderParameters(method) &&
+                 !method.TypeParameters[0].HasReferenceTypeConstraint &&
+                 !method.TypeParameters[0].HasValueTypeConstraint &&
+                 !method.TypeParameters[0].HasUnmanagedTypeConstraint &&
+                 !method.TypeParameters[0].HasNotNullConstraint &&
+                 !method.TypeParameters[0].HasConstructorConstraint &&
+                 method.TypeParameters[0].ConstraintTypes.Length == 0));
 
     /// <summary>
     /// Whether the base helper returns what the generated call sites consume. Nullability annotations

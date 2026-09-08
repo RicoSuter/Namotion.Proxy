@@ -177,6 +177,24 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
             WriteInterceptorFactory<TProperty>.Create(ImmutableArray<IWriteInterceptor>.Empty);
     }
 
+    /// <summary>
+    /// Copies a backing field without read interception, sharing the subject's terminal lock for non-atomic or potentially boxed values.
+    /// </summary>
+    /// <remarks>
+    /// The delegate must only read the backing field. This operation can initialize the subject's executor.
+    /// The snapshot can become stale immediately after return; it does not order a subsequent write.
+    /// </remarks>
+    public static TProperty ReadBackingField<TProperty>(IInterceptorSubject subject, Func<IInterceptorSubject, TProperty> readValue)
+    {
+        if (!ReadInterceptorFactory<TProperty>.RequiresTerminalLock && !ReadInterceptorFactory<TProperty>.CanBoxValueTypes)
+            return readValue(subject);
+        var executor = (InterceptorExecutor)subject.Executor;
+        lock (executor.SyncRoot)
+        {
+            return readValue(subject);
+        }
+    }
+
     /// <inheritdoc />
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public TProperty GetPropertyValue<TProperty>(string propertyName, Func<IInterceptorSubject, TProperty> readValue)

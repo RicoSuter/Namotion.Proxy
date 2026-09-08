@@ -489,14 +489,23 @@ internal static class SubjectCodeGenerator
                         ? $"((IRaisePropertyChanged)this).RaisePropertyChanged(nameof({property.Name}))"
                         : $"RaisePropertyChanged(nameof({property.Name}))";
 
+            var fieldRead = $"_{property.Name}";
+            if (property.NeedsBackingFieldSnapshot)
+            {
+                var readDelegate = $"static o => (({metadata.ClassName})o)._{property.Name}";
+                fieldRead = metadata.BaseClass.EmitsInterceptionMembers || metadata.BaseClass.HasInheritedBackingFieldReader
+                    ? $"GetPropertyValue({readDelegate})"
+                    : $"InterceptorExecutor.ReadBackingField(this, {readDelegate})";
+            }
+
             builder.AppendLine($"            {setterModifiers}{accessorText}");
             builder.AppendLine("            {");
             builder.AppendLine("                var newValue = value;");
             builder.AppendLine("                var cancel = false;");
             builder.AppendLine($"                On{property.Name}Changing(ref newValue, ref cancel);");
-            builder.AppendLine($"                if (!cancel && SetPropertyValue(nameof({property.Name}), newValue, _{property.Name}, static (o, v) => (({metadata.ClassName})o)._{property.Name} = v))");
+            builder.AppendLine($"                if (!cancel && SetPropertyValue(nameof({property.Name}), newValue, {fieldRead}, static (o, v) => (({metadata.ClassName})o)._{property.Name} = v))");
             builder.AppendLine("                {");
-            builder.AppendLine($"                    On{property.Name}Changed(_{property.Name});");
+            builder.AppendLine($"                    On{property.Name}Changed({fieldRead});");
             builder.AppendLine($"                    {raisePropertyChangedCall};");
             builder.AppendLine("                }");
             builder.AppendLine("            }");
@@ -564,6 +573,13 @@ internal static class SubjectCodeGenerator
         // property here would give every Castle-proxied generated subject a phantom property.
         builder.AppendLine("        [MethodImpl(MethodImplOptions.AggressiveInlining)]");
         builder.AppendLine($"        {HidingModifier(metadata, MemberNames.GetInstanceProperties)}{modifier} IReadOnlyDictionary<string, SubjectPropertyMetadata>? GetInstanceProperties() => _properties;");
+        builder.AppendLine();
+        builder.AppendLine("        [MethodImpl(MethodImplOptions.AggressiveInlining)]");
+        var snapshotHiding = metadata.BaseClass.HidesBackingFieldReader ? "new " : "";
+        builder.AppendLine($"        {snapshotHiding}{modifier} TProperty GetPropertyValue<TProperty>(Func<IInterceptorSubject, TProperty> readValue)");
+        builder.AppendLine("        {");
+        builder.AppendLine("            return _executor is not null ? InterceptorExecutor.ReadBackingField(this, readValue) : readValue(this);");
+        builder.AppendLine("        }");
         builder.AppendLine();
         builder.AppendLine("        [MethodImpl(MethodImplOptions.AggressiveInlining)]");
         builder.AppendLine($"        {HidingModifier(metadata, MemberNames.GetPropertyValue)}{modifier} TProperty GetPropertyValue<TProperty>(string propertyName, Func<IInterceptorSubject, TProperty> readValue)");
