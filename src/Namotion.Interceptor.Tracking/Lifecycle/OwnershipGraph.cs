@@ -12,11 +12,10 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 /// them back.
 /// </summary>
 /// <remarks>
-/// Committed outgoing edges are not stored separately. The property baselines are the outgoing
-/// truth: a subject commits an edge to a child exactly when the baseline of one of its structural
-/// properties still contains that child. One representation instead of two removes the whole class
-/// of bugs where the two disagree, and it is what makes the release descent and the reachability
-/// walk read the same relation.
+/// Property baselines describe the committed outgoing relation. While publication is incomplete,
+/// a property journal also records its installed incoming occurrences: a nested write or release
+/// must reconcile those occurrences rather than assuming every desired edge was already installed.
+/// Reachability still validates incoming candidates against the committed baselines.
 ///
 /// The claim primitives (claiming, releasing and re-anchoring executors) take the executor's
 /// attachment monitor through <c>TryUpdateAttachment</c>, so they require the topology gate to
@@ -37,6 +36,7 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 
     // A nested write can replace a value and restore the exact same instance before returning.
     private long _nextBaselineRevision;
+    private readonly Dictionary<PropertyReference, PropertyEdgeJournal> _propertyJournals = new(PropertyReference.Comparer);
     private (PropertyReference Property, SubjectOwnership? Ownership) _activeSeedingGetter;
     private Dictionary<(PropertyReference Property, SubjectOwnership? Ownership), int>? _suspendedSeedingGetters;
 
@@ -188,6 +188,54 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
         return _baselines.GetValueOrDefault(property).Revision;
     }
 
+    public PropertyEdgeJournal? GetPropertyJournal(PropertyReference property, SubjectOwnership? ownership)
+    {
+        return _propertyJournals.Count > 0 &&
+               _propertyJournals.TryGetValue(property, out var journal) &&
+               ReferenceEquals(journal.Ownership, ownership) ? journal : null;
+    }
+
+    public PropertyEdgeJournal BeginPropertyJournal(PropertyReference property, SubjectOwnership ownership, List<SubjectOccurrence> installed)
+    {
+        var journal = GetPropertyJournal(property, ownership);
+        if (journal is not null)
+        {
+            journal.Users++;
+            return journal;
+        }
+
+        journal = LifecycleScratch.RentPropertyJournal();
+        journal.Initialize(property, ownership, installed);
+        _propertyJournals[property] = journal;
+        return journal;
+    }
+
+    public void EndPropertyJournal(PropertyEdgeJournal journal)
+    {
+        if (--journal.Users > 0) return;
+        // A failed descent can leave desired edges unpublished. Keep its actual occurrences until
+        // a later write settles the property or releasing the owner drains what was installed.
+        if (!journal.IsComplete && ReferenceEquals(TryGetOwnership(journal.Property.Subject), journal.Ownership)) return;
+        if (_propertyJournals.TryGetValue(journal.Property, out var current) && ReferenceEquals(current, journal))
+        {
+            _propertyJournals.Remove(journal.Property);
+        }
+
+        LifecycleScratch.Return(journal);
+    }
+
+    public void RecordIncomingAdded(PropertyReference property, IInterceptorSubject child, object? index)
+    {
+        if (_propertyJournals.Count == 0) return;
+        GetPropertyJournal(property, TryGetOwnership(property.Subject))?.Add(child, index);
+    }
+
+    public void RecordIncomingRemoved(PropertyReference property, IInterceptorSubject child)
+    {
+        if (_propertyJournals.Count == 0) return;
+        GetPropertyJournal(property, TryGetOwnership(property.Subject))?.RemoveLast(child);
+    }
+
     /// <summary>
     /// Whether a baseline entry exists at all: a committed null and a missing entry both read as
     /// null through <see cref="GetBaseline"/>, and the released-subject regression tests must tell
@@ -219,9 +267,10 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     public void CollectStructuralChildren(
         IInterceptorSubject subject,
         List<(PropertyReference Property, SubjectOccurrence Occurrence, long BaselineRevision)> children,
-        bool seed)
+        bool seed,
+        List<(PropertyEdgeJournal Journal, long Revision)>? seedingJournals = null)
     {
-        var ownership = seed ? TryGetOwnership(subject) : null;
+        var ownership = TryGetOwnership(subject);
         var occurrences = LifecycleScratch.RentOccurrenceList();
         try
         {
@@ -234,6 +283,14 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
                 }
 
                 var property = new PropertyReference(subject, entry.Key);
+                if (!seed && GetPropertyJournal(property, ownership) is { } installedJournal)
+                {
+                    occurrences.Clear();
+                    installedJournal.CopyTo(occurrences);
+                    foreach (var occurrence in occurrences) children.Add((property, occurrence, GetBaselineRevision(property)));
+                    continue;
+                }
+
                 var hadBaseline = _baselines.TryGetValue(property, out var previousBaseline);
                 if (seed && hadBaseline)
                 {
@@ -282,7 +339,25 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
                         continue;
                     }
 
-                    SetBaseline(property, value);
+                    if (occurrences.Count > 0)
+                    {
+                        var empty = LifecycleScratch.RentOccurrenceList();
+                        try
+                        {
+                            var journal = BeginPropertyJournal(property, ownership!, empty);
+                            SetBaseline(property, value);
+                            journal.IsComplete = false;
+                            seedingJournals!.Add((journal, GetBaselineRevision(property)));
+                        }
+                        finally
+                        {
+                            LifecycleScratch.Return(empty);
+                        }
+                    }
+                    else
+                    {
+                        SetBaseline(property, value);
+                    }
                 }
 
                 var baselineRevision = seed ? GetBaselineRevision(property) : previousBaseline.Revision;
@@ -373,7 +448,12 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
         {
             if (IsStructural(entry.Value))
             {
-                _baselines.Remove(new PropertyReference(subject, entry.Key));
+                var property = new PropertyReference(subject, entry.Key);
+                _baselines.Remove(property);
+                if (_propertyJournals.Remove(property, out var journal) && journal.Users == 0)
+                {
+                    LifecycleScratch.Return(journal);
+                }
             }
         }
     }

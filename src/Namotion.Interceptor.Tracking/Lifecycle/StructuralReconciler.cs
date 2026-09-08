@@ -23,50 +23,42 @@ internal sealed class StructuralReconciler(LifecycleNotifier notifier, Ownership
 {
     public void Reconcile(PropertyReference property, SubjectPropertyMetadata metadata, object? newValue)
     {
+        var ownership = graph.TryGetOwnership(property.Subject);
+        if (ownership is null) return;
+        var existingJournal = graph.GetPropertyJournal(property, ownership);
         var oldValue = graph.GetBaseline(property);
-        if (ReferenceEquals(oldValue, newValue))
-        {
-            return;
-        }
+        if (existingJournal is null && ReferenceEquals(oldValue, newValue)) return;
+        if (existingJournal is null && !StructuralValueScanner.CanHoldSubjects(oldValue) && !StructuralValueScanner.CanHoldSubjects(newValue)) return;
 
-        if (!StructuralValueScanner.CanHoldSubjects(oldValue) && !StructuralValueScanner.CanHoldSubjects(newValue))
-        {
-            return;
-        }
-
+        var previousRevision = graph.GetBaselineRevision(property);
         var oldOccurrences = LifecycleScratch.RentOccurrenceList();
         var newOccurrences = LifecycleScratch.RentOccurrenceList();
         try
         {
-            StructuralValueScanner.CollectOccurrences(metadata.Type, oldValue, oldOccurrences);
+            if (existingJournal is null) StructuralValueScanner.CollectOccurrences(metadata.Type, oldValue, oldOccurrences);
+            else existingJournal.CopyTo(oldOccurrences);
             StructuralValueScanner.CollectOccurrences(metadata.Type, newValue, newOccurrences);
 
-            if (!graph.IsOwned(property.Subject))
+            if (!ReferenceEquals(graph.TryGetOwnership(property.Subject), ownership) ||
+                graph.GetBaselineRevision(property) != previousRevision) return;
+
+            var journal = graph.BeginPropertyJournal(property, ownership, oldOccurrences);
+            try
             {
-                // Code running downstream of the lifecycle at callback depth zero (a third-party
-                // write interceptor, a hand-written terminal, a dynamic getter reread, or a
-                // side-effecting user collection enumerated just above) holds the gate reentrantly
-                // and can release the writing parent before this point. That release already
-                // collected this property's children through the old baseline, so nothing may
-                // continue on the parent's behalf: committing the new baseline would recreate an
-                // entry that no later release ever removes, and the addition loop would attach
-                // occurrences to a released owner.
-                return;
+                graph.SetBaseline(property, newValue);
+                var revision = graph.GetBaselineRevision(property);
+                journal.IsComplete = false;
+                ReconcileOccurrences(property, newValue, oldOccurrences, newOccurrences, ownership, revision);
+                if (ReferenceEquals(graph.TryGetOwnership(property.Subject), ownership) &&
+                    graph.GetBaselineRevision(property) == revision)
+                {
+                    journal.Complete(newOccurrences);
+                }
             }
-
-            if (!ReferenceEquals(graph.GetBaseline(property), oldValue))
+            finally
             {
-                // That same user code reentered the write protocol on this very property and
-                // committed a newer baseline while the scans above ran. Its value reached the
-                // backing field after this one did and the graph already agrees with it, so
-                // committing this one would publish edges the property no longer holds.
-                return;
+                graph.EndPropertyJournal(journal);
             }
-
-            // Commit the outgoing edges before the incoming records are touched.
-            graph.SetBaseline(property, newValue);
-
-            ReconcileOccurrences(property, newValue, oldOccurrences, newOccurrences);
         }
         finally
         {
@@ -84,7 +76,9 @@ internal sealed class StructuralReconciler(LifecycleNotifier notifier, Ownership
         PropertyReference property,
         object? newValue,
         List<SubjectOccurrence> oldOccurrences,
-        List<SubjectOccurrence> newOccurrences)
+        List<SubjectOccurrence> newOccurrences,
+        SubjectOwnership ownership,
+        long revision)
     {
         var parent = property.Subject;
         var oldCounts = LifecycleScratch.RentSubjectCounter();
@@ -115,12 +109,10 @@ internal sealed class StructuralReconciler(LifecycleNotifier notifier, Ownership
 
                 oldCounts[occurrence.Subject] = remaining - 1;
                 release.RemoveEdge(occurrence.Subject, property, occurrence.Index);
-                if (!graph.IsOwned(parent))
+                if (!ReferenceEquals(graph.TryGetOwnership(parent), ownership) || graph.GetBaselineRevision(property) != revision)
                 {
-                    // Side-effecting user code invoked by this loop at callback depth zero (a
-                    // dictionary-key Equals, a user collection implementation) can run the write
-                    // protocol reentrantly and release the writing parent mid-publication, and the
-                    // remaining edges would then be published on behalf of a released owner.
+                    // Reachability and child discovery can invoke user code. A nested write owns
+                    // the remaining publication once it replaces this baseline or ownership epoch.
                     return;
                 }
             }
@@ -137,13 +129,13 @@ internal sealed class StructuralReconciler(LifecycleNotifier notifier, Ownership
                 }
 
                 attach.AttachEdge(occurrence.Subject, property, occurrence.Index);
-                if (!graph.IsOwned(parent))
+                if (!ReferenceEquals(graph.TryGetOwnership(parent), ownership) || graph.GetBaselineRevision(property) != revision)
                 {
                     return;
                 }
             }
 
-            if (!graph.IsOwned(parent))
+            if (!ReferenceEquals(graph.TryGetOwnership(parent), ownership) || graph.GetBaselineRevision(property) != revision)
             {
                 return;
             }

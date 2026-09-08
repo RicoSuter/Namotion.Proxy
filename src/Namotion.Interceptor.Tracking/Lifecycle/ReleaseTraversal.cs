@@ -30,6 +30,7 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
             return;
         }
 
+        graph.RecordIncomingRemoved(property, subject);
         var referenceCount = ownership.IncomingCount;
         ownership.RepublishParents();
 
@@ -76,7 +77,7 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
             ownership.CopyIncomingEdges(remaining);
             foreach (var edge in remaining)
             {
-                ownership.RemoveIncoming(edge.Property, edge.Index);
+                if (ownership.RemoveIncoming(edge.Property, edge.Index)) graph.RecordIncomingRemoved(edge.Property, subject);
                 ownership.RepublishParents();
                 notifier.PublishEdgeRemoved(subject, edge.Property, edge.Index, ownership.IncomingCount);
             }

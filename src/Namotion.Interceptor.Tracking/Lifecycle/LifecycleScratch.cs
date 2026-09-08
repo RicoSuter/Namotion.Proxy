@@ -61,6 +61,18 @@ internal static class LifecycleScratch
     public static List<(PropertyReference Property, SubjectOccurrence Occurrence, long BaselineRevision)> RentChildList()
         => TryRent<List<(PropertyReference, SubjectOccurrence, long)>>(out var list) ? list : new List<(PropertyReference, SubjectOccurrence, long)>(8);
 
+    public static PropertyEdgeJournal RentPropertyJournal()
+        => TryRent<PropertyEdgeJournal>(out var journal) ? journal : new PropertyEdgeJournal();
+
+    public static List<(PropertyEdgeJournal Journal, long Revision)> RentJournalList()
+        => TryRent<List<(PropertyEdgeJournal, long)>>(out var list) ? list : new List<(PropertyEdgeJournal, long)>(4);
+
+    public static void Return(PropertyEdgeJournal journal)
+    {
+        journal.Reset();
+        Recycle(journal);
+    }
+
     public static List<(IInterceptorSubject Subject, long Revision)> RentConsumedAnchorList()
         => TryRent<List<(IInterceptorSubject, long)>>(out var list) ? list : new List<(IInterceptorSubject, long)>(4);
 

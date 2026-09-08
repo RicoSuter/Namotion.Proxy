@@ -32,9 +32,11 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
     {
         var ownership = graph.TryGetOwnership(subject);
         var children = LifecycleScratch.RentChildList();
+        var journals = LifecycleScratch.RentJournalList();
+        var completed = false;
         try
         {
-            graph.CollectStructuralChildren(subject, children, seed: true);
+            graph.CollectStructuralChildren(subject, children, seed: true, journals);
             foreach (var (property, occurrence, baselineRevision) in children)
             {
                 if (!graph.IsSeedOwnerCurrent(subject, ownership))
@@ -49,9 +51,19 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
 
                 AttachEdge(occurrence.Subject, property, occurrence.Index);
             }
+
+            completed = true;
         }
         finally
         {
+            foreach (var (journal, revision) in journals)
+            {
+                if (completed && ReferenceEquals(graph.TryGetOwnership(subject), ownership) &&
+                    graph.GetBaselineRevision(journal.Property) == revision) journal.IsComplete = true;
+                graph.EndPropertyJournal(journal);
+            }
+
+            LifecycleScratch.Return(journals);
             LifecycleScratch.Return(children);
         }
     }
@@ -81,6 +93,7 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
         }
 
         ownership.AddIncoming(property, index);
+        graph.RecordIncomingAdded(property, subject, index);
         var referenceCount = ownership.IncomingCount;
 
         // Authoritative parent and anchor state before the first handler observes the change.
