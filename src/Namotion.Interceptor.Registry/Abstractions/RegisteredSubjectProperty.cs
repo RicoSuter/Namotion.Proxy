@@ -1,4 +1,5 @@
-﻿using System.Collections;
+﻿using System.Buffers;
+using System.Collections;
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using Namotion.Interceptor.Registry.Attributes;
@@ -449,8 +450,8 @@ public class RegisteredSubjectProperty
     /// </summary>
     /// <remarks>
     /// Occurrences of one subject are interchangeable, so the entries are paired with the child slots
-    /// of the same subject in enumeration order. Each cursor skips slots already paired with that
-    /// subject. Locking matches the collection path: <c>_children</c> then
+    /// of the same subject in enumeration order. Reverse-built slot links make each pairing one
+    /// lookup without rescanning other subjects. Locking matches the collection path: <c>_children</c> then
     /// <c>_knownSubjects</c> through the registry, which the lifecycle's outer topology lock
     /// serializes.
     /// </remarks>
@@ -467,37 +468,50 @@ public class RegisteredSubjectProperty
             var cursors = _reusableChildCursors ??= new Dictionary<IInterceptorSubject, int>(ReferenceEqualityComparer.Instance);
             cursors.Clear();
 
-            if (keyedValue is IDictionary dictionary)
+            var nextSlots = ArrayPool<int>.Shared.Rent(_children.Count);
+            try
             {
-                foreach (DictionaryEntry entry in dictionary)
+                for (var index = _children.Count - 1; index >= 0; index--)
                 {
-                    if (entry.Value is IInterceptorSubject subject)
-                    {
-                        MoveChildToKey(cursors, subject, entry.Key, registry);
-                    }
+                    var subject = _children[index].Subject;
+                    nextSlots[index] = cursors.GetValueOrDefault(subject, -1);
+                    cursors[subject] = index;
                 }
-            }
-            else if (keyedValue is IEnumerable enumerable and not string)
-            {
-                var isKeyed = keyedValue is not ICollection &&
-                    (Type.IsSubjectDictionaryType() || keyedValue.GetType().IsSubjectDictionaryType());
-                var index = 0;
-                foreach (var item in enumerable)
-                {
-                    if (isKeyed && item is not null && SubjectLookup.TryGetSubjectFromKeyValuePair(item, out var key, out var subject))
-                    {
-                        MoveChildToKey(cursors, subject, key, registry);
-                    }
-                    else if (item is IInterceptorSubject subjectItem)
-                    {
-                        MoveChildToKey(cursors, subjectItem, index, registry);
-                    }
-                    index++;
-                }
-            }
 
-            // Release references so subjects can be GC'd on idle threads
-            cursors.Clear();
+                if (keyedValue is IDictionary dictionary)
+                {
+                    foreach (DictionaryEntry entry in dictionary)
+                    {
+                        if (entry.Value is IInterceptorSubject subject)
+                        {
+                            MoveChildToKey(cursors, nextSlots, subject, entry.Key, registry);
+                        }
+                    }
+                }
+                else if (keyedValue is IEnumerable enumerable and not string)
+                {
+                    var isKeyed = keyedValue is not ICollection &&
+                        (Type.IsSubjectDictionaryType() || keyedValue.GetType().IsSubjectDictionaryType());
+                    var index = 0;
+                    foreach (var item in enumerable)
+                    {
+                        if (isKeyed && item is not null && SubjectLookup.TryGetSubjectFromKeyValuePair(item, out var key, out var subject))
+                        {
+                            MoveChildToKey(cursors, nextSlots, subject, key, registry);
+                        }
+                        else if (item is IInterceptorSubject subjectItem)
+                        {
+                            MoveChildToKey(cursors, nextSlots, subjectItem, index, registry);
+                        }
+                        index++;
+                    }
+                }
+            }
+            finally
+            {
+                cursors.Clear();
+                ArrayPool<int>.Shared.Return(nextSlots);
+            }
         }
     }
 
@@ -505,25 +519,20 @@ public class RegisteredSubjectProperty
     /// Points the subject's next unpaired child slot at the key, if that slot names a different one.
     /// Caller must hold <c>_children</c>.
     /// </summary>
-    private void MoveChildToKey(Dictionary<IInterceptorSubject, int> cursors, IInterceptorSubject subject, object? key, ISubjectRegistry registry)
+    private void MoveChildToKey(Dictionary<IInterceptorSubject, int> cursors, int[] nextSlots, IInterceptorSubject subject, object? key, ISubjectRegistry registry)
     {
-        for (var i = cursors.GetValueOrDefault(subject); i < _children.Count; i++)
-        {
-            var child = _children[i];
-            if (!ReferenceEquals(child.Subject, subject))
-                continue;
-
-            cursors[subject] = i + 1;
-            if (!Equals(child.Index, key))
-            {
-                _children[i] = child with { Index = key };
-                _childrenCache = default;
-
-                // child is a snapshot from before the update, so its Index is still the old key.
-                registry.TryGetRegisteredSubject(subject)?.UpdateParentIndex(this, child.Index, key);
-            }
-
+        if (!cursors.TryGetValue(subject, out var index) || index < 0)
             return;
+
+        cursors[subject] = nextSlots[index];
+        var child = _children[index];
+        if (!Equals(child.Index, key))
+        {
+            _children[index] = child with { Index = key };
+            _childrenCache = default;
+
+            // child is a snapshot from before the update, so its Index is still the old key.
+            registry.TryGetRegisteredSubject(subject)?.UpdateParentIndex(this, child.Index, key);
         }
     }
 
