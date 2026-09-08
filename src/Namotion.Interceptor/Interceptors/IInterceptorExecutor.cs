@@ -81,12 +81,9 @@ public interface IInterceptorExecutor
     /// subject so an attach or detach racing this write orders against it rather than failing it;
     /// any other type writes without that synchronization. Only a persistent conflict, a subject
     /// genuinely owned by another context, throws, and it throws before the backing field is
-    /// written. The classification follows <typeparamref name="TProperty"/> alone: a
-    /// <typeparamref name="TProperty"/> that can contain subjects routes structurally, so a boxed
-    /// <c>object</c> fails closed to the structural side, while explicitly narrowing
-    /// <typeparamref name="TProperty"/> below the declared property type routes scalar and
-    /// forfeits this entry's pre-chain coordination (the lifecycle still takes its own gate inside
-    /// the chain, so ownership stays consistent). Callers whose values travel boxed instantiate
+    /// written. A <typeparamref name="TProperty"/> that can contain subjects routes structurally,
+    /// so a boxed <c>object</c> fails closed to the structural side. Scalar generic writes also
+    /// take that route when the property's declared type can contain subjects. Callers whose values travel boxed instantiate
     /// this entry with the declared property type via a cached typed delegate instead. The lock order
     /// and the context-state pinning the structural route relies on are documented once, under
     /// "The Write Protocol" in docs/design/tracking-lifecycle.md, rather than restated here where

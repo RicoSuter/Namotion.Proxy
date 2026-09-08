@@ -33,12 +33,8 @@ public sealed class InterceptorSubjectContext : IInterceptorSubjectContext
         // ReSharper disable once StaticMemberInGenericType
         internal static readonly int Value = Interlocked.Increment(ref _lastPropertyTypeIndex);
 
-        // Type-only classification agrees with the runtime authority (the lifecycle classifies
-        // from the declared property type) whenever TProperty is that declared type, which holds
-        // by construction for generated setters. A boxed object fails closed to structural, while
-        // a TProperty narrowed below the declared type routes scalar and forfeits the pre-chain
-        // seam, which is why boxed callers instantiate this entry with the declared type via a
-        // cached typed delegate rather than write as object.
+        // A scalar generic type may still write a structural declared property. The executor
+        // checks that metadata before selecting the scalar route.
         // ReSharper disable once StaticMemberInGenericType
         internal static readonly bool CanContainSubjects = typeof(TProperty).CanContainSubjects();
     }
@@ -75,9 +71,6 @@ public sealed class InterceptorSubjectContext : IInterceptorSubjectContext
             Volatile.Write(ref _wasAttachedWithoutLifecycle, true);
         }
     }
-
-    /// <inheritdoc cref="_wasAttachedWithoutLifecycle"/>
-    internal bool WasAttachedWithoutLifecycle => Volatile.Read(ref _wasAttachedWithoutLifecycle);
 
     /// <summary>
     /// Restricts construction to <see cref="Create"/> because attachment tracking requires context
@@ -124,7 +117,7 @@ public sealed class InterceptorSubjectContext : IInterceptorSubjectContext
 
             // Validated against the re-read state, so a contract a reentrant factory published
             // cannot be doubled by the factory's own product.
-            ValidateSingletonContracts(state.Services, service);
+            ValidateServiceRegistration(state.Services, service);
             PublishState(new ContextState(state.Services.Add(service!)));
         }
 
@@ -136,18 +129,24 @@ public sealed class InterceptorSubjectContext : IInterceptorSubjectContext
         lock (_mutationLock)
         {
             var state = Volatile.Read(ref _state);
-            ValidateSingletonContracts(state.Services, service);
+            ValidateServiceRegistration(state.Services, service);
             PublishState(new ContextState(state.Services.Add(service!)));
         }
     }
 
     /// <summary>
-    /// Throws when the service implements a singleton contract another registered service (or the
-    /// same instance, registered again) already reserves. Runs under <see cref="_mutationLock"/>
-    /// and before the publish, so a rejected registration leaves the context untouched.
+    /// Validates lifecycle registration order and singleton contracts before publishing the service.
+    /// Runs under <see cref="_mutationLock"/>.
     /// </summary>
-    private static void ValidateSingletonContracts(ImmutableArray<object> services, object? service)
+    private void ValidateServiceRegistration(ImmutableArray<object> services, object? service)
     {
+        if (service is ILifecycleInterceptor && Volatile.Read(ref _wasAttachedWithoutLifecycle))
+        {
+            throw new InvalidOperationException(
+                "A subject was already attached to this context while it had no lifecycle. " +
+                "Register the lifecycle before attaching any subject to the context.");
+        }
+
         if (service is null)
         {
             return;

@@ -1,6 +1,7 @@
 ﻿using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using Namotion.Interceptor.Cache;
+using Namotion.Interceptor.Tracking;
 
 namespace Namotion.Interceptor.Interceptors;
 
@@ -201,7 +202,9 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
         // The routing flag and the chain index are two fields of one per-type static class, read
         // together and threaded down, so a write pays for the generic statics access exactly once.
         var propertyTypeIndex = InterceptorSubjectContext.PropertyTypeIndex<TProperty>.Value;
-        if (InterceptorSubjectContext.PropertyTypeIndex<TProperty>.CanContainSubjects)
+        if (InterceptorSubjectContext.PropertyTypeIndex<TProperty>.CanContainSubjects ||
+            (_subject.Properties.TryGetValue(propertyName, out var metadata) &&
+             metadata.Type != typeof(TProperty) && metadata.Type.CanContainSubjects()))
         {
             return SetStructuralPropertyValue(propertyName, newValue, currentValue, writeValue, propertyTypeIndex);
         }

@@ -342,12 +342,14 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     {
         var property = context.Property;
         var metadata = property.Metadata;
-        if (!metadata.Type.CanContainSubjects<TProperty>() || !metadata.IsIntercepted ||
+        if (!(metadata.Type == typeof(TProperty)
+                ? metadata.Type.CanContainSubjects<TProperty>()
+                : metadata.Type.CanContainSubjects()) || !metadata.IsIntercepted ||
             metadata is { IsDerived: true, IsDynamic: true, SetValue: null })
         {
             // Scalar, non-intercepted or a derived projection: never a graph edge. Same rule as
             // OwnershipGraph.IsStructural, which carries the reasoning, restated here because the
-            // generic overload of CanContainSubjects is the write path's type fast path.
+            // generic overload is safe only when it describes the declared property type.
             next(ref context);
             return;
         }

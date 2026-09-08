@@ -165,16 +165,6 @@ public static class InterceptorSubjectContextExtensions
     /// while it had no lifecycle.</exception>
     public static IInterceptorSubjectContext WithLifecycle(this IInterceptorSubjectContext context)
     {
-        if (context is InterceptorSubjectContext { WasAttachedWithoutLifecycle: true })
-        {
-            throw new InvalidOperationException(
-                "A subject was already attached to this context while it had no lifecycle, and a " +
-                "root anchored that way never enters the ownership graph this call would register: " +
-                "its structural writes would silently skip claiming, validation and reconciliation. " +
-                "Register the lifecycle (WithLifecycle, WithRegistry, WithFullPropertyTracking or " +
-                "any feature that implies one) before attaching any subject to the context.");
-        }
-
         // The lifecycle captures the context it is registered on: that context is the one exact
         // context it claims subjects for.
         return context
