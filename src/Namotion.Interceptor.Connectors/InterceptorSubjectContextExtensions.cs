@@ -1,4 +1,9 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Namotion.Interceptor.Connectors.Monitoring;
 using Namotion.Interceptor.Connectors.Transactions;
+using Namotion.Interceptor.Tracking.Lifecycle;
 using Namotion.Interceptor.Tracking;
 using Namotion.Interceptor.Tracking.Transactions;
 
@@ -23,6 +28,58 @@ public static class InterceptorSubjectContextExtensions
             .TryAddService<ITransactionWriter>(
                 () => new SourceTransactionWriter(),
                 _ => true);
+
+        return context;
+    }
+
+    /// <summary>
+    /// Adds source monitoring to this context. Call it on the TREE ROOT context: a service added to
+    /// a subtree context is invisible to the root and to sibling subtrees, because context fallbacks
+    /// point child to parent and never sideways, so a subtree-placed monitor fragments the tree.
+    /// Implies WithParents, which the branch-scoped wait needs.
+    /// </summary>
+    public static IInterceptorSubjectContext WithSourceMonitoring(this IInterceptorSubjectContext context)
+    {
+        // WithParents FIRST, so ParentTrackingHandler is registered before the monitor. Ordering
+        // among lifecycle handlers is a stable topological sort, and registration order breaks ties.
+        context.WithParents();
+
+        context.TryAddService<SourceMonitor>(() =>
+        {
+            // Lazy logger: the context is configured before any logging provider exists. This is the
+            // same Func<ILogger?> idiom HostedServiceHandler uses. Without it every warning the wait
+            // engine emits is a silent no-op, and those warnings are the only thing distinguishing a
+            // vacuous completion from a live tree.
+            var monitor = new SourceMonitor(() =>
+                context.TryGetService<ILoggerFactory>()?.CreateLogger<SourceMonitor>());
+            context.AddService<ILifecycleHandler>(monitor);
+            return monitor;
+        }, _ => true);
+
+        return context;
+    }
+
+    /// <summary>
+    /// Adds source monitoring and registers a hosted service that completes source registration when
+    /// IHostApplicationLifetime.ApplicationStarted fires. Use this when every source is a
+    /// DI-registered hosted service. Applications that create sources at runtime use the
+    /// parameterless overload and call CompleteSourceRegistration themselves.
+    /// </summary>
+    public static IInterceptorSubjectContext WithSourceMonitoring(
+        this IInterceptorSubjectContext context, IServiceCollection services)
+    {
+        context.WithSourceMonitoring();
+
+        // Bridges the host's logging provider into the context, the same way WithHostedServices
+        // wires HostedServiceHandler's logger from DI: the context is configured before the host is
+        // built, so without this the monitor's lazy logger resolver (see WithSourceMonitoring())
+        // never finds an ILoggerFactory and every wait-engine warning is a silent no-op.
+        services.AddHostedService(serviceProvider =>
+        {
+            context.TryAddService(serviceProvider.GetRequiredService<ILoggerFactory>, _ => true);
+            return new SourceRegistrationGate(
+                context, serviceProvider.GetRequiredService<IHostApplicationLifetime>());
+        });
 
         return context;
     }

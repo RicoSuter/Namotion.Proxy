@@ -26,6 +26,32 @@ public sealed class PropertyChangeQueueSubscription : IDisposable
     }
 
     /// <summary>
+    /// Number of changes currently queued. Exact only from the consumer thread while no
+    /// producers are racing; concurrent enqueues may or may not be included in the snapshot.
+    /// </summary>
+    public int Count => _queue.Count;
+
+    /// <summary>
+    /// Dequeues one currently-available change without waiting; returns false when the queue is
+    /// momentarily empty.
+    /// </summary>
+    /// <remarks>
+    /// Single consumer, and stricter than <see cref="TryDequeue"/>: this does not touch the wake-up
+    /// signal, so it must never run concurrently with <see cref="TryDequeue"/> on the same subscription.
+    /// Breaking that is silent rather than fatal. Nothing throws; changes are simply consumed by the
+    /// wrong loop or a waiter misses its wake-up, and the symptom appears later as a source that has
+    /// quietly stopped delivering. Use it to drain a subscription you own exclusively at that moment,
+    /// for example while connecting, and <see cref="TryDequeue"/> everywhere else.
+    /// <para>
+    /// This is for a hand-rolled drain loop, not for feeding the built-in change processor: that
+    /// processor creates and owns its own subscription and does not expose it, so there is nothing there
+    /// for this to drain. Returns false both when the queue is momentarily empty and when the
+    /// subscription has been disposed, so a polling loop needs its own stop condition.
+    /// </para>
+    /// </remarks>
+    public bool TryDequeueImmediate(out SubjectPropertyChange item) => _queue.TryDequeue(out item);
+
+    /// <summary>
     /// Enqueues a property change. Thread-safe and can be called concurrently from multiple threads.
     /// </summary>
     /// <param name="item">The property change to enqueue.</param>

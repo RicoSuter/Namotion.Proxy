@@ -1,13 +1,21 @@
 @using HomeBlaze.Abstractions.Attributes
 @using HomeBlaze.Abstractions.Metadata
+@using HomeBlaze.History.Abstractions
+@using HomeBlaze.History
+@using HomeBlaze.History.Blazor
 @using HomeBlaze.Host.Components.Dialogs
+@using HomeBlaze.Services
 @using HomeBlaze.Storage.Abstractions
+@using HomeBlaze.Components.Abstractions.TimeZones
+
+@implements IDisposable
 
 @inject IDialogService DialogService
 @inject SubjectComponentRegistry ComponentRegistry
 @inject DeveloperModeService DeveloperMode
 @inject SubjectPathResolver PathResolver
 @inject IServiceProvider ServiceProvider
+@inject ITimeZoneDisplay TimeZone
 
 <TrackingScope Context="Subject?.Context" ShowDebugInfo="DeveloperMode.IsEnabled">
 @if (Subject != null)
@@ -212,6 +220,19 @@
     [Parameter]
     public EventCallback OnDelete { get; set; }
     
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        TimeZone.Changed += OnTimeZoneChanged;
+    }
+
+    private void OnTimeZoneChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        TimeZone.Changed -= OnTimeZoneChanged;
+    }
+
     protected override void OnParametersSet()
     {
         base.OnParametersSet();
@@ -316,18 +337,31 @@
             {
                 <span style="display: inline-block; width: 24px;"></span>
             }
-            <strong>@displayName: </strong>
-            @{ var displayValue = prop.GetPropertyDisplayValue(value); }
-            @if (displayValue.Contains('\n'))
+            @{ var displayValue = prop.GetPropertyDisplayValue(value, TimeZone); }
+            @{
+                RenderFragment nameAndValue =
+                    @<text><strong>@displayName: </strong>@if (displayValue.Contains('\n'))
+                    {
+                        @foreach (var line in displayValue.Split('\n'))
+                        {
+                            <span>@line</span>
+
+                            <br/>
+                        }
+                    }
+                    else
+                    {
+                        @displayValue
+                    }</text>;
+            }
+            @if (CanShowHistory(prop))
             {
-                @foreach (var line in displayValue.Split('\n'))
-                {
-                    <span>@line</span><br />
-                }
+                <MudLink Color="Color.Inherit" Underline="Underline.Hover" Style="cursor: pointer;"
+                         title="Show history" OnClick="@(() => OpenPropertyHistoryDialogAsync(prop))">@nameAndValue</MudLink>
             }
             else
             {
-                @displayValue
+                @nameAndValue
             }
         </MudText>
 
@@ -385,6 +419,40 @@
 
         var title = GetSubjectTitle();
         await SubjectEditDialog.ShowAsync(DialogService, ComponentRegistry, Subject, $"Edit {title}");
+    }
+
+    private bool CanShowHistory(RegisteredSubjectProperty property)
+    {
+        if (SubjectRegistry is null || !property.HasHistory())
+        {
+            return false;
+        }
+
+        return SubjectRegistry.KnownSubjects.Keys.OfType<IHistoryStore>().Any();
+    }
+
+    private async Task OpenPropertyHistoryDialogAsync(RegisteredSubjectProperty property)
+    {
+        if (Subject is null || SubjectRegistry is null)
+        {
+            return;
+        }
+
+        var basePath = PathResolver.GetPath(Subject, PathStyle.Canonical);
+        if (basePath is null)
+        {
+            return;
+        }
+
+        var path = basePath == "/" ? $"/{property.Name}" : $"{basePath}/{property.Name}";
+
+        var metadata = property.GetStateMetadata();
+        var unit = metadata is null || metadata.Unit == StateUnit.Default
+            ? null
+            : StateUnitExtensions.GetUnitSuffix(metadata.Unit);
+        await PropertyHistoryDialog.ShowAsync(
+            DialogService, SubjectRegistry, path, property.Name, property.Type, metadata?.IsCumulative ?? false, unit,
+            metadata?.IsDiscrete ?? false);
     }
 
     private IReadOnlyList<MethodMetadata> GetMethods() =>

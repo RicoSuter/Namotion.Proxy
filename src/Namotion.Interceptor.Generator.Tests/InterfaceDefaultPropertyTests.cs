@@ -1,6 +1,3 @@
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-
 namespace Namotion.Interceptor.Generator.Tests;
 
 public class InterfaceDefaultPropertyTests
@@ -23,11 +20,11 @@ public partial class Sensor : ISensor
     public partial double Value { get; set; }
 }";
 
-        var generated = GenerateCode(source);
-        var generatedSource = generated.Single().SourceText.ToString();
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
+        var generatedSource = generated.SingleSource();
 
         Assert.Contains(@"""Status""", generatedSource);
-        return Verify(generatedSource);
+        return Verify(generatedSource).UseDirectory("Snapshots");
     }
 
     [Fact]
@@ -50,11 +47,11 @@ public partial class TemperatureSensor : ITemperatureSensor
     public partial double Celsius { get; set; }
 }";
 
-        var generated = GenerateCode(source);
-        var generatedSource = generated.Single().SourceText.ToString();
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
+        var generatedSource = generated.SingleSource();
 
         Assert.Contains(@"""Fahrenheit""", generatedSource);
-        return Verify(generatedSource);
+        return Verify(generatedSource).UseDirectory("Snapshots");
     }
 
     [Fact]
@@ -80,12 +77,12 @@ public partial class Implementation : IDerived
     public partial double Value { get; set; }
 }";
 
-        var generated = GenerateCode(source);
-        var generatedSource = generated.Single().SourceText.ToString();
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
+        var generatedSource = generated.SingleSource();
 
         Assert.Contains(@"""BaseStatus""", generatedSource);
         Assert.Contains(@"""DerivedStatus""", generatedSource);
-        return Verify(generatedSource);
+        return Verify(generatedSource).UseDirectory("Snapshots");
     }
 
     [Fact]
@@ -105,12 +102,12 @@ public partial class Sensor : ISensor
     public partial string Name { get; set; }
 }";
 
-        var generated = GenerateCode(source);
-        var generatedSource = generated.Single().SourceText.ToString();
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
+        var generatedSource = generated.SingleSource();
 
         // Name should be intercepted (from class), not from interface
         Assert.Contains("isIntercepted: true", generatedSource);
-        return Verify(generatedSource);
+        return Verify(generatedSource).UseDirectory("Snapshots");
     }
 
     [Fact]
@@ -138,12 +135,12 @@ public partial class WeatherStation : IHasTemperature, IHasHumidity
     public partial double Humidity { get; set; }
 }";
 
-        var generated = GenerateCode(source);
-        var generatedSource = generated.Single().SourceText.ToString();
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
+        var generatedSource = generated.SingleSource();
 
         Assert.Contains(@"""IsHot""", generatedSource);
         Assert.Contains(@"""IsHumid""", generatedSource);
-        return Verify(generatedSource);
+        return Verify(generatedSource).UseDirectory("Snapshots");
     }
 
     [Fact]
@@ -166,8 +163,8 @@ public partial class Diamond : IA, IB
 }";
 
         // Should not throw, and should include Shared once
-        var generated = GenerateCode(source);
-        var generatedSource = generated.Single().SourceText.ToString();
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
+        var generatedSource = generated.SingleSource();
 
         // Count occurrences of "Shared" in DefaultProperties
         var count = System.Text.RegularExpressions.Regex.Matches(
@@ -193,31 +190,9 @@ public partial class IntSensor : ISensor<int>
     public partial int Value { get; set; }
 }";
 
-        var generated = GenerateCode(source);
-        var generatedSource = generated.Single().SourceText.ToString();
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
+        var generatedSource = generated.SingleSource();
 
         Assert.Contains(@"""TypeName""", generatedSource);
-    }
-
-    private static IEnumerable<GeneratedSourceResult> GenerateCode(string source)
-    {
-        var syntaxTree = CSharpSyntaxTree.ParseText(source);
-        var references = AppDomain.CurrentDomain
-            .GetAssemblies()
-            .Where(a => !a.IsDynamic && !string.IsNullOrWhiteSpace(a.Location))
-            .Select(a => MetadataReference.CreateFromFile(a.Location))
-            .ToList();
-
-        var compilation = CSharpCompilation.Create(
-            assemblyName: "TestAssembly",
-            syntaxTrees: [syntaxTree],
-            references: references,
-            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-
-        var generator = new InterceptorSubjectGenerator();
-        GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
-        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out _, out _);
-
-        return driver.GetRunResult().Results.SelectMany(r => r.GeneratedSources);
     }
 }

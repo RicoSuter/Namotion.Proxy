@@ -193,9 +193,9 @@ public class SubjectPropertyChangeTests
             .GetMethod(nameof(SubjectPropertyChange.Create))!
             .MakeGenericMethod(oldValue.GetType());
 
-        // Act
+        // Act - reflection does not fill in the optional revision parameter, so it is passed explicitly
         var change = (SubjectPropertyChange)method.Invoke(null,
-            [_property, null, _changedTimestamp, _receivedTimestamp, oldValue, newValue])!;
+            [_property, null, _changedTimestamp, _receivedTimestamp, oldValue, newValue, 0L])!;
 
         // Assert
         var getOldMethod = typeof(SubjectPropertyChange)
@@ -748,14 +748,263 @@ public class SubjectPropertyChangeTests
     private readonly record struct SmallStructWithReference(object? Reference);
 
     [Fact]
-    public void WhenMeasuringSubjectPropertyChange_ThenSizeStaysWithinOneAlignmentSlotOfMaster()
+    public void WhenCreatedWithRevision_ThenRevisionIsExposedAndSurvivesMergeAndOrigin()
     {
-        // The plain ChangeOrigin field may cost one alignment slot (8 bytes) versus master's
-        // object? Source. That growth is accepted. If the benchmark gate later shows it matters
-        // on the hot path, flatten the origin into a padding-folded kind byte plus the existing
-        // source reference slot; that is the known optimization, not applied preemptively.
-        // Master measured at 192 bytes; the accepted bound is master + one alignment slot.
+        // Arrange
+        var source = new object();
+
+        // Act
+        var earlier = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp,
+            "a", "b", 5L);
+        var later = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp,
+            "b", "c", 6L);
+        var merged = earlier.MergeWithNewer(later);
+        var reoriginated = later.WithOrigin(ChangeOrigin.Confirmed(source));
+        var withoutRevision = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp,
+            "a", "b");
+
+        // Assert
+        Assert.Equal(5L, earlier.Revision);
+        Assert.Equal(6L, later.Revision);
+        Assert.Equal(6L, merged.Revision);
+        Assert.Equal("a", merged.GetOldValue<string>());
+        Assert.Equal("c", merged.GetNewValue<string>());
+        Assert.Equal(6L, reoriginated.Revision);
+        Assert.Equal(0L, withoutRevision.Revision);
+    }
+
+    [Fact]
+    public void WhenCreatedWithRevisionOnEveryStoragePath_ThenRevisionIsPreserved()
+    {
+        // Arrange: each Create return path passes the revision separately, so all three are covered:
+        // inline storage, the string fast path and the boxed holder.
+        const long revision = 42L;
+
+        // Act
+        var inlineChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp,
+            1, 2, revision);
+        var stringChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp,
+            "old", "new", revision);
+        var referenceChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp,
+            new CustomClass { Id = 1 }, new CustomClass { Id = 2 }, revision);
+        var oversizedStructChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp,
+            new OversizedCustomStruct { Value1 = 1L }, new OversizedCustomStruct { Value1 = 2L }, revision);
+
+        // Assert
+        Assert.Equal(revision, inlineChange.Revision);
+        Assert.Equal(1, inlineChange.GetOldValue<int>());
+        Assert.Equal(revision, stringChange.Revision);
+        Assert.Equal("old", stringChange.GetOldValue<string>());
+        Assert.Equal(revision, referenceChange.Revision);
+        Assert.Equal(1, referenceChange.GetOldValue<CustomClass>().Id);
+        Assert.Equal(revision, oversizedStructChange.Revision);
+        Assert.Equal(1L, oversizedStructChange.GetOldValue<OversizedCustomStruct>().Value1);
+    }
+
+    [Fact]
+    public void WhenConvertedToRollbackChange_ThenPropertyOriginAndTimestampsArePreserved()
+    {
+        // Arrange
+        var source = new object();
+        var change = SubjectPropertyChange.Create(
+            _property, ChangeOrigin.FromSource(source), _changedTimestamp, _receivedTimestamp,
+            "old", "new");
+
+        // Act
+        var rollback = change.ToRollbackChange();
+
+        // Assert
+        Assert.Equal(_property, rollback.Property);
+        Assert.Equal(ChangeOriginKind.FromSource, rollback.Origin.Kind);
+        Assert.Same(source, rollback.Origin.Source);
+        Assert.Equal(_changedTimestamp, rollback.ChangedTimestamp);
+        Assert.Equal(_receivedTimestamp, rollback.ReceivedTimestamp);
+    }
+
+    [Fact]
+    public void WhenConvertedToRollbackChange_ThenRevisionIsReset()
+    {
+        // Arrange: a rollback describes a write to perform, not a commit that happened, and Revision is
+        // only meaningful for the latter. Applying it commits with a revision of its own.
+        var change = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp,
+            "old", "new", 7L);
+
+        // Act
+        var rollback = change.ToRollbackChange();
+
+        // Assert
+        Assert.Equal(0L, rollback.Revision);
+    }
+
+    [Fact]
+    public void WhenConvertedToRollbackChangeOnEveryStoragePath_ThenTypedValuesRoundTrip()
+    {
+        // Arrange: the swap moves the storage fields directly, so every storage path has to survive it
+        // with its stored type intact rather than degrading to a boxed object.
+        var oldReference = new CustomClass { Id = 1 };
+        var newReference = new CustomClass { Id = 2 };
+
+        var inlineChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp, 1, 2);
+        var nullableChange = SubjectPropertyChange.Create<int?>(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp, 1, 2);
+        var stringChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp, "old", "new");
+        var nullStringChange = SubjectPropertyChange.Create<string?>(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp, null, "new");
+        var referenceChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp,
+            oldReference, newReference);
+        var oversizedChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp,
+            new OversizedCustomStruct { Value1 = 1L }, new OversizedCustomStruct { Value1 = 2L });
+
+        // Act
+        var inlineRollback = inlineChange.ToRollbackChange();
+        var nullableRollback = nullableChange.ToRollbackChange();
+        var stringRollback = stringChange.ToRollbackChange();
+        var nullStringRollback = nullStringChange.ToRollbackChange();
+        var referenceRollback = referenceChange.ToRollbackChange();
+        var oversizedRollback = oversizedChange.ToRollbackChange();
+
+        // Assert
+        Assert.Equal(2, inlineRollback.GetOldValue<int>());
+        Assert.Equal(1, inlineRollback.GetNewValue<int>());
+        Assert.Equal(2, nullableRollback.GetOldValue<int?>());
+        Assert.Equal(1, nullableRollback.GetNewValue<int?>());
+        Assert.Equal("new", stringRollback.GetOldValue<string>());
+        Assert.Equal("old", stringRollback.GetNewValue<string>());
+        Assert.Equal("new", nullStringRollback.GetOldValue<string>());
+        Assert.Null(nullStringRollback.GetNewValue<string>());
+        Assert.Same(newReference, referenceRollback.GetOldValue<CustomClass>());
+        Assert.Same(oldReference, referenceRollback.GetNewValue<CustomClass>());
+        Assert.Equal(2L, oversizedRollback.GetOldValue<OversizedCustomStruct>().Value1);
+        Assert.Equal(1L, oversizedRollback.GetNewValue<OversizedCustomStruct>().Value1);
+    }
+
+    [Fact]
+    public void WhenConvertedToRollbackChangeAndReadAsObject_ThenValuesAreSwapped()
+    {
+        // Arrange: both revert paths read a rollback through object, so that is the read that has to
+        // hold on every storage path.
+        var inlineChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp, 1, 2);
+        var nullableChange = SubjectPropertyChange.Create<int?>(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp, null, 2);
+        var stringChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp, "old", "new");
+        var referenceChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp,
+            new CustomClass { Id = 1 }, new CustomClass { Id = 2 });
+
+        // Act
+        var inlineRollback = inlineChange.ToRollbackChange();
+        var nullableRollback = nullableChange.ToRollbackChange();
+        var stringRollback = stringChange.ToRollbackChange();
+        var referenceRollback = referenceChange.ToRollbackChange();
+
+        // Assert
+        Assert.Equal(2, inlineRollback.GetOldValue<object?>());
+        Assert.Equal(1, inlineRollback.GetNewValue<object?>());
+        Assert.Equal(2, nullableRollback.GetOldValue<object?>());
+        Assert.Null(nullableRollback.GetNewValue<object?>());
+        Assert.Equal("new", stringRollback.GetOldValue<object?>());
+        Assert.Equal("old", stringRollback.GetNewValue<object?>());
+        Assert.Equal(2, Assert.IsType<CustomClass>(referenceRollback.GetOldValue<object?>()).Id);
+        Assert.Equal(1, Assert.IsType<CustomClass>(referenceRollback.GetNewValue<object?>()).Id);
+    }
+
+    [Fact]
+    public void WhenConvertedToRollbackChange_ThenValuesKeepTheirDeclaredStorageType()
+    {
+        // Arrange: moving the storage rather than re-boxing through object means a rollback refuses a
+        // narrower type exactly as the change it inverts does. A nullable stores its own type inline,
+        // so int? does not read back as int on either of them.
+        var change = SubjectPropertyChange.Create<int?>(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp, 1, 2);
+
+        // Act
+        var rollback = change.ToRollbackChange();
+
+        // Assert
+        Assert.False(rollback.TryGetOldValue<int>(out _));
+        Assert.False(change.TryGetOldValue<int>(out _));
+    }
+
+    [Fact]
+    public void WhenConvertedToRollbackChange_ThenNothingIsAllocatedOnAnyStoragePath()
+    {
+        // Arrange: the conversion moves the storage fields instead of round-tripping both values
+        // through object. Rebuilding it through Create<object?> would cost two boxed holders per
+        // reverted change plus a box per inline value, so every storage path has to measure zero:
+        // measuring only the inline one would miss a partial revert on the two holder paths.
+        var inlineChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp, 1, 2);
+        var stringChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp, "old", "new");
+        var referenceChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp,
+            new CustomClass { Id = 1 }, new CustomClass { Id = 2 });
+        var oversizedChange = SubjectPropertyChange.Create(
+            _property, origin: ChangeOrigin.Local, _changedTimestamp, _receivedTimestamp,
+            new OversizedCustomStruct { Value1 = 1L }, new OversizedCustomStruct { Value1 = 2L });
+
+        // Act
+        var inlineAllocated = MeasureRollbackAllocations(inlineChange, c => c.GetNewValue<int>());
+        var stringAllocated = MeasureRollbackAllocations(stringChange, c => c.GetNewValue<string>().Length);
+        var referenceAllocated = MeasureRollbackAllocations(referenceChange, c => c.GetNewValue<CustomClass>().Id);
+        var oversizedAllocated = MeasureRollbackAllocations(
+            oversizedChange, c => (int)c.GetNewValue<OversizedCustomStruct>().Value1);
+
+        // Assert
+        Assert.Equal(0L, inlineAllocated);
+        Assert.Equal(0L, stringAllocated);
+        Assert.Equal(0L, referenceAllocated);
+        Assert.Equal(0L, oversizedAllocated);
+    }
+
+    /// <summary>
+    /// Converts <paramref name="change"/> in a tight loop and returns the bytes allocated. The read is
+    /// passed in as a non-capturing lambda, so its delegate is cached before the measured window and the
+    /// result is consumed, which keeps the conversion from being optimized away.
+    /// </summary>
+    private static long MeasureRollbackAllocations(
+        SubjectPropertyChange change, Func<SubjectPropertyChange, int> read)
+    {
+        // Warm up so JIT compilation does not land inside the measured window.
+        var accumulator = 0L;
+        for (var i = 0; i < 100; i++)
+        {
+            accumulator += read(change.ToRollbackChange());
+        }
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 1000; i++)
+        {
+            accumulator += read(change.ToRollbackChange());
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.NotEqual(0L, accumulator);
+        return allocated;
+    }
+
+    [Fact]
+    public void WhenMeasuringSubjectPropertyChange_ThenSizeStaysWithinTheAcceptedBudget()
+    {
+        // The struct is copied on every publish, so growth is a hot-path cost that has to be a decision
+        // rather than a side effect. The commit revision took it up by one alignment slot, to the 144
+        // bytes measured here, and that growth is accepted. The bound is the exact measurement: slack
+        // would let the next field through unnoticed.
         var size = System.Runtime.CompilerServices.Unsafe.SizeOf<SubjectPropertyChange>();
-        Assert.True(size <= 200, $"SubjectPropertyChange grew to {size} bytes");
+        Assert.True(size <= 144, $"SubjectPropertyChange grew to {size} bytes");
     }
 }

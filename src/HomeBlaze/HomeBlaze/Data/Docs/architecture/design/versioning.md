@@ -26,7 +26,7 @@ HomeBlaze.Components.Abstractions       <- UI component contracts
 HomeBlaze.Storage.Abstractions          <- document/storage contracts
 
 As domains stabilize, extract focused packages:
-  HomeBlaze.History.Abstractions        <- IHistorySink, history query interfaces
+  HomeBlaze.History.Abstractions        <- IHistoryStore, history query interfaces
   HomeBlaze.Sensors.Abstractions        <- ITemperatureSensor, IHumiditySensor
   HomeBlaze.Devices.Abstractions        <- ISwitchDevice, IControllable
   MyCompany.Industrial.Abstractions     <- third-party domain abstractions

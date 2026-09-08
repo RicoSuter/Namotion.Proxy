@@ -14,9 +14,9 @@ public interface IWriteInterceptor
     /// values are boxed through non-generic paths (e.g., <c>SetPropertyValueWithInterception</c>).
     /// Use <c>context.Property.Metadata.Type</c> for the actual declared property type.</typeparam>
     /// <param name="context">The write context containing the property reference and values.</param>
-    /// <param name="next">The next interceptor in the chain to call. Always forward the context you
-    /// received; a freshly constructed context loses the per-call state the chain threads through it
-    /// (including the terminal write operation).</param>
+    /// <param name="next">The next interceptor in the chain to call. Always forward the received context by
+    /// reference. Copying it loses per-call changes, including <see cref="PropertyWriteContext{TProperty}.IsWritten"/>,
+    /// and a freshly constructed context also loses the terminal write operation.</param>
     void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next);
 }
 
@@ -49,6 +49,33 @@ public struct PropertyWriteContext<TProperty>
     // flows by ref to the end of the chain) instead of a ThreadStatic on the shared chain instance:
     // per-call state belongs on the per-call context, which is also robust against reentrant writes.
     internal Action<IInterceptorSubject, TProperty>? Terminal;
+
+    // The executor that started this write, and always the executor of Property.Subject: both library
+    // construction sites pass their own 'this' alongside a PropertyReference over their own subject.
+    // The constructors are also visible to the test and benchmark assemblies, which construct contexts
+    // of their own, which is why the terminal asserts that pairing instead of assuming it.
+    // Threaded through the context so the terminal can stamp the commit revision with a plain field
+    // increment, instead of resolving the subject's context (an interface dispatch plus a type test)
+    // on every committed write.
+    internal readonly InterceptorExecutor Executor;
+
+    /// <summary>
+    /// The subject's commit revision assigned by the terminal write, or 0 when the write did not
+    /// commit. Monotonic per subject, not comparable across subjects.
+    /// </summary>
+    internal long Revision;
+
+    /// <summary>
+    /// Set by the cascade re-entry constructor, where <see cref="NewValue"/> is already the
+    /// stabilized getter output. Stops <see cref="GetFinalValue"/> from re-invoking the getter,
+    /// which would run user code at publish time and could return a value that never paired
+    /// atomically with this change's old value.
+    ///
+    /// The published value is therefore <see cref="NewValue"/> as of publish time, not as of entry.
+    /// <see cref="NewValue"/> is publicly settable, so an interceptor that rewrites it on a derived
+    /// recalculation now changes what is published; the getter re-read used to mask such a rewrite.
+    /// </summary>
+    internal bool FinalValueIsNewValue;
 
     /// <summary>
     /// Gets the property to write a value to.
@@ -95,8 +122,9 @@ public struct PropertyWriteContext<TProperty>
     /// Internal so every meaningfully constructed context comes from the library's execution
     /// entry points, which always thread the per-call chain state (such as the terminal) through it.
     /// </summary>
-    internal PropertyWriteContext(PropertyReference property, TProperty currentValue, TProperty newValue)
+    internal PropertyWriteContext(InterceptorExecutor executor, PropertyReference property, TProperty currentValue, TProperty newValue)
     {
+        Executor = executor;
         Property = property;
         CurrentValue = currentValue;
         NewValue = newValue;
@@ -110,15 +138,20 @@ public struct PropertyWriteContext<TProperty>
     /// already-resolved raw timestamp, so the dependent's write does not need to lazy-resolve
     /// (and therefore does not need an active <c>WithChangedTimestamp</c> scope to share state
     /// with the trigger). Pass 0 to leave the cache uninitialized (the default lazy behavior).
-    /// Like the public constructor, this consumes the thread-static pending origin stamp for
+    /// Like the other constructor, this consumes the thread-static pending origin stamp for
     /// this property (see <see cref="PendingOrigin"/>) as a side effect of construction.
+    ///
+    /// Cascade re-entry is only ever reached with a new value that is already the stabilized getter
+    /// output, so <see cref="FinalValueIsNewValue"/> is set here rather than passed in.
     /// </summary>
-    internal PropertyWriteContext(PropertyReference property, TProperty currentValue, TProperty newValue, long rawTimestamp)
+    internal PropertyWriteContext(InterceptorExecutor executor, PropertyReference property, TProperty currentValue, TProperty newValue, long rawTimestamp)
     {
+        Executor = executor;
         Property = property;
         CurrentValue = currentValue;
         NewValue = newValue;
         IsWritten = false;
+        FinalValueIsNewValue = true;
         _writeTimestamp = rawTimestamp;
         PendingOrigin.TryConsume(in property, out _attempted);
     }
@@ -205,10 +238,22 @@ public struct PropertyWriteContext<TProperty>
     /// <summary>
     /// Reads the current property value (might be different from <see cref="NewValue"/> if the property is derived).
     /// Must only be used after the 'next()' call in the write interceptor.
+    ///
+    /// One exception: on a derived property's own recalculation, <see cref="NewValue"/> is already the
+    /// stabilized getter output, so this returns it directly instead of invoking the getter again. That
+    /// keeps the published new value paired with the old value it was compared against, and keeps user
+    /// code off the publish path, where a throwing getter used to suppress the notification entirely.
+    /// An interceptor that rewrites <see cref="NewValue"/> on that path therefore changes what is
+    /// published, which the previous getter re-read would have masked.
     /// </summary>
     /// <returns>The property value.</returns>
     public TProperty GetFinalValue()
     {
+        if (FinalValueIsNewValue)
+        {
+            return NewValue;
+        }
+
         var property = Property;
         var metadata = property.Metadata;
         return metadata.IsDerived
@@ -216,17 +261,12 @@ public struct PropertyWriteContext<TProperty>
             : NewValue;
     }
 
-    /// <summary>
-    /// Finalizes <see cref="Origin"/> at the terminal write (right after <see cref="IsWritten"/>
-    /// becomes true). A stamped origin survives only when the stored value is exactly the value the
-    /// source sent; otherwise the value was computed locally and the origin becomes Local.
-    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void FinalizeOrigin()
+    internal ChangeOrigin GetFinalOrigin()
     {
         if (_attempted.Origin.Kind == ChangeOriginKind.Local)
         {
-            return;
+            return default;
         }
 
         // A derived property's stored value is recomputed by its getter, never literally the sent value,
@@ -234,8 +274,7 @@ public struct PropertyWriteContext<TProperty>
         // here (this executes under the subject's SyncRoot).
         if (Property.Metadata.IsDerived)
         {
-            _attempted = default;
-            return;
+            return default;
         }
 
         // Survive only when the sent value was faithfully stored. The 'is TProperty' pattern unboxes
@@ -249,7 +288,18 @@ public struct PropertyWriteContext<TProperty>
                 ? NewValue is null
                 : SentValueEqualsAfterUnbox(_attempted.SentValue, NewValue);
 
-        if (!survives)
+        return survives ? _attempted.Origin : default;
+    }
+
+    /// <summary>
+    /// Finalizes <see cref="Origin"/> at the terminal write (right after <see cref="IsWritten"/>
+    /// becomes true). A stamped origin survives only when the stored value is exactly the value the
+    /// source sent; otherwise the value was computed locally and the origin becomes Local.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void FinalizeOrigin()
+    {
+        if (GetFinalOrigin().Kind == ChangeOriginKind.Local)
         {
             _attempted = default;
         }

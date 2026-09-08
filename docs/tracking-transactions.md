@@ -13,7 +13,7 @@ Use transactions when you need guarantees about what was actually persisted to e
 Transactions provide:
 - **Configurable commit modes**: Choose between best-effort or rollback behavior on partial failures
 - **Read-your-writes consistency**: Reading a property inside a transaction returns the pending value
-- **Notification suppression**: Change notifications are suppressed during the transaction and fired after commit
+- **Notification suppression**: Captured non-derived writes stay silent until commit replay applies them
 - **External source integration**: Changes can be written to external sources before being applied to the local model
 - **Rollback on dispose**: Uncommitted changes are discarded when the transaction is disposed
 
@@ -396,11 +396,13 @@ When `OnChanging/OnChanged` throws:
 
 ### Derived Properties
 
-Derived properties (marked with `[Derived]`) are handled specially:
+Derived properties (marked with `[Derived]`) are handled specially. The pending read view belongs to each execution flow carrying a live ambient transaction, while derived tracking is shared across flows and therefore uses only values that have landed in the model:
 
-- **During capture**: Derived property recalculation notifications are skipped
-- **During read**: Derived properties return calculated value based on pending changes
-- **After commit**: Derived properties are recalculated with committed values and notifications fired
+- **Direct reads**: Getters called by application code in a flow carrying a live transaction use that transaction's pending values. A flow without a live transaction reads the landed model.
+- **Shared tracking**: Cached derived values, dependencies, timestamps, and notifications use values that have landed in the model.
+- **Captured writes**: Non-derived writes remain silent until commit replay applies them.
+- **Landed writes**: Writes to settable derived properties are not captured. They land, recalculate, and notify immediately while a transaction is open, and survive transaction disposal or rollback.
+- **Derived chains**: Derived-of-derived tracking uses the landed model view and retains flattened source dependencies.
 
 ```csharp
 [InterceptorSubject]
@@ -421,9 +423,13 @@ using (var transaction = await context.BeginTransactionAsync(TransactionFailureH
     Console.WriteLine(person.FullName); // Output: John Doe (from pending values)
 
     await transaction.CommitAsync(cancellationToken);
-    // FullName change notification is fired after commit
+    // FullName tracking is updated when the captured writes land during commit.
 }
 ```
+
+The same landed-model rule applies when tracking evaluates a getter during initial attachment, automatic recalculation, manual `RecalculateDerivedProperty()`, or a stabilization retry. It does not clear or replace the ambient transaction, so non-derived writes performed as getter side effects are still captured and direct reads resume the pending view as soon as the tracking evaluation finishes.
+
+Notification boundaries follow the evaluation nesting. A top-level derived recalculation publishes after its tracking evaluation has ended, so a synchronous subscriber reads pending values normally. If a getter causes a reentrant derived recalculation or a landed side-effect notification, that nested publication occurs while the outer getter is still being evaluated. Synchronous subscribers in that nested path read landed model values until the outer evaluation finishes.
 
 ### Capture and Commit Replay
 
@@ -514,7 +520,11 @@ Note that concurrent `CommitAsync` calls on the same transaction are rejected: o
 - `BeginTransactionAsync()` uses `AsyncLocal<T>` to store the current transaction
 - Exclusive transactions use a per-context semaphore
 - Each async execution context has its own transaction scope
-- The transaction is automatically cleared on `Dispose()`
+- `Dispose()` clears the transaction only for the disposing flow. A flow that captured its execution context earlier can retain the disposed transaction in its slot; reads and writes on that flow treat it as inactive.
+- After `Dispose()`, ambient access is ordinary raw model access even while an already-started external-writer commit completes. Such a raw write is not isolated from the commit and can be overwritten when its frozen snapshot replays.
+- A successful or terminally failed commit is inactive for property interception even before disposal. Later reads and writes use the landed model normally; retryable failures remain active.
+- While a live ambient transaction is committing, property reads and writes on a flow carrying it throw `InvalidOperationException`. This includes custom writer callbacks. Getter reads are also rejected because sibling or landed-model state is outside the frozen snapshot and can make the source payload inconsistent.
+- Commit-owned synchronous local replay remains allowed, including property hooks, change handlers, and derived cascades initiated by that replay. This authorization does not extend into custom writer callbacks or child tasks.
 - A transaction must be begun, used, committed, and disposed within the same async flow; committing from another flow throws
 - Concurrent `CommitAsync` calls on the same transaction instance are rejected
 
@@ -620,7 +630,9 @@ Rollback operations can also fail. If revert fails, `SubjectTransactionException
 
 Most applications use the built-in `SourceTransactionWriter` registered by `WithSourceTransactions()` and never implement `ITransactionWriter`. A custom writer replaces stage 1 of the commit flow (registered as an `ITransactionWriter` service on the context) and is only needed when source writes require protocol-specific orchestration the built-in writer cannot provide.
 
-A custom writer must follow the in-place marking contract documented in the xml docs of `ITransactionWriter.WriteToSourcesAsync`. Moving or replacing a snapshot slot silently corrupts the local apply; not marking accepted slots is harmless but keeps the legacy double write (the apply notifications publish without a `Confirmed` origin and are pushed to the source again). While developing a writer, enable the runtime contract validation:
+Both writer callbacks execute while the caller's live ambient transaction is committing. Do not read or write subject properties from either callback, and do not suppress ambient execution-context flow to bypass this boundary. This includes getters: sibling or landed-model state is not represented by the supplied snapshot and can make source operations inconsistent with it. Construct writes from `changes` and `requirement`, and reverts from `written` and `revertState`, together with writer-owned configuration and any required subject state captured before `CommitAsync()`.
+
+A custom writer must follow the in-place marking contract documented in the XML documentation of `ITransactionWriter.WriteToSourcesAsync`. Moving or replacing a snapshot slot silently corrupts the local apply. Not marking an accepted slot is allowed, but its apply notification publishes without a `Confirmed` origin and the outbound queue pushes the committed value to the source again. While developing a writer, enable the runtime contract validation:
 
 ```csharp
 SubjectTransaction.ValidateWriterContract = true;

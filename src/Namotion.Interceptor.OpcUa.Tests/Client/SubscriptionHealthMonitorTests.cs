@@ -1,6 +1,8 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using Namotion.Interceptor.OpcUa.Client.Resilience;
 using Opc.Ua;
 using Opc.Ua.Client;
+using static Namotion.Interceptor.OpcUa.Tests.Client.ClientSourceTestFactory;
 
 namespace Namotion.Interceptor.OpcUa.Tests.Client;
 
@@ -99,6 +101,39 @@ public class SubscriptionHealthMonitorTests
 
         // Assert
         Assert.False(isRetryable);
+    }
+
+    [Fact]
+    public async Task WhenApplyChangesThrows_ThenSourceReportsFailureOnceAndKeepsItAfterRecovery()
+    {
+        // Arrange
+        await using var source = CreateClientSource();
+        var error = new InvalidOperationException("subscription heal failed");
+        var reportCount = 0;
+
+        void ReportError(Exception exception)
+        {
+            Interlocked.Increment(ref reportCount);
+            source.ReportBackgroundError(exception);
+        }
+
+        var subscription = new Subscription(NullTelemetryContext.Instance, new SubscriptionOptions());
+        subscription.AddItem(CreateMonitoredItem(StatusCodes.BadTimeout, created: true));
+
+        var monitor = new SubscriptionHealthMonitor(
+            NullLogger.Instance,
+            ReportError,
+            applyChangesAsync: (_, _) => Task.FromException(error));
+
+        // Act
+        await monitor.CheckAndHealSubscriptionsAsync([subscription], CancellationToken.None);
+
+        // Assert
+        Assert.Equal(1, Volatile.Read(ref reportCount));
+        Assert.Same(error, source.Diagnostics.LastError);
+
+        source.NotifySessionHealthy();
+        Assert.Same(error, source.Diagnostics.LastError);
     }
 
     private static MonitoredItem CreateMonitoredItem(uint statusCode, bool created)

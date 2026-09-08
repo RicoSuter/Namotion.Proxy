@@ -149,8 +149,10 @@ public class SourceOwnershipManagerTests
         // Create subjects and properties (subjects need Data for PropertyReference to work)
         var subject1Mock = new Mock<IInterceptorSubject>();
         subject1Mock.Setup(s => s.Data).Returns(new System.Collections.Concurrent.ConcurrentDictionary<(string?, string), object?>());
+        subject1Mock.Setup(s => s.Context).Returns(InterceptorSubjectContext.Create());
         var subject2Mock = new Mock<IInterceptorSubject>();
         subject2Mock.Setup(s => s.Data).Returns(new System.Collections.Concurrent.ConcurrentDictionary<(string?, string), object?>());
+        subject2Mock.Setup(s => s.Context).Returns(InterceptorSubjectContext.Create());
         var property1 = new PropertyReference(subject1Mock.Object, "Prop1");
         var property2 = new PropertyReference(subject2Mock.Object, "Prop2");
         var property3 = new PropertyReference(subject1Mock.Object, "Prop3");
@@ -238,6 +240,7 @@ public class SourceOwnershipManagerTests
     {
         var subjectMock = new Mock<IInterceptorSubject>();
         subjectMock.Setup(s => s.Data).Returns(new System.Collections.Concurrent.ConcurrentDictionary<(string?, string), object?>());
+        subjectMock.Setup(s => s.Context).Returns(InterceptorSubjectContext.Create());
         return new PropertyReference(subjectMock.Object, name);
     }
 }

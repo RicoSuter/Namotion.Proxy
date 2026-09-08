@@ -22,9 +22,9 @@ public partial class HueDevice :
     IIconProvider,
     ILastUpdatedProvider
 {
-    internal Device Device { get; private set; }
+    internal partial Device Device { get; private set; }
 
-    internal ZigbeeConnectivity? ZigbeeConnectivity { get; set; }
+    internal partial ZigbeeConnectivity? ZigbeeConnectivity { get; set; }
 
     public HueBridge Bridge { get; }
 

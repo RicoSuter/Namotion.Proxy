@@ -35,6 +35,25 @@ public class PropertyChangedInheritanceTests
     }
 
     [Fact]
+    public void WhenBaseListIsOnADifferentPartialDeclaration_ThenSubjectExposesBaseAndOwnProperties()
+    {
+        // Arrange
+        var contractor = new Contractor();
+        var firedEvents = new List<string>();
+        contractor.PropertyChanged += (_, e) => firedEvents.Add(e.PropertyName!);
+
+        // Act
+        contractor.FirstName = "Rico";
+        contractor.Agency = "Acme";
+        var properties = ((IInterceptorSubject)contractor).Properties;
+
+        // Assert
+        Assert.True(properties.ContainsKey("FirstName"));
+        Assert.True(properties.ContainsKey("Agency"));
+        Assert.Equal(["FirstName", "Agency"], firedEvents);
+    }
+
+    [Fact]
     public void WhenSettingBothProperties_ThenBothEventsAreFired()
     {
         // Arrange

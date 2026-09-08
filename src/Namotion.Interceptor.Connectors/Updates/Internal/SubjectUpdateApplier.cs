@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Registry.Abstractions;
@@ -26,17 +27,36 @@ internal static class SubjectUpdateApplier
             return;
 
         var context = ContextPool.Rent();
+        List<(RegisteredSubjectProperty Property, Exception Exception)>? failures = null;
         try
         {
             context.Initialize(update.Subjects, subjectFactory, origin, transformValueBeforeApply);
             context.TryMarkAsProcessed(update.Root);
             ApplyPropertyUpdates(subject, rootProperties, context);
+            failures = context.Failures;
         }
         finally
         {
             context.Clear();
             ContextPool.Return(context);
         }
+
+        if (failures is null)
+        {
+            return;
+        }
+
+        // A single failure is rethrown as itself, with its original stack, so a caller that catches a
+        // specific exception type keeps working exactly as before this change.
+        if (failures.Count == 1)
+        {
+            ExceptionDispatchInfo.Capture(failures[0].Exception).Throw();
+        }
+
+        throw new AggregateException(
+            $"{failures.Count} property updates could not be applied: " +
+            string.Join(", ", failures.Select(failure => failure.Property.Name)),
+            failures.Select(failure => failure.Exception));
     }
 
     internal static void ApplyPropertyUpdates(
@@ -78,48 +98,63 @@ internal static class SubjectUpdateApplier
         if (registeredProperty is null)
             return;
 
-        switch (propertyUpdate.Kind)
+        try
         {
-            case SubjectPropertyUpdateKind.Value:
+            switch (propertyUpdate.Kind)
             {
-                if (context.TransformValueBeforeApply is not null)
+                case SubjectPropertyUpdateKind.Value:
                 {
-                    // Convert once BEFORE the transform runs; this converted instance is the value the
-                    // source semantically sent and doubles as the origin's survival evidence. If the
-                    // transform does not replace propertyUpdate.Value (reference unchanged), reuse that
-                    // same instance as the written value too: converting a JSON value twice yields two
-                    // reference-distinct instances for reference types (int[], DTOs), which fail the
-                    // reference-equality survival check and wrongly demote a genuine unchanged source
-                    // write to Local, defeating echo suppression. Only re-convert when the transform
-                    // substituted a new value, so a locally corrected value differs from the evidence
-                    // and the origin correctly demotes to Local.
-                    var rawValue = propertyUpdate.Value;
-                    var sentValue = ConvertValue(rawValue, registeredProperty.Type);
-                    context.TransformValueBeforeApply.Invoke(registeredProperty, propertyUpdate);
-                    var value = ReferenceEquals(propertyUpdate.Value, rawValue)
-                        ? sentValue
-                        : ConvertValue(propertyUpdate.Value, registeredProperty.Type);
-                    context.SetPropertyValue(registeredProperty, propertyUpdate.Timestamp, value, sentValue);
+                    if (context.TransformValueBeforeApply is not null)
+                    {
+                        // Convert once BEFORE the transform runs; this converted instance is the value the
+                        // source semantically sent and doubles as the origin's survival evidence. If the
+                        // transform does not replace propertyUpdate.Value (reference unchanged), reuse that
+                        // same instance as the written value too: converting a JSON value twice yields two
+                        // reference-distinct instances for reference types (int[], DTOs), which fail the
+                        // reference-equality survival check and wrongly demote a genuine unchanged source
+                        // write to Local, defeating echo suppression. Only re-convert when the transform
+                        // substituted a new value, so a locally corrected value differs from the evidence
+                        // and the origin correctly demotes to Local.
+                        var rawValue = propertyUpdate.Value;
+                        var sentValue = ConvertValue(rawValue, registeredProperty.Type);
+                        context.TransformValueBeforeApply.Invoke(registeredProperty, propertyUpdate);
+                        var value = ReferenceEquals(propertyUpdate.Value, rawValue)
+                            ? sentValue
+                            : ConvertValue(propertyUpdate.Value, registeredProperty.Type);
+                        context.SetPropertyValue(registeredProperty, propertyUpdate.Timestamp, value, sentValue);
+                    }
+                    else
+                    {
+                        var value = ConvertValue(propertyUpdate.Value, registeredProperty.Type);
+                        context.SetPropertyValue(registeredProperty, propertyUpdate.Timestamp, value);
+                    }
+                    break;
                 }
-                else
-                {
-                    var value = ConvertValue(propertyUpdate.Value, registeredProperty.Type);
-                    context.SetPropertyValue(registeredProperty, propertyUpdate.Timestamp, value);
-                }
-                break;
+
+                case SubjectPropertyUpdateKind.Object:
+                    ApplyObjectUpdate(subject, registeredProperty, propertyUpdate, context);
+                    break;
+
+                case SubjectPropertyUpdateKind.Collection:
+                    SubjectItemsUpdateApplier.ApplyCollectionUpdate(subject, registeredProperty, propertyUpdate, context);
+                    break;
+
+                case SubjectPropertyUpdateKind.Dictionary:
+                    SubjectItemsUpdateApplier.ApplyDictionaryUpdate(subject, registeredProperty, propertyUpdate, context);
+                    break;
             }
-
-            case SubjectPropertyUpdateKind.Object:
-                ApplyObjectUpdate(subject, registeredProperty, propertyUpdate, context);
-                break;
-
-            case SubjectPropertyUpdateKind.Collection:
-                SubjectItemsUpdateApplier.ApplyCollectionUpdate(subject, registeredProperty, propertyUpdate, context);
-                break;
-
-            case SubjectPropertyUpdateKind.Dictionary:
-                SubjectItemsUpdateApplier.ApplyDictionaryUpdate(subject, registeredProperty, propertyUpdate, context);
-                break;
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancellation is not an apply failure. Let a shutdown unwind now rather than surfacing
+            // at the end of the batch as though this property were bad.
+            throw;
+        }
+        catch (Exception exception)
+        {
+            // One property must not cost its siblings. Every other inbound path already catches per
+            // property; this applier was the only one that abandoned the rest of the batch.
+            context.RecordFailure(registeredProperty, exception);
         }
     }
 

@@ -12,7 +12,7 @@ using Namotion.Interceptor.Registry.Paths;
 namespace HomeBlaze.AI.Mcp;
 
 /// <summary>
-/// Provides list_methods and invoke_method tools for HomeBlaze subjects.
+/// Provides the list_methods and invoke_method tools for HomeBlaze subjects.
 /// </summary>
 public class HomeBlazeMcpToolProvider : IMcpToolProvider
 {

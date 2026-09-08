@@ -65,9 +65,11 @@ public sealed class PortLease : IDisposable
     public string BaseAddress => $"opc.tcp://localhost:{Port}/";
 
     /// <summary>
-    /// Gets the port-specific certificate store path for test isolation.
+    /// Gets the port-specific certificate store path for test isolation. Absolute, and handed to the
+    /// SDK in that same form: the SDK resolves a relative store path against the working directory, so
+    /// under a runner that moves it the cleanup below and the server would use different directories.
     /// </summary>
-    public string CertificateStoreBasePath => $"pki-{Port}";
+    public string CertificateStoreBasePath => Path.Combine(AppContext.BaseDirectory, $"pki-{Port}");
 
     internal PortLease(int port)
     {
@@ -88,10 +90,9 @@ public sealed class PortLease : IDisposable
     {
         try
         {
-            var certPath = Path.Combine(AppContext.BaseDirectory, CertificateStoreBasePath);
-            if (Directory.Exists(certPath))
+            if (Directory.Exists(CertificateStoreBasePath))
             {
-                Directory.Delete(certPath, recursive: true);
+                Directory.Delete(CertificateStoreBasePath, recursive: true);
             }
         }
         catch

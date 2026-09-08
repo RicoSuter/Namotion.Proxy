@@ -1,10 +1,13 @@
 ﻿using System.Threading.Tasks.Dataflow;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Namotion.Interceptor.Attributes;
+using Namotion.Interceptor.Tracking;
 using Namotion.Interceptor.Tracking.Lifecycle;
 
 namespace Namotion.Interceptor.Hosting;
 
+[RunsAfter(typeof(ContextInheritanceHandler))]
 internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDisposable
 {
     private ILogger? _logger;
@@ -29,12 +32,12 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
         {
             if (change.Subject is IHostedService hostedService)
             {
-                AttachHostedService(hostedService);
+                AttachHostedService(hostedService, change.Subject.Context);
             }
 
             foreach (var hostedService2 in change.Subject.GetAttachedHostedServices())
             {
-                AttachHostedService(hostedService2);
+                AttachHostedService(hostedService2, change.Subject.Context);
             }
         }
         else if (change.IsContextDetach)
@@ -46,6 +49,12 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
 
             foreach (var attachedHostedService in change.Subject.GetAttachedHostedServices())
             {
+                // The extension, not this handler's own method: it also clears the subject's
+                // attached-services data, which a plain stop would leave behind (pinned by
+                // HostedServiceHandlerTests.WhenSubjectServiceIsDetached_ThenHostedServiceIsStopped).
+                // It re-resolves the handler through the subject's context, so a subject whose own
+                // context has already lost its fallback stops resolving one; that is pre-existing and
+                // narrower than losing the data cleanup.
                 change.Subject.DetachHostedService(attachedHostedService);
             }
         }
@@ -132,15 +141,51 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
         }
     }
     
-    internal void AttachHostedService(IHostedService hostedService)
+    internal void AttachHostedService(IHostedService hostedService, IInterceptorSubjectContext context)
     {
         lock (_hostedServices)
         {
             if (_hostedServices.Add(hostedService))
             {
-                PostStartService(hostedService, null);
+                // Starting is queued, not inline, so the service is NOT running when this returns.
+                // Anything that treats "the graph has finished starting" as a completion point would
+                // otherwise reach it while this start is still on its way in - concretely, a source
+                // attached here would not yet have registered with its SourceMonitor, and a
+                // synchronization wait would complete against a tree that is not synchronized.
+                // Holds are taken HERE, synchronously, rather than inside the queued action, so
+                // there is no window between the attach and the hold in which completion can fire.
+                // They are released once the start has actually run (see PostStartService).
+                //
+                // A nested attach composes: a service that attaches children during its own
+                // StartAsync takes their holds before its own is released, so the count never
+                // reaches zero in between.
+                PostStartService(hostedService, null, TakeStartupHolds(context));
             }
         }
+    }
+
+    /// <summary>
+    /// Takes a completion hold on every deferrer reachable from <paramref name="context"/>.
+    /// </summary>
+    /// <remarks>
+    /// Empty for an application that configures no deferring subsystem (no source monitoring, for
+    /// example), which is the common case and costs one empty-array check per attach.
+    /// </remarks>
+    private static IDisposable[] TakeStartupHolds(IInterceptorSubjectContext context)
+    {
+        var deferrers = context.GetServices<IStartupCompletionDeferrer>();
+        if (deferrers.IsEmpty)
+        {
+            return [];
+        }
+
+        var holds = new IDisposable[deferrers.Length];
+        for (var index = 0; index < deferrers.Length; index++)
+        {
+            holds[index] = deferrers[index].DeferCompletion();
+        }
+
+        return holds;
     }
 
     internal void DetachHostedService(IHostedService hostedService)
@@ -154,14 +199,19 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
         }
     }
 
-    internal async Task AttachHostedServiceAsync(IHostedService hostedService, CancellationToken cancellationToken)
+    internal async Task AttachHostedServiceAsync(
+        IHostedService hostedService, IInterceptorSubjectContext context, CancellationToken cancellationToken)
     {
         var tcs = new TaskCompletionSource();
         lock (_hostedServices)
         {
             if (_hostedServices.Add(hostedService))
             {
-                PostStartService(hostedService, tcs);
+                // Holds here too, even though this overload's caller awaits the start: the caller
+                // being blocked does not block the startup-completion gate, so without a hold
+                // ApplicationStarted can fire, drop the count to zero and let a wait complete
+                // vacuously while this start is still sitting in the queue.
+                PostStartService(hostedService, tcs, TakeStartupHolds(context));
             }
             else
             {
@@ -190,7 +240,8 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
         await tcs.Task.WaitAsync(cancellationToken);
     }
 
-    private void PostStartService(IHostedService hostedService, TaskCompletionSource? tcs)
+    private void PostStartService(
+        IHostedService hostedService, TaskCompletionSource? tcs, IDisposable[]? startupHolds = null)
     {
         _actions.Post(async token =>
         {
@@ -205,6 +256,30 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
             catch (Exception ex)
             {
                 tcs?.TrySetException(ex);
+            }
+            finally
+            {
+                // In a finally, so a start that throws or is cancelled releases its hold too.
+                // Leaking a hold would block every synchronization wait on the tree forever - a
+                // hang rather than a wrong answer, which is the safer direction, but still a hang.
+                if (startupHolds is not null)
+                {
+                    foreach (var hold in startupHolds)
+                    {
+                        try
+                        {
+                            hold.Dispose();
+                        }
+                        catch (Exception holdException)
+                        {
+                            // One deferrer throwing must not strand the others: a leaked hold blocks
+                            // every wait on that tree forever. Logged rather than swallowed, since
+                            // this used to surface through the action loop.
+                            _logger?.LogError(
+                                holdException, "Releasing a startup completion hold threw and was ignored.");
+                        }
+                    }
+                }
             }
         });
     }

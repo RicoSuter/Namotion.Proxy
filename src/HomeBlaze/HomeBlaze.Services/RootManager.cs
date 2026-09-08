@@ -1,3 +1,4 @@
+using HomeBlaze.Abstractions;
 using HomeBlaze.Storage.Abstractions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
@@ -17,6 +18,10 @@ public class RootManager : BackgroundService, IConfigurationWriter
     private readonly IInterceptorSubjectContext _context;
     private readonly IConfiguration? _configuration;
     private readonly ILogger<RootManager>? _logger;
+
+    // Continuations run off the loading thread so a UI waiter cannot resume inline inside the load.
+    private readonly TaskCompletionSource<IInterceptorSubject> _rootLoaded = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private string? _configurationPath;
 
     /// <summary>
@@ -25,7 +30,8 @@ public class RootManager : BackgroundService, IConfigurationWriter
     public IInterceptorSubject? Root { get; internal set; }
 
     /// <summary>
-    /// Whether the root has been loaded.
+    /// Whether the root has been loaded. This turns true before the root's context is wired, so it
+    /// is a state probe rather than a gate. Wait on <see cref="RootLoaded"/> to use the graph.
     /// </summary>
     public bool IsLoaded => Root != null;
 
@@ -33,6 +39,7 @@ public class RootManager : BackgroundService, IConfigurationWriter
         SubjectTypeRegistry typeRegistry,
         ConfigurableSubjectSerializer serializer,
         IInterceptorSubjectContext context,
+        SubjectPathResolver pathResolver,
         IConfiguration? configuration = null,
         ILogger<RootManager>? logger = null,
         ILoggerFactory? loggerFactory = null)
@@ -46,6 +53,11 @@ public class RootManager : BackgroundService, IConfigurationWriter
         // Register self with context for subjects to access
         context.AddService(this);
 
+        // Subjects loaded below resolve their own canonical path (the history stores do it on every
+        // recorded change), so the resolver has to be in the context before the graph exists. Taking
+        // it as a dependency is what guarantees that ordering.
+        context.AddService<ISubjectPathResolver>(pathResolver);
+
         // Make host logging available to context services and lifecycle handlers, which are
         // constructed by the context factory before any provider exists and so cannot inject it
         // (for example PropertyAttributeInitializer warning on a [State]/secret conflict). Runs
@@ -56,16 +68,37 @@ public class RootManager : BackgroundService, IConfigurationWriter
         }
     }
 
+    /// <summary>
+    /// Completes with the root subject once the background load has attached its context, and faults
+    /// with the load exception so waiters do not hang on a root that will never appear.
+    /// Assigning <see cref="Root"/> directly does not complete it.
+    /// </summary>
+    public Task<IInterceptorSubject> RootLoaded => _rootLoaded.Task;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await LoadAsync(stoppingToken);
+        try
+        {
+            _rootLoaded.TrySetResult(await LoadAsync(stoppingToken));
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Cancelled rather than faulted, so a waiting UI treats a normal shutdown as one.
+            _rootLoaded.TrySetCanceled(stoppingToken);
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _rootLoaded.TrySetException(exception);
+            throw;
+        }
     }
 
-    private async Task LoadAsync(CancellationToken cancellationToken)
+    private async Task<IInterceptorSubject> LoadAsync(CancellationToken cancellationToken)
     {
         if (Root != null)
         {
-            return;
+            return Root;
         }
 
         var configFileName = _configuration?["HomeBlaze:RootConfigFile"] ?? "root.json";
@@ -86,6 +119,8 @@ public class RootManager : BackgroundService, IConfigurationWriter
 
         _logger?.LogInformation("Root loaded: {Type}", Root.GetType().FullName);
         _context.AddService(Root);
+
+        return Root;
     }
 
     /// <summary>

@@ -38,13 +38,15 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
     private volatile SubjectUpdate? _initialState;
     private volatile CancellationTokenSource? _receiveCts;
     private volatile TaskCompletionSource? _receiveLoopCompleted;
+    private TaskCompletionSource? _receiveLoopLivenessOwner;
+    private ConnectorCommitLease? _receiveLoopCommitLease;
     private readonly SourceOwnershipManager _ownership;
     private readonly CircuitBreaker? _circuitBreaker;
     private readonly SemaphoreSlim _connectionLock = new(1, 1);
+    // A receive loop may finish while its replacement connects. Keep owner publication and both
+    // liveness transitions ordered without putting a lock on the message receive path.
+    private readonly Lock _receiveLoopLivenessLock = new();
 
-    private readonly ClientSequenceTracker _sequenceTracker = new();
-    private volatile bool _isForceKill;
-    private volatile CancellationTokenSource? _forceKillCts;
     private int _disposed;
 
     /// <inheritdoc />
@@ -70,6 +72,8 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
         _processors = configuration.Processors;
         _ownership = new SourceOwnershipManager(this);
 
+        Metrics.RegisterClaimedProperties(() => _ownership.Count);
+
         if (configuration.CircuitBreakerFailureThreshold > 0)
         {
             _circuitBreaker = new CircuitBreaker(
@@ -79,6 +83,8 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
 
         configuration.Validate();
     }
+
+    internal SourceOwnershipManager Ownership => _ownership;
 
     /// <inheritdoc />
     protected override async Task<IAsyncDisposable?> StartListeningAsync(SubjectPropertyWriter propertyWriter, CancellationToken cancellationToken)
@@ -104,6 +110,8 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
 
     private async ValueTask DisposeWebSocketConnectionAsync()
     {
+        await RetireReceiveLoopCommitsAsync().ConfigureAwait(false);
+
         var currentSocket = _webSocket;
         if (currentSocket?.State == WebSocketState.Open)
         {
@@ -127,6 +135,8 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
 
     private async Task StopReceiveLoopAndDisposeSocketAsync()
     {
+        await RetireReceiveLoopCommitsAsync().ConfigureAwait(false);
+
         var receiveCts = _receiveCts;
         if (receiveCts is not null)
         {
@@ -135,15 +145,7 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
             var receiveLoop = _receiveLoopCompleted?.Task;
             if (receiveLoop is not null && !receiveLoop.IsCompleted)
             {
-                try
-                {
-                    using var waitCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                    await receiveLoop.WaitAsync(waitCts.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    // Receive loop did not complete within timeout — proceed with cleanup
-                }
+                await WaitForReceiveLoopExitAsync(receiveLoop).ConfigureAwait(false);
             }
 
             try { receiveCts.Dispose(); } catch { /* ignore */ }
@@ -157,6 +159,45 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
             try { webSocket.Dispose(); } catch { /* ignore */ }
             _webSocket = null;
         }
+    }
+
+    private async Task WaitForReceiveLoopExitAsync(Task receiveLoop)
+    {
+        try
+        {
+            using var waitCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await receiveLoop.WaitAsync(waitCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // A loop that outlives this timeout is already excluded from committing: its lease was
+            // retired before the wait started, so cleanup can proceed without it.
+            _logger.LogWarning("Receive loop did not complete within timeout, continuing cleanup");
+        }
+    }
+
+    /// <summary>
+    /// Retires the current commit lease and waits for every admitted commit to finish.
+    /// </summary>
+    /// <remarks>
+    /// The drain is deliberately unbounded, with no timeout or token, and disposal also passes
+    /// through here after its capped stop has already returned: a commit that is already inside
+    /// <c>ApplySubjectUpdate</c> must not land after a replacement connection has loaded its state,
+    /// and capping the wait would reopen exactly that race. The cost is that teardown can block for
+    /// as long as a single property commit takes.
+    /// </remarks>
+    private async ValueTask RetireReceiveLoopCommitsAsync()
+    {
+        var commitLease = Volatile.Read(ref _receiveLoopCommitLease);
+        if (commitLease is null)
+        {
+            return;
+        }
+
+        var retirementTask = commitLease.RetireAsync();
+        Interlocked.CompareExchange(ref _receiveLoopCommitLease, null, commitLease);
+        await retirementTask.ConfigureAwait(false);
+        AfterReceiveLoopCommitDrain?.Invoke();
     }
 
     private async Task ConnectAsync(CancellationToken cancellationToken)
@@ -174,6 +215,8 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
 
     private async Task ConnectCoreAsync(CancellationToken cancellationToken)
     {
+        await RetireReceiveLoopCommitsAsync().ConfigureAwait(false);
+
         // Clean up any previous connection
         if (_receiveCts is not null)
         {
@@ -183,15 +226,7 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
             var previousReceiveLoop = _receiveLoopCompleted?.Task;
             if (previousReceiveLoop is not null)
             {
-                try
-                {
-                    using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                    await previousReceiveLoop.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    _logger.LogWarning("Receive loop did not complete within timeout during reconnection");
-                }
+                await WaitForReceiveLoopExitAsync(previousReceiveLoop).ConfigureAwait(false);
             }
 
             var oldCts = _receiveCts;
@@ -203,8 +238,15 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
         _webSocket?.Dispose();
 
         var receiveLoopStarted = false;
-        _receiveCts = new CancellationTokenSource();
-        _receiveLoopCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var receiveCancellation = new CancellationTokenSource();
+        var receiveLoopCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var receiveLoopCommitLease = new ConnectorCommitLease();
+
+        // Per attempt rather than shared: a tracker surviving a reconnect would validate the new
+        // connection's sequence numbers against the old connection's position.
+        var sequenceTracker = new ClientSequenceTracker();
+        _receiveCts = receiveCancellation;
+        _receiveLoopCompleted = receiveLoopCompletion;
 
         try
         {
@@ -260,24 +302,28 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
             }
 
             _initialState = welcome.State;
-            _sequenceTracker.InitializeFromWelcome(welcome.Sequence);
+            sequenceTracker.InitializeFromWelcome(welcome.Sequence);
 
+            Volatile.Write(ref _receiveLoopCommitLease, receiveLoopCommitLease);
+            PublishReceiveLoopAndMarkOperational(receiveLoopCompletion);
             _logger.LogInformation("Connected to WebSocket server (sequence: {Sequence})", welcome.Sequence);
 
             // Start receive loop (signals _receiveLoopCompleted when done)
-            _ = ReceiveLoopAsync(_receiveCts.Token);
+            _ = ReceiveLoopAsync(receiveCancellation.Token, receiveLoopCompletion, receiveLoopCommitLease, sequenceTracker);
             receiveLoopStarted = true;
         }
         finally
         {
             if (!receiveLoopStarted)
             {
+                MarkNotOperationalAfterFailedConnection();
+
                 // Dispose the socket to avoid holding resources during backoff delay
                 _webSocket?.Dispose();
                 _webSocket = null;
 
                 // Signal completion to prevent the monitor loop from hanging
-                _receiveLoopCompleted.TrySetResult();
+                receiveLoopCompletion.TrySetResult();
             }
         }
     }
@@ -396,9 +442,12 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
         }
     }
 
-    private async Task ReceiveLoopAsync(CancellationToken cancellationToken)
+    private async Task ReceiveLoopAsync(
+        CancellationToken cancellationToken,
+        TaskCompletionSource completionSource,
+        ConnectorCommitLease commitLease,
+        ClientSequenceTracker sequenceTracker)
     {
-        var completionSource = _receiveLoopCompleted; // capture before loop to avoid stale TCS reference
         var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
 
         // Reusable CTS to reduce allocations (reset instead of recreate when possible)
@@ -454,23 +503,23 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
                         {
                             case MessageType.Update:
                                 var update = _serializer.Deserialize<UpdatePayload>(payloadBytes);
-                                if (update.Sequence is not null && !_sequenceTracker.IsUpdateValid(update.Sequence.Value))
+                                if (update.Sequence is not null && !sequenceTracker.IsUpdateValid(update.Sequence.Value))
                                 {
                                     _logger.LogWarning(
                                         "Sequence gap detected: expected {Expected}, received {Received}. Triggering reconnection.",
-                                        _sequenceTracker.ExpectedNextSequence, update.Sequence);
+                                        sequenceTracker.ExpectedNextSequence, update.Sequence);
                                     return; // Exit receive loop -> triggers reconnection
                                 }
-                                HandleUpdate(update);
+                                HandleUpdate(update, commitLease);
                                 break;
 
                             case MessageType.Heartbeat:
                                 var heartbeat = _serializer.Deserialize<HeartbeatPayload>(payloadBytes);
-                                if (!_sequenceTracker.IsHeartbeatInSync(heartbeat.Sequence))
+                                if (!sequenceTracker.IsHeartbeatInSync(heartbeat.Sequence))
                                 {
                                     _logger.LogWarning(
                                         "Heartbeat sequence gap: server at {ServerSequence}, client expects {Expected}. Triggering reconnection.",
-                                        heartbeat.Sequence, _sequenceTracker.ExpectedNextSequence);
+                                        heartbeat.Sequence, sequenceTracker.ExpectedNextSequence);
                                     return; // Exit receive loop -> triggers reconnection
                                 }
                                 break;
@@ -516,37 +565,90 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(buffer);
-            timeoutCts.Dispose();
-            linkedCts?.Dispose();
+            try
+            {
+                MarkReceiveLoopNotOperational(completionSource);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+                timeoutCts.Dispose();
+                linkedCts?.Dispose();
 
-            // Signal that receive loop has completed (for reconnection handling)
-            completionSource?.TrySetResult();
+                // Signal that receive loop has completed (for reconnection handling)
+                completionSource.TrySetResult();
+            }
         }
     }
 
-    private void HandleUpdate(SubjectUpdate update)
+    private void PublishReceiveLoopAndMarkOperational(TaskCompletionSource completionSource)
     {
+        BeforeReceiveLoopPublication?.Invoke();
+
+        lock (_receiveLoopLivenessLock)
+        {
+            _receiveLoopLivenessOwner = completionSource;
+            Metrics.MarkOperational();
+        }
+    }
+
+    private void MarkReceiveLoopNotOperational(TaskCompletionSource completionSource)
+    {
+        lock (_receiveLoopLivenessLock)
+        {
+            if (ReferenceEquals(_receiveLoopLivenessOwner, completionSource))
+            {
+                BeforeReceiveLoopLivenessTransition?.Invoke();
+                Metrics.MarkNotOperational();
+            }
+        }
+    }
+
+    private void MarkNotOperationalAfterFailedConnection()
+    {
+        lock (_receiveLoopLivenessLock)
+        {
+            Metrics.MarkNotOperational();
+        }
+    }
+
+    private void HandleUpdate(SubjectUpdate update, ConnectorCommitLease commitLease)
+    {
+        BeforeUpdateCommitAdmission?.Invoke();
+
         var propertyWriter = _propertyWriter;
         if (propertyWriter is null) return;
 
         propertyWriter.Write(
-            (update, subject: _subject, factory: _configuration.SubjectFactory ?? DefaultSubjectFactory.Instance, source: this),
+            (update, subject: _subject, factory: _configuration.SubjectFactory ?? DefaultSubjectFactory.Instance, source: this, commitLease),
             static state =>
             {
-                state.subject.ApplySubjectUpdate(state.update, state.factory, ChangeOrigin.FromSource(state.source));
+                if (!state.commitLease.TryAcquireCommit())
+                {
+                    return;
+                }
+
+                try
+                {
+                    state.subject.ApplySubjectUpdate(
+                        state.update,
+                        state.factory,
+                        ChangeOrigin.FromSource(state.source));
+                }
+                finally
+                {
+                    state.commitLease.ReleaseCommit();
+                }
             });
     }
 
     /// <inheritdoc />
-    Task IFaultInjectable.InjectFaultAsync(FaultType faultType, CancellationToken cancellationToken)
+    async Task IFaultInjectable.InjectFaultAsync(FaultType faultType, CancellationToken cancellationToken)
     {
         switch (faultType)
         {
             case FaultType.Kill:
-                _isForceKill = true;
-                try { _forceKillCts?.Cancel(); }
-                catch (ObjectDisposedException) { /* CTS disposed between loop iterations */ }
+                await ForceKillCurrentAttemptAsync().ConfigureAwait(false);
                 break;
 
             case FaultType.Disconnect:
@@ -556,8 +658,6 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
             default:
                 throw new ArgumentOutOfRangeException(nameof(faultType), faultType, null);
         }
-
-        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -571,102 +671,124 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
         // Monitor connection and handle reconnection with exponential backoff
         var reconnectDelay = _configuration.ReconnectDelay;
         var maxDelay = _configuration.MaxReconnectDelay;
+        var forceReconnect = false;
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            var cts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-            _forceKillCts = cts;
-            var linkedToken = cts.Token;
+            var stopMonitoring = false;
 
-            try
+            await RunAttemptAsync(stoppingToken, async attempt =>
             {
-                // Wait for receive loop to complete (connection dropped)
-                var receiveLoopTask = _receiveLoopCompleted?.Task;
-                if (receiveLoopTask is not null)
+                var linkedToken = attempt.Token;
+
+                try
                 {
-                    await receiveLoopTask.WaitAsync(linkedToken).ConfigureAwait(false);
-                }
+                    if (forceReconnect)
+                    {
+                        forceReconnect = false;
+                        reconnectDelay = await ReconnectAndResumeAsync(
+                            "WebSocket reconnected after force-kill", reconnectDelay, maxDelay, linkedToken).ConfigureAwait(false);
+                        return;
+                    }
 
-                // Connection dropped - check if we should reconnect
-                if (stoppingToken.IsCancellationRequested || Volatile.Read(ref _disposed) == 1)
+                    // Wait for receive loop to complete (connection dropped)
+                    var receiveLoopTask = _receiveLoopCompleted?.Task;
+                    if (receiveLoopTask is not null)
+                    {
+                        await receiveLoopTask.WaitAsync(linkedToken).ConfigureAwait(false);
+                    }
+
+                    // Connection dropped - check if we should reconnect
+                    if (stoppingToken.IsCancellationRequested || Volatile.Read(ref _disposed) == 1)
+                    {
+                        stopMonitoring = true;
+                        return;
+                    }
+
+                    _logger.LogWarning("WebSocket connection lost. Attempting reconnection in {Delay}...", reconnectDelay);
+
+                    _propertyWriter?.StartBuffering();
+
+                    // Circuit breaker: pause reconnection if too many consecutive failures
+                    if (_circuitBreaker is not null && !_circuitBreaker.ShouldAttempt())
+                    {
+                        var cooldownRemaining = _circuitBreaker.GetCooldownRemaining();
+                        _logger.LogWarning(
+                            "Circuit breaker open after {TripCount} trips. Pausing reconnection attempts for {Cooldown}s.",
+                            _circuitBreaker.TripCount,
+                            (int)cooldownRemaining.TotalSeconds);
+
+                        await Task.Delay(cooldownRemaining, linkedToken).ConfigureAwait(false);
+
+                        // Reset backoff after cooldown so the first retry is fast
+                        reconnectDelay = _configuration.ReconnectDelay;
+                    }
+
+                    await Task.Delay(reconnectDelay, linkedToken).ConfigureAwait(false);
+
+                    reconnectDelay = await ReconnectAndResumeAsync(
+                        "WebSocket reconnected successfully", reconnectDelay, maxDelay, linkedToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
-                    break;
                 }
-
-                _logger.LogWarning("WebSocket connection lost. Attempting reconnection in {Delay}...", reconnectDelay);
-
-                _propertyWriter?.StartBuffering();
-
-                // Circuit breaker: pause reconnection if too many consecutive failures
-                if (_circuitBreaker is not null && !_circuitBreaker.ShouldAttempt())
+                catch (OperationCanceledException) when (attempt.WasForceKilled)
                 {
-                    var cooldownRemaining = _circuitBreaker.GetCooldownRemaining();
-                    _logger.LogWarning(
-                        "Circuit breaker open after {TripCount} trips. Pausing reconnection attempts for {Cooldown}s.",
-                        _circuitBreaker.TripCount,
-                        (int)cooldownRemaining.TotalSeconds);
-
-                    await Task.Delay(cooldownRemaining, linkedToken).ConfigureAwait(false);
-
-                    // Reset backoff after cooldown so the first retry is fast
-                    reconnectDelay = _configuration.ReconnectDelay;
+                    _logger.LogWarning("WebSocket client force-killed. Restarting...");
+                    _webSocket?.Abort();
+                    _propertyWriter?.StartBuffering();
+                    forceReconnect = true;
                 }
+                catch (Exception ex)
+                {
+                    // Nothing outside this loop reports its failures, but a stop tears the socket down with
+                    // a WebSocketException or ObjectDisposedException rather than a cancellation, so only
+                    // the stopping token tells a shutdown apart from a genuine fault.
+                    if (!stoppingToken.IsCancellationRequested)
+                    {
+                        Metrics.ReportError(ex);
+                    }
 
-                await Task.Delay(reconnectDelay, linkedToken).ConfigureAwait(false);
+                    _logger.LogError(ex, "Error in WebSocket connection monitoring");
+                }
+            }).ConfigureAwait(false);
 
-                reconnectDelay = await ReconnectAndResumeAsync(
-                    "WebSocket reconnected successfully", reconnectDelay, maxDelay, stoppingToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            if (stopMonitoring)
             {
                 break;
-            }
-            catch (OperationCanceledException) when (_isForceKill)
-            {
-                _logger.LogWarning("WebSocket client force-killed. Restarting...");
-                _webSocket?.Abort();
-
-                _propertyWriter?.StartBuffering();
-
-                reconnectDelay = await ReconnectAndResumeAsync(
-                    "WebSocket reconnected after force-kill", reconnectDelay, maxDelay, stoppingToken).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error in WebSocket connection monitoring");
-            }
-            finally
-            {
-                _isForceKill = false;
-                _forceKillCts = null;
-                cts.Dispose();
             }
         }
     }
 
     private async Task<TimeSpan> ReconnectAndResumeAsync(
-        string successMessage, TimeSpan reconnectDelay, TimeSpan maxDelay, CancellationToken stoppingToken)
+        string successMessage, TimeSpan reconnectDelay, TimeSpan maxDelay, CancellationToken cancellationToken)
     {
         try
         {
-            await ConnectAsync(stoppingToken).ConfigureAwait(false);
+            await ConnectAsync(cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
 
             _circuitBreaker?.RecordSuccess();
             _logger.LogInformation(successMessage);
 
             if (_propertyWriter is not null)
             {
-                await _propertyWriter.LoadInitialStateAndResumeAsync(stoppingToken).ConfigureAwait(false);
+                await _propertyWriter.LoadInitialStateAndResumeAsync(cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
             }
 
             return _configuration.ReconnectDelay;
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
         catch (Exception ex)
         {
+            // Cancellation may surface as a transport exception rather than an OperationCanceledException.
+            cancellationToken.ThrowIfCancellationRequested();
+            Metrics.ReportError(ex);
+
             _logger.LogError(ex, "Failed to reconnect to WebSocket server");
 
             if (_circuitBreaker is not null && _circuitBreaker.RecordFailure())
@@ -689,9 +811,10 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 1) return;
 
-        // Stop the base ExecuteAsync first — this cancels the stoppingToken and waits
-        // for the listen lifetime (which owns the monitor task) to be disposed,
-        // ensuring no concurrent access to resources before we dispose them.
+        // Stop the base ExecuteAsync first: this cancels the stoppingToken and asks the listen
+        // lifetime (which owns the monitor task) to wind down. The stop is capped, so it can return
+        // while that teardown is still in flight; the retirement drain below is what actually keeps
+        // a straggling commit from landing after disposal.
         try
         {
             using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -702,8 +825,7 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
             // Best effort stop
         }
 
-        // Now safe to dispose — ExecuteAsync has exited and the lifetime has been disposed.
-        // Belt-and-braces: cancel and dispose any straggler receive CTS / socket.
+        // Belt-and-braces: retire the lease and cancel and dispose any straggler receive CTS / socket.
         await StopReceiveLoopAndDisposeSocketAsync().ConfigureAwait(false);
 
         // Clean up resources
@@ -721,4 +843,15 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
         }
     }
 
+    // Test seams for interleavings that have no externally observable synchronization point: the
+    // instant between a received update and its lease admission, the two sides of the liveness
+    // lock, and the instant the commit drain releases the teardown. Always null in production; the
+    // tests block inside them or sample ordering from them.
+    internal Action? BeforeUpdateCommitAdmission { get; set; }
+
+    internal Action? BeforeReceiveLoopLivenessTransition { get; set; }
+
+    internal Action? BeforeReceiveLoopPublication { get; set; }
+
+    internal Action? AfterReceiveLoopCommitDrain { get; set; }
 }

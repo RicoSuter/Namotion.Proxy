@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Opc.Ua;
 using Opc.Ua.Server;
 
 namespace Namotion.Interceptor.OpcUa.Server;
@@ -8,9 +9,10 @@ internal class OpcUaStandardServer : StandardServer
     private readonly ILogger _logger;
     private readonly CustomNodeManagerFactory _nodeManagerFactory;
 
-    private IServerInternal? _server;
+    private ISessionManager? _sessionManager;
     private SessionEventHandler? _sessionCreatedHandler;
     private SessionEventHandler? _sessionClosingHandler;
+    private int _activeSessionCount;
 
     public OpcUaStandardServer(IInterceptorSubject subject, OpcUaSubjectServer source, OpcUaServerConfiguration configuration, ILogger logger)
     {
@@ -42,6 +44,10 @@ internal class OpcUaStandardServer : StandardServer
     /// </summary>
     internal object? NodeManagerLock => _nodeManagerFactory.NodeManager?.Lock;
 
+    // Clamped because a session-closing event can race the counter reset and briefly drive the
+    // count negative, and a negative count is a worse report than zero.
+    internal int ActiveSessionCount => Math.Max(0, Volatile.Read(ref _activeSessionCount));
+
     public void ClearPropertyData()
     {
         _nodeManagerFactory.NodeManager?.ClearPropertyData();
@@ -52,51 +58,56 @@ internal class OpcUaStandardServer : StandardServer
         _nodeManagerFactory.NodeManager?.RemoveSubjectNodes(subject);
     }
 
-    protected override void OnServerStarted(IServerInternal server)
+    protected override ISessionManager CreateSessionManager(
+        IServerInternal server,
+        ApplicationConfiguration configuration)
     {
-        // Unsubscribe any existing handlers to prevent accumulation on server restart
-        if (_server is not null && _sessionCreatedHandler is not null)
-        {
-            _server.SessionManager.SessionCreated -= _sessionCreatedHandler;
-        }
-        if (_server is not null && _sessionClosingHandler is not null)
-        {
-            _server.SessionManager.SessionClosing -= _sessionClosingHandler;
-        }
-
-        _server = server;
+        var sessionManager = base.CreateSessionManager(server, configuration);
+        _sessionManager = sessionManager;
+        Interlocked.Exchange(ref _activeSessionCount, 0);
 
         _sessionCreatedHandler = (session, _) =>
         {
-            _logger.LogInformation("OPC UA session {SessionId} with user {UserIdentity} created.", session.Id, session.Identity.DisplayName);
+            var count = Interlocked.Increment(ref _activeSessionCount);
+            _logger.LogInformation(
+                "OPC UA session {SessionId} with user {UserIdentity} created. Active sessions: {Count}.",
+                session.Id, session.Identity.DisplayName, count);
         };
 
         _sessionClosingHandler = (session, _) =>
         {
-            _logger.LogInformation("OPC UA session {SessionId} with user {UserIdentity} closing.", session.Id, session.Identity.DisplayName);
+            var count = Interlocked.Decrement(ref _activeSessionCount);
+            _logger.LogInformation(
+                "OPC UA session {SessionId} with user {UserIdentity} closing. Active sessions: {Count}.",
+                session.Id, session.Identity.DisplayName, count);
         };
 
-        server.SessionManager.SessionCreated += _sessionCreatedHandler;
-        server.SessionManager.SessionClosing += _sessionClosingHandler;
+        sessionManager.SessionCreated += _sessionCreatedHandler;
+        sessionManager.SessionClosing += _sessionClosingHandler;
+        return sessionManager;
     }
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
-            if (_server is not null)
+            var sessionManager = _sessionManager;
+            if (sessionManager is not null)
             {
                 if (_sessionCreatedHandler is not null)
                 {
-                    _server.SessionManager.SessionCreated -= _sessionCreatedHandler;
+                    sessionManager.SessionCreated -= _sessionCreatedHandler;
                 }
 
                 if (_sessionClosingHandler is not null)
                 {
-                    _server.SessionManager.SessionClosing -= _sessionClosingHandler;
+                    sessionManager.SessionClosing -= _sessionClosingHandler;
                 }
 
-                _server = null;
+                _sessionManager = null;
+                _sessionCreatedHandler = null;
+                _sessionClosingHandler = null;
+                Interlocked.Exchange(ref _activeSessionCount, 0);
             }
         }
 

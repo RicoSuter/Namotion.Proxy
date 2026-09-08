@@ -12,6 +12,9 @@
         <ProjectReference Include="..\HomeBlaze.Components.Abstractions\HomeBlaze.Components.Abstractions.csproj" />
         <ProjectReference Include="..\HomeBlaze.Storage.Abstractions\HomeBlaze.Storage.Abstractions.csproj" />
         <ProjectReference Include="..\HomeBlaze.Host.Services\HomeBlaze.Host.Services.csproj" />
+        <ProjectReference Include="..\HomeBlaze.History.Abstractions\HomeBlaze.History.Abstractions.csproj" />
+        <ProjectReference Include="..\HomeBlaze.History\HomeBlaze.History.csproj" />
+        <ProjectReference Include="..\HomeBlaze.History.Blazor\HomeBlaze.History.Blazor.csproj" />
         <ProjectReference Include="..\HomeBlaze.Storage.Blazor\HomeBlaze.Storage.Blazor.csproj" />
         <ProjectReference Include="..\..\Namotion.Interceptor.Blazor\Namotion.Interceptor.Blazor.csproj" />
         <ProjectReference Include="..\..\Namotion.Interceptor.Registry\Namotion.Interceptor.Registry.csproj" />

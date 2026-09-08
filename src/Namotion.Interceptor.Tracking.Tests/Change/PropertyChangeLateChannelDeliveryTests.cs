@@ -1,3 +1,4 @@
+using Namotion.Interceptor.Testing;
 using System.Reactive.Concurrency;
 using Namotion.Interceptor.Tracking.Change;
 using Namotion.Interceptor.Tracking.Tests.Models;
@@ -21,7 +22,9 @@ public class PropertyChangeLateChannelDeliveryTests
         context.WithService(() => blocker);
         var person = new Person(context);
 
-        var writer = Task.Run(() => person.FirstName = "John");
+        // The write parks in the interceptor chain, so it must not wait for a pool thread.
+        var writer = DedicatedThreadTestHelpers.RunOnDedicatedThreadAsync(
+            () => { person.FirstName = "John"; });
         Assert.True(blocker.EnteredInnerChain.Wait(TimeSpan.FromSeconds(10)));
 
         // Act: create the first queue subscription while the write is in flight, then release.
@@ -46,7 +49,9 @@ public class PropertyChangeLateChannelDeliveryTests
         var person = new Person(context);
         SubjectPropertyChange? captured = null;
 
-        var writer = Task.Run(() => person.FirstName = "John");
+        // The write parks in the interceptor chain, so it must not wait for a pool thread.
+        var writer = DedicatedThreadTestHelpers.RunOnDedicatedThreadAsync(
+            () => { person.FirstName = "John"; });
         Assert.True(blocker.EnteredInnerChain.Wait(TimeSpan.FromSeconds(10)));
 
         // Act: the first observer joins while the write is in flight, then the commit is released.

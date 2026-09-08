@@ -7,28 +7,35 @@ namespace HomeBlaze.Services;
 /// </summary>
 public class TypeProvider
 {
-    private readonly List<Type> _types = [];
+    private readonly Lock _lock = new();
+
+    // Copy-on-write: readers take the current array without a lock, writers publish a replacement.
+    // Registration is a short burst at startup while the lookups below run for the life of the process
+    // and sit on request paths, so the cost belongs on the write side. Publishing a new array also means
+    // a reader that is midway through an enumeration keeps walking the snapshot it started on.
+    private Type[] _types = [];
 
     /// <summary>
     /// Gets all collected types.
     /// </summary>
-    public IReadOnlyCollection<Type> Types => _types;
+    public IReadOnlyCollection<Type> Types => Volatile.Read(ref _types);
 
     /// <summary>
     /// Adds exported types from an assembly.
     /// </summary>
     public TypeProvider AddAssembly(Assembly assembly)
     {
+        Type[] exportedTypes;
         try
         {
-            _types.AddRange(assembly.GetExportedTypes());
+            exportedTypes = assembly.GetExportedTypes();
         }
         catch (ReflectionTypeLoadException exception)
         {
-            var loadedTypes = exception.Types.Where(type => type != null);
-            _types.AddRange(loadedTypes!);
+            exportedTypes = exception.Types.Where(type => type is not null).ToArray()!;
         }
 
+        AddTypes(exportedTypes);
         return this;
     }
 
@@ -37,6 +44,21 @@ public class TypeProvider
     /// </summary>
     public void AddTypes(IEnumerable<Type> types)
     {
-        _types.AddRange(types);
+        var addedTypes = types as Type[] ?? types.ToArray();
+        if (addedTypes.Length == 0)
+        {
+            return;
+        }
+
+        lock (_lock)
+        {
+            var existingTypes = _types;
+            var combinedTypes = new Type[existingTypes.Length + addedTypes.Length];
+
+            existingTypes.CopyTo(combinedTypes, 0);
+            addedTypes.CopyTo(combinedTypes, existingTypes.Length);
+
+            Volatile.Write(ref _types, combinedTypes);
+        }
     }
 }

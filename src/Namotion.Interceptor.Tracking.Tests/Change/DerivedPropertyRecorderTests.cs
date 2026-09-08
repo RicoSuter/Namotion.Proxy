@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Namotion.Interceptor.Tracking.Change;
 using Namotion.Interceptor.Tracking.Tests.Models;
 
@@ -237,21 +239,43 @@ public class DerivedPropertyRecorderTests
         var person = new Person(context);
         var recorder = CreateRecorder();
 
-        // Act - multiple sessions
-        for (var session = 0; session < 10; session++)
+        // Act - the first session is the one that rents the pooled buffer
+        recorder.StartRecording(CreateSelf(person));
+        TouchProperties(recorder, person, count: 5);
+        var firstRecording = recorder.FinishRecording();
+
+        // Identity of the backing storage is what proves reuse. Asserting on the recorded
+        // values instead would pass just as happily if every session rented a fresh buffer,
+        // which is the regression this test exists to catch.
+        ref var firstSlot = ref MemoryMarshal.GetReference(firstRecording);
+
+        Assert.Equal(5, firstRecording.Length);
+
+        // Act - every later session stays within the rented capacity, so none may rent again
+        for (var session = 1; session < 10; session++)
         {
             recorder.StartRecording(CreateSelf(person));
-            for (var i = 0; i < 5; i++)
-            {
-                var property = new PropertyReference(person, $"Prop{i}");
-                recorder.TouchProperty(ref property);
-            }
-            var recorded = recorder.FinishRecording();
-            Assert.Equal(5, recorded.Length);
+            TouchProperties(recorder, person, count: 5);
+            var recording = recorder.FinishRecording();
+
+            // Assert
+            Assert.Equal(5, recording.Length);
+            Assert.True(
+                Unsafe.AreSame(ref firstSlot, ref MemoryMarshal.GetReference(recording)),
+                $"Session {session} rented a new buffer instead of reusing the first session's.");
         }
 
-        // Assert - should not throw, buffers reused
+        // Assert
         Assert.False(recorder.IsRecording);
+    }
+
+    private static void TouchProperties(DerivedPropertyRecorder recorder, IInterceptorSubject subject, int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            var property = new PropertyReference(subject, $"Prop{i}");
+            recorder.TouchProperty(ref property);
+        }
     }
 
     [Fact]

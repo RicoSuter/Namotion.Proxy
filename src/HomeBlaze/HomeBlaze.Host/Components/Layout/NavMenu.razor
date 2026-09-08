@@ -1,7 +1,6 @@
 @using HomeBlaze.Components.Abstractions.Pages
 @using Microsoft.Extensions.Logging
 
-@inject RootManager RootManager
 @inject NavigationItemResolver NavigationResolver
 @inject NavigationManager NavigationManager
 @inject ILogger<NavMenu> Logger
@@ -9,7 +8,7 @@
 @implements IDisposable
 
 <MudNavMenu>
-    @if (RootManager.Root != null)
+    @if (Root != null)
     {
         @foreach (var item in GetRootItems().Where(i => i.Location == NavigationLocation.NavBar))
         {
@@ -37,6 +36,11 @@
 </MudNavMenu>
 
 @code {
+    // Taken as a parameter rather than read from the RootManager: a child with no parameters is not
+    // re-rendered when its parent re-renders, so the menu would miss the root appearing.
+    [Parameter]
+    public IInterceptorSubject? Root { get; set; }
+
     private Timer? _refreshTimer;
     private string _currentPath = string.Empty;
 
@@ -63,12 +67,12 @@
 
     private IEnumerable<NavigationItem> GetRootItems()
     {
-        if (RootManager.Root == null)
+        if (Root == null)
             return Enumerable.Empty<NavigationItem>();
 
         try
         {
-            return NavigationResolver.GetChildItems(RootManager.Root);
+            return NavigationResolver.GetChildItems(Root);
         }
         catch (Exception ex)
         {

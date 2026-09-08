@@ -1,7 +1,4 @@
-﻿using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-
-namespace Namotion.Interceptor.Generator.Tests;
+﻿namespace Namotion.Interceptor.Generator.Tests;
 
 public class SourceGeneratorTests
 {
@@ -20,14 +17,13 @@ public partial class SampleSubject
 }";
 
         // Act
-        var generated = GeneratedSourceCode(source);
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var generatedSource = generated.Single().SourceText.ToString();
-        return Verify(generatedSource);
+        return Verify(generated.SingleSource()).UseDirectory("Snapshots");
     }
-    
-    
+
+
     [Fact]
     public Task WhenGeneratingClassWithProtectedProperty_ThenPropertyCorrectlyGenerated()
     {
@@ -54,13 +50,24 @@ public partial class ClassWithoutInterceptorSubject
 ";
 
         // Act
-        var generated = GeneratedSourceCode(source);
+        var generated = GeneratorTestHost.Run(source);
 
         // Assert
-        var generatedSource = generated.Single().SourceText.ToString();
-        return Verify(generatedSource);
+        // The source is deliberately invalid: ClassWithoutInterceptorSubject declares partial
+        // properties with no attribute, so nothing generates their implementation. Assert the
+        // expected CS9248 pair and nothing else, so a generator-caused error would still fail here.
+        // The count is asserted too, because Assert.All alone would pass on an empty collection and
+        // stop proving that the protected property is excluded.
+        Assert.Equal(2, generated.CompilationErrors.Count);
+        Assert.All(generated.CompilationErrors, error =>
+        {
+            Assert.Equal("CS9248", error.Id);
+            Assert.Contains("ClassWithoutInterceptorSubject", error.GetMessage());
+        });
+
+        return Verify(generated.SingleSource()).UseDirectory("Snapshots");
     }
-    
+
     [Fact]
     public Task WhenGeneratingClassWithInheritance_ThenPartialClassIsGenerated()
     {
@@ -83,11 +90,10 @@ public partial class Teacher : Person
 }";
 
         // Act
-        var generated = GeneratedSourceCode(source);
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var generatedSource = string.Join("\n\n", generated.Select(s => s.SourceText));
-        return Verify(generatedSource);
+        return Verify(generated.AllSources()).UseDirectory("Snapshots");
     }
 
     [Fact]
@@ -110,11 +116,10 @@ namespace TestNamespace
 }";
 
         // Act
-        var generated = GeneratedSourceCode(source);
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var generatedSource = generated.Single().SourceText.ToString();
-        return Verify(generatedSource);
+        return Verify(generated.SingleSource()).UseDirectory("Snapshots");
     }
 
     [Fact]
@@ -140,11 +145,10 @@ namespace TestNamespace
 }";
 
         // Act
-        var generated = GeneratedSourceCode(source);
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var generatedSource = generated.Single().SourceText.ToString();
-        return Verify(generatedSource);
+        return Verify(generated.SingleSource()).UseDirectory("Snapshots");
     }
 
     [Fact]
@@ -161,11 +165,10 @@ public partial class SampleSubject
 }";
 
         // Act
-        var generated = GeneratedSourceCode(source);
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var generatedSource = generated.Single().SourceText.ToString();
-        return Verify(generatedSource);
+        return Verify(generated.SingleSource()).UseDirectory("Snapshots");
     }
 
     [Fact]
@@ -182,11 +185,10 @@ public partial class SampleSubject
 }";
 
         // Act
-        var generated = GeneratedSourceCode(source);
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var generatedSource = generated.Single().SourceText.ToString();
-        return Verify(generatedSource);
+        return Verify(generated.SingleSource()).UseDirectory("Snapshots");
     }
 
     [Fact]
@@ -212,37 +214,9 @@ public partial class DimmableLight : Light
 }";
 
         // Act
-        var generated = GeneratedSourceCode(source);
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var generatedSource = string.Join("\n\n", generated.Select(s => s.SourceText));
-        return Verify(generatedSource);
-    }
-
-    private static IEnumerable<GeneratedSourceResult> GeneratedSourceCode(string source)
-    {
-        var syntaxTree = CSharpSyntaxTree.ParseText(source);
-
-        var references = AppDomain.CurrentDomain
-            .GetAssemblies()
-            .Where(a => !a.IsDynamic && !string.IsNullOrWhiteSpace(a.Location))
-            .Select(a => MetadataReference.CreateFromFile(a.Location))
-            .Cast<MetadataReference>()
-            .ToList();
-
-        var compilation = CSharpCompilation.Create(
-            assemblyName: "SampleGen", 
-            syntaxTrees: [syntaxTree], 
-            references: references, 
-            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-
-        var generator = new InterceptorSubjectGenerator();
-        GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
-        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var outputCompilation, out var diagnostics);
-
-        var runResult = driver.GetRunResult();
-        var generated = runResult.Results
-            .SelectMany(r => r.GeneratedSources);
-        return generated;
+        return Verify(generated.AllSources()).UseDirectory("Snapshots");
     }
 }

@@ -11,7 +11,7 @@ namespace Namotion.Interceptor.Tracking.Change;
 /// Single write interceptor that delivers property changes through three channels: an Rx observable
 /// (see <see cref="InterceptorSubjectContextExtensions.GetPropertyChangeObservable"/>), a
 /// high-performance pull queue (see <see cref="InterceptorSubjectContextExtensions.CreatePropertyChangeQueueSubscription"/>),
-/// and synchronous per-property subscriptions (see <see cref="PropertyChangeSubscriptionExtensions"/>).
+/// and inline and scheduled per-property subscriptions (see <see cref="PropertyChangeSubscriptionExtensions"/>).
 /// </summary>
 // RunsBefore orders the way IN, but everything this interceptor publishes happens after next(),
 // on the unwind, where the outer interceptor runs LAST. So running before the lifecycle
@@ -188,7 +188,8 @@ public sealed class PropertyChangeInterceptor : IObservable<SubjectPropertyChang
             context.WriteTimestampForPublishing,
             SubjectChangeContext.Current.ReceivedTimestamp,
             context.CurrentValue,
-            context.GetFinalValue());
+            context.GetFinalValue(),
+            context.Revision);
 
         for (var i = 0; i < subscriptions.Length; i++)
         {
@@ -232,7 +233,8 @@ public sealed class PropertyChangeInterceptor : IObservable<SubjectPropertyChang
             context.WriteTimestampForPublishing,
             SubjectChangeContext.Current.ReceivedTimestamp,
             context.CurrentValue,
-            finalValue);
+            finalValue,
+            context.Revision);
 
         if (state is not null)
         {

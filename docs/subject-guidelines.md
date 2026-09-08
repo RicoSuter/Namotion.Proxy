@@ -121,9 +121,9 @@ public Entity(IInterceptorSubjectContext context) : this() { /* setup */ }
 
 ## What Doesn't Work
 
-### Explicit Interface Implementation
+### Intercepted Explicit Interface Implementation
 
-C# doesn't allow `partial` on explicit interface implementations.
+C# doesn't allow `partial` on explicit interface implementations, so an explicitly implemented property can never be intercepted.
 
 ```csharp
 public interface INamed { string Name { get; set; } }
@@ -131,13 +131,30 @@ public interface INamed { string Name { get; set; } }
 [InterceptorSubject]
 public partial class Entity : INamed
 {
-    // ❌ Won't compile
+    // ❌ Won't compile (CS0754)
     // partial string INamed.Name { get; set; }
     
-    // ✅ Use implicit implementation
+    // ✅ Use implicit implementation to get interception
     public partial string Name { get; set; }
 }
 ```
+
+A **non-partial** explicit implementation is supported and does appear in the subject's property metadata, keyed by the member's simple name, but it is not intercepted. Use it for values that are fixed or computed rather than tracked:
+
+```csharp
+public interface IHuman { Gender Gender { get; } }
+public interface IMale : IHuman { Gender IHuman.Gender => Gender.Male; }
+
+[InterceptorSubject]
+public partial class John : IMale
+{
+    // "Gender" is in the metadata and reads as Gender.Male. IHuman.Gender has no setter here;
+    // even a writable explicit implementation would not be intercepted, since C# does not allow
+    // "partial" on an explicit interface implementation.
+}
+```
+
+Attributes belong on the interface member, not the implementation. See [Interface Default Properties](generator.md#interface-default-properties) in the generator documentation.
 
 ### Abstract Properties
 
@@ -172,6 +189,8 @@ public partial class Dog : Animal
     public override partial string Name { get; protected set; }
 }
 ```
+
+`new` and `sealed` are also supported on a partial property, and are repeated on the generated half automatically. `new` is the fix for the CS0108 warning that accompanies NI0005 (see [Diagnostics](generator.md#diagnostics) in the generator documentation).
 
 ### Interface Default Properties
 
@@ -283,6 +302,28 @@ public partial class Sensor
     }
 }
 ```
+
+## Base Classes and Subclasses
+
+A subject can derive from another subject, and properties declared anywhere in the hierarchy are intercepted. The set of members that interception needs (the context, the property table, the sync root and the helper methods the generated accessors call) is emitted once, in the class at the root of the hierarchy, and every subject below it inherits it.
+
+```csharp
+[InterceptorSubject]
+public partial class PersonBase
+{
+    public partial string Name { get; set; }
+}
+
+[InterceptorSubject]
+public partial class Employee : PersonBase
+{
+    public partial string Department { get; set; }
+}
+```
+
+Writing `Name` on an `Employee` goes through the interceptor chain exactly like writing `Department`. A plain class with no attribute may sit between two subjects, and a subject may be `sealed` at any level. Nothing below is needed for this case.
+
+Writing either side of that relationship by hand is possible but demanding. It needs a contract this page does not cover; see [Hand-written base classes and subclasses](generator.md#hand-written-base-classes-and-subclasses) in the generator reference.
 
 ## Property Change Hooks
 

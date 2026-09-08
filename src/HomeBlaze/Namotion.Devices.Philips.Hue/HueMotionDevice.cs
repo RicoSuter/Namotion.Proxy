@@ -17,13 +17,13 @@ public partial class HueMotionDevice : HueDevice,
     ILightSensor,
     ITemperatureSensor
 {
-    internal MotionResource MotionResource { get; set; }
+    internal partial MotionResource MotionResource { get; set; }
 
-    internal DevicePower? DevicePowerResource { get; set; }
+    internal partial DevicePower? DevicePowerResource { get; set; }
 
-    internal TemperatureResource? TemperatureResource { get; set; }
+    internal partial TemperatureResource? TemperatureResource { get; set; }
 
-    internal LightLevelResource? LightLevelResource { get; set; }
+    internal partial LightLevelResource? LightLevelResource { get; set; }
 
     [Derived]
     public override string? IconName => "DirectionsRun";

@@ -7,12 +7,12 @@
         Timestamp: DateTimeOffset_1,
         Operations: [
           {
+            Index: key1
+          },
+          {
             Action: Insert,
             Index: key3,
             Id: 2
-          },
-          {
-            Index: key1
           }
         ],
         Count: 2

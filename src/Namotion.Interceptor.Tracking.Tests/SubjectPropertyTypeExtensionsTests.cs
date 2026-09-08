@@ -56,6 +56,12 @@ public class SubjectPropertyTypeExtensionsTests
     // IReadOnlyDictionary with non-subject values: has dict interface but int values cannot be subjects.
     [InlineData(typeof(IReadOnlyDictionary<string, int>),                   false, false, false)]
 
+    // --- Nullable<T> of a subject-carrying struct: classified by the underlying type ---
+    [InlineData(typeof(ImmutableArray<Person>?),                            false, true,  false)]
+    [InlineData(typeof(ArraySegment<Person>?),                              false, true,  false)]
+    [InlineData(typeof(StructSubjectCollection?),                           false, true,  false)]
+    [InlineData(typeof(StructSubjectDictionary?),                           false, false, true)]
+
     // --- Not subject-carrying ---
     [InlineData(typeof(int),                                                false, false, false)]
     [InlineData(typeof(decimal),                                            false, false, false)]
@@ -68,6 +74,13 @@ public class SubjectPropertyTypeExtensionsTests
     [InlineData(typeof(IEnumerable<int>),                                   false, false, false)]
     [InlineData(typeof(IDictionary<string, int>),                           false, false, false)]
     [InlineData(typeof(ImmutableArray<int>),                                false, false, false)]
+    // Nullable<T> of a struct that cannot hold subjects stays unclassified.
+    [InlineData(typeof(ImmutableArray<int>?),                               false, false, false)]
+    [InlineData(typeof(int?),                                               false, false, false)]
+    [InlineData(typeof(DateTime?),                                          false, false, false)]
+    // Nullable<T> of a subject-shaped struct that is neither a container nor a reference.
+    [InlineData(typeof(KeyValuePair<string, Person>?),                      false, false, false)]
+    [InlineData(typeof((Person, Person)?),                                  false, false, false)]
     // Element-of-container-of-non-subjects: outer is not a subject collection.
     [InlineData(typeof(List<IEnumerable<Person>>),                          false, false, false)]
     [InlineData(typeof(List<IList<int>>),                                   false, false, false)]
@@ -181,6 +194,24 @@ public class SubjectPropertyTypeExtensionsTests
 
     private sealed class NonSubjectPlainClass
     {
+    }
+
+    private readonly struct StructSubjectCollection : IEnumerable<Person>
+    {
+        public IEnumerator<Person> GetEnumerator() => throw new NotSupportedException();
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    private readonly struct StructSubjectDictionary : IReadOnlyDictionary<string, Person>
+    {
+        public Person this[string key] => throw new NotSupportedException();
+        public IEnumerable<string> Keys => throw new NotSupportedException();
+        public IEnumerable<Person> Values => throw new NotSupportedException();
+        public int Count => throw new NotSupportedException();
+        public bool ContainsKey(string key) => throw new NotSupportedException();
+        public bool TryGetValue(string key, out Person value) => throw new NotSupportedException();
+        public IEnumerator<KeyValuePair<string, Person>> GetEnumerator() => throw new NotSupportedException();
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     private sealed class SelfReferentialSubjectCollection : IInterceptorSubject, IEnumerable<SelfReferentialSubjectCollection>

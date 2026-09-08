@@ -77,12 +77,6 @@ public class MarkdownEditorTests
         var editorContent = page.Locator(".monaco-editor .view-lines");
         await editorContent.ClickAsync();
 
-        // Assert: Edit expression button may be visible if cursor is in an expression
-        var editButton = page.Locator("[data-testid='edit-expression-button']");
-        // Allow for the button not appearing if cursor is not in the right place
-        var isVisible = await editButton.IsVisibleAsync();
-        // Note: This test verifies the button exists when we're in the right spot
-        // We don't fail if it's not visible since cursor positioning is tricky
     }
 
     [Fact]
@@ -95,18 +89,11 @@ public class MarkdownEditorTests
         await page.GotoAsync($"{_fixture.ServerAddress}pages/Demo/Inline.md");
         await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
 
-        // Initially, edit buttons on widgets should not be visible
-        var widgetEditButton = page.Locator("[data-testid='edit-subject-button']").First;
-        var initiallyVisible = await widgetEditButton.IsVisibleAsync();
-
         // Open Inline mode via dropdown menu (enables IsEditing on widgets)
         var editMenu = page.Locator("[data-testid='edit-mode-menu']");
         await Assertions.Expect(editMenu).ToBeVisibleAsync(new() { Timeout = 30000 });
         await editMenu.ClickAsync();
         await page.GetByText("Inline").ClickAsync();
-
-        // Wait for edit mode to activate
-        await page.WaitForTimeoutAsync(500);
 
         // After enabling edit mode, edit buttons on widgets should be visible
         var editButtonAfter = page.Locator("[data-testid='edit-subject-button']").First;
@@ -133,16 +120,11 @@ public class MarkdownEditorTests
         var monacoEditor = page.Locator(".monaco-editor");
         await Assertions.Expect(monacoEditor).ToBeVisibleAsync(new() { Timeout = 30000 });
 
-        // Wait for decorations to be applied
-        await page.WaitForTimeoutAsync(1000);
-
-        // Assert: Decoration CSS classes should be present
-        // Note: The .subject-block-decoration class should be applied to decorated regions
+        // Assert: the decorations are applied from the editor's OnDidInit callback, a round trip
+        // after .monaco-editor appears, so assert on the locator, which retries, instead of
+        // counting once.
         var decorations = page.Locator(".subject-block-decoration");
-        var decorationCount = await decorations.CountAsync();
-
-        // There should be at least one decoration if the file has subject blocks
-        // If no decorations, the test still passes (decoration application is async)
+        await Assertions.Expect(decorations.First).ToBeVisibleAsync(new() { Timeout = 30000 });
     }
 
     [Fact]

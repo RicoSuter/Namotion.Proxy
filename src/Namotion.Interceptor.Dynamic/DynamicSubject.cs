@@ -27,7 +27,8 @@ public class DynamicSubject : IInterceptorSubject
     
     [JsonIgnore] object IInterceptorSubject.SyncRoot { get; } = new();
 
-    [JsonIgnore] IInterceptorSubjectContext IInterceptorSubject.Context => _context ??= new InterceptorExecutor(this);
+    [JsonIgnore]
+    IInterceptorSubjectContext IInterceptorSubject.Context => InterceptorExecutor.GetOrCreate(ref _context, this);
 
     [JsonIgnore] ConcurrentDictionary<(string? property, string key), object?> IInterceptorSubject.Data { get; } = new();
 

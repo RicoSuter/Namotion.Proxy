@@ -1001,4 +1001,39 @@ public class SubjectTransactionSourceTests : TransactionTestBase
         Assert.Equal("Joh", person.FirstName);
         Assert.Equal("Doe", person.LastName);
     }
+
+    [Fact]
+    public async Task WhenSourceReadsPropertyWhileWriting_ThenErrorNamesTheSourceWriteBoundary()
+    {
+        // Arrange - a source that builds its payload by reading the model instead of the supplied
+        // changes. The built-in writer calls it on the committing flow, where reads are rejected.
+        var context = CreateContext();
+        var person = new Person(context);
+
+        var sourceMock = new Mock<ISubjectSource>();
+        sourceMock.Setup(s => s.WriteBatchSize).Returns(0);
+        sourceMock
+            .Setup(s => s.WriteChangesAsync(
+                It.IsAny<ReadOnlyMemory<SubjectPropertyChange>>(),
+                It.IsAny<CancellationToken>()))
+            .Returns((ReadOnlyMemory<SubjectPropertyChange> _, CancellationToken _) =>
+            {
+                _ = person.LastName;
+                return new ValueTask<WriteResult>(WriteResult.Success);
+            });
+
+        new PropertyReference(person, nameof(Person.FirstName)).SetSource(sourceMock.Object);
+
+        using var transaction = await context.BeginTransactionAsync(TransactionFailureHandling.BestEffort);
+        person.FirstName = "Joh";
+
+        // Act
+        var exception = await Assert.ThrowsAsync<SubjectTransactionException>(
+            () => transaction.CommitAsync(CancellationToken.None).AsTask());
+
+        // Assert - the message has to point at the write boundary and its remedy, not at threading
+        var error = Assert.IsType<InvalidOperationException>(Assert.Single(exception.Errors).GetBaseException());
+        Assert.Contains("commit is in progress", error.Message);
+        Assert.Contains("supplied changes", error.Message);
+    }
 }

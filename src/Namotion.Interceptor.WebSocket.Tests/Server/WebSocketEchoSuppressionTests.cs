@@ -11,6 +11,7 @@ using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Testing;
 using Namotion.Interceptor.Tracking;
 using Namotion.Interceptor.Tracking.Change;
+using Namotion.Interceptor.WebSocket.Server;
 using Namotion.Interceptor.WebSocket.Tests.Integration;
 using Xunit;
 
@@ -55,7 +56,8 @@ public class WebSocketEchoSuppressionTests
             },
             bufferTime: TimeSpan.FromMilliseconds(20),
             maxQueueDepth: null,
-            logger: NullLogger.Instance);
+            logger: NullLogger.Instance,
+            deliveryRule: ChangeDeliveryRule.SourceValuesAreSettled);
 
         using var otherProcessor = new ChangeQueueProcessor(
             source: otherConnection,
@@ -69,7 +71,8 @@ public class WebSocketEchoSuppressionTests
             },
             bufferTime: TimeSpan.FromMilliseconds(20),
             maxQueueDepth: null,
-            logger: NullLogger.Instance);
+            logger: NullLogger.Instance,
+            deliveryRule: ChangeDeliveryRule.SourceValuesAreSettled);
 
         using var cancellation = new CancellationTokenSource();
         var ownProcessing = ownProcessor.ProcessAsync(cancellation.Token);
@@ -113,5 +116,32 @@ public class WebSocketEchoSuppressionTests
         await cancellation.CancelAsync();
         await ownProcessing;
         await otherProcessing;
+    }
+
+    /// <summary>
+    /// The handler serves state it hosts, so a client's write is already at the destination when it is
+    /// applied and must supersede an older local commit. Picking the other rule is silent: the server
+    /// keeps serving a value the model has moved past, and nothing in the transport tests notices.
+    /// Pins the wiring rather than the rule itself, which
+    /// <c>ChangeQueueProcessorTests.WhenTheSourceAlreadyHoldsWhatItPushed_...</c> covers.
+    /// </summary>
+    [Fact]
+    public void WhenTheHandlerCreatesItsProcessor_ThenItSelectsTheServerRule()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext
+            .Create()
+            .WithFullPropertyTracking()
+            .WithRegistry()
+            .WithPropertyChangeSubscriptions();
+
+        var subject = new TestRoot(context) { Name = "Initial" };
+        var handler = new WebSocketSubjectHandler(subject, new WebSocketServerConfiguration(), NullLogger.Instance);
+
+        // Act
+        using var processor = handler.CreateChangeQueueProcessor(NullLogger.Instance);
+
+        // Assert
+        Assert.Equal(ChangeDeliveryRule.SourceValuesAreSettled, processor.DeliveryRule);
     }
 }

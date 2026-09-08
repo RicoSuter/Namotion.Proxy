@@ -1,137 +1,147 @@
+using Namotion.Interceptor.Connectors.Diagnostics;
+using Opc.Ua;
+
 namespace Namotion.Interceptor.OpcUa.Client;
 
 /// <summary>
-/// Provides diagnostic information about the OPC UA client connection state.
-/// Thread-safe for reading current values.
+/// What the OPC UA client reports about its session, on top of the shared source diagnostics.
 /// </summary>
-public class OpcUaClientDiagnostics
+/// <remarks>
+/// A value of <c>true</c> means the client has a live session with its subscriptions set up and
+/// <c>false</c> means it is not serving, either because the client reported that or because it has
+/// stopped. It reads <c>null</c> only while the client runs before its first liveness report. It
+/// stays false for the whole address space browse and subscription creation, which on a large server
+/// takes minutes, and drops whenever the session is lost, killed or torn down. True does not mean the model is in sync: while the initial value read runs the
+/// source state is
+/// <see cref="Namotion.Interceptor.Connectors.Monitoring.SourceState.Synchronizing"/>, so read the
+/// two together to tell a network outage from a connected client still loading. See
+/// docs/connectors-monitoring.md.
+/// </remarks>
+public sealed class OpcUaClientDiagnostics : SourceDiagnostics
 {
     private readonly OpcUaSubjectClientSource _source;
 
-    internal OpcUaClientDiagnostics(OpcUaSubjectClientSource source)
+    internal OpcUaClientDiagnostics(OpcUaSubjectClientSource source, SourceMetrics metrics)
+        : base(metrics)
     {
         _source = source;
+        Reconnects = new ReconnectDiagnostics(source.ReconnectionMetrics);
     }
 
     /// <summary>
-    /// Gets a value indicating whether the client is currently connected to the server.
+    /// Gets the session manager every member below reads through, or <c>null</c> once it has been
+    /// disposed. The source keeps its field pointing at the manager of the attempt that just ended,
+    /// so without this check the members would report a session that is already gone.
     /// </summary>
-    public bool IsConnected => _source.SessionManager?.IsConnected ?? false;
+    private Connection.SessionManager? ActiveSessionManager =>
+        _source.SessionManager is { IsDisposed: false } sessionManager ? sessionManager : null;
+
+    private Connection.SessionManager? ActiveSessionManagerWithCurrentSession =>
+        ActiveSessionManager is { CurrentSession: not null } sessionManager ? sessionManager : null;
 
     /// <summary>
     /// Gets a value indicating whether the client is currently attempting to reconnect.
     /// </summary>
-    public bool IsReconnecting => _source.SessionManager?.IsReconnecting ?? false;
+    public bool IsReconnecting => ActiveSessionManager?.IsReconnecting ?? false;
 
     /// <summary>
-    /// Gets the current session identifier, or null if not connected.
+    /// Gets the current session identifier, or <c>null</c> if there is no session.
     /// </summary>
-    public string? SessionId => _source.SessionManager?.CurrentSession?.SessionId?.ToString();
+    public NodeId? SessionId => ActiveSessionManager?.CurrentSession?.SessionId;
 
     /// <summary>
     /// Gets the number of active OPC UA subscriptions.
     /// </summary>
-    public int SubscriptionCount => _source.SessionManager?.Subscriptions.Count ?? 0;
+    public int SubscriptionCount => ActiveSessionManager?.SubscriptionManager.SubscriptionCount ?? 0;
 
     /// <summary>
     /// Gets the number of monitored items across all subscriptions.
     /// </summary>
-    public int MonitoredItemCount => _source.SessionManager?.SubscriptionManager.MonitoredItems.Count ?? 0;
+    public int MonitoredItemCount => ActiveSessionManager?.SubscriptionManager.MonitoredItemCount ?? 0;
 
     /// <summary>
-    /// Gets the total number of reconnection attempts started. Once all in-flight attempts have resolved,
-    /// this equals <see cref="SuccessfulReconnections"/> + <see cref="FailedReconnections"/> + <see cref="AbandonedReconnections"/>.
+    /// Gets the reconnection history.
     /// </summary>
-    public long TotalReconnectionAttempts => _source.ReconnectionMetrics.TotalAttempts;
+    public ReconnectDiagnostics Reconnects { get; }
+
+    /// <summary>
+    /// Gets polling diagnostics, or <c>null</c> when the polling fallback is off, no session has been
+    /// set up yet, or the client is between connect attempts.
+    /// </summary>
+    /// <remarks>
+    /// The underlying totals are owned by the source rather than by the session, so they reappear at
+    /// their previous values once a session exists again.
+    /// </remarks>
+    public PollingDiagnostics? Polling => ActiveSessionManagerWithCurrentSession?.PollingDiagnostics;
+
+    /// <summary>
+    /// Gets read-after-write diagnostics, or <c>null</c> when read-after-write is off, no session has
+    /// been set up yet, or the client is between connect attempts.
+    /// </summary>
+    /// <remarks>
+    /// Its totals survive between attempts in the same way as <see cref="Polling"/>.
+    /// </remarks>
+    public ReadAfterWriteDiagnostics? ReadAfterWrite => ActiveSessionManagerWithCurrentSession?.ReadAfterWriteDiagnostics;
+}
+
+/// <summary>
+/// The client's reconnection history. Every counter is monotonic since
+/// <see cref="ConnectorDiagnostics.StartTime"/>, while <see cref="LastConnectionTime"/> deliberately
+/// survives the epoch reset because it records a past event rather than an accumulated amount.
+/// </summary>
+public sealed class ReconnectDiagnostics
+{
+    private readonly ReconnectionMetrics _metrics;
+
+    internal ReconnectDiagnostics(ReconnectionMetrics metrics)
+    {
+        _metrics = metrics;
+    }
+
+    /// <summary>
+    /// Gets when the client last established a session, or <c>null</c> if it never has.
+    /// </summary>
+    public DateTimeOffset? LastConnectionTime => _metrics.LastConnectedAt;
+
+    /// <summary>
+    /// Gets the number of reconnection attempts started. Once all in-flight attempts have resolved,
+    /// this equals <see cref="TotalSucceeded"/> + <see cref="TotalFailed"/> + <see cref="TotalAbandoned"/>.
+    /// </summary>
+    public long TotalAttempts => _metrics.TotalAttempts;
 
     /// <summary>
     /// Gets the number of attempts that produced a usable session.
     /// </summary>
-    public long SuccessfulReconnections => _source.ReconnectionMetrics.Successful;
+    public long TotalSucceeded => _metrics.Successful;
 
     /// <summary>
-    /// Gets the number of attempts that ended with an exception.
+    /// Gets the number of attempts that ended with a genuine fault, which is an exception raised while
+    /// the attempt was still live. An exception raised by a teardown counts as
+    /// <see cref="TotalAbandoned"/> instead.
     /// </summary>
-    public long FailedReconnections => _source.ReconnectionMetrics.Failed;
+    public long TotalFailed => _metrics.Failed;
 
     /// <summary>
-    /// Gets the number of attempts that completed without an exception but produced an unusable result
-    /// (null session, transfer failed, preserved session after server restart, stall reset, or kill cancellation).
+    /// Gets the number of attempts that ended without a usable session and without a fault: a null
+    /// session, a failed transfer, a preserved session after a server restart, a stall reset, or a
+    /// cancellation from a kill or from the listen attempt being torn down, which happens both when the
+    /// source stops and when the retry loop ends an attempt.
     /// </summary>
-    public long AbandonedReconnections => _source.ReconnectionMetrics.Abandoned;
-
-    /// <summary>
-    /// Gets the timestamp of the last successful connection, or null if never connected.
-    /// </summary>
-    public DateTimeOffset? LastConnectedAt => _source.ReconnectionMetrics.LastConnectedAt;
-
-    /// <summary>
-    /// Gets the average incoming changes per second over the last 60 seconds.
-    /// </summary>
-    public double IncomingChangesPerSecond => _source.IncomingThroughput.CurrentRate;
-
-    /// <summary>
-    /// Gets the average outgoing changes per second over the last 60 seconds.
-    /// </summary>
-    public double OutgoingChangesPerSecond => _source.OutgoingThroughput.CurrentRate;
-
-    /// <summary>
-    /// Gets the number of pending read-after-write operations, or null if disabled.
-    /// </summary>
-    public int? PendingReadAfterWrites => _source.SessionManager?.ReadAfterWriteManager?.PendingReadCount;
-
-    /// <summary>
-    /// Gets the number of writes currently queued for retry (buffered during disconnection).
-    /// </summary>
-    public int PendingWriteCount => _source.PendingWriteCount;
-
-    /// <summary>
-    /// Gets the most recent error that occurred while establishing or restoring the session,
-    /// or null if no error has occurred since the last successful (re)connection.
-    /// Cleared on every successful connection or reconnection.
-    /// </summary>
-    public Exception? LastError => _source.LastError;
-
-    /// <summary>
-    /// Gets the number of items being polled (fallback for nodes without subscription support).
-    /// </summary>
-    public int PollingItemCount => _source.SessionManager?.PollingManager?.PollingItemCount ?? 0;
-
-    /// <summary>
-    /// Gets polling diagnostics, or null if polling is disabled.
-    /// </summary>
-    public PollingDiagnostics? Polling
-    {
-        get
-        {
-            var pollingManager = _source.SessionManager?.PollingManager;
-            return pollingManager is not null ? new PollingDiagnostics(pollingManager) : null;
-        }
-    }
-
-    /// <summary>
-    /// Gets read-after-write diagnostics, or null if disabled.
-    /// </summary>
-    public ReadAfterWriteDiagnostics? ReadAfterWrite
-    {
-        get
-        {
-            var manager = _source.SessionManager?.ReadAfterWriteManager;
-            return manager is not null ? new ReadAfterWriteDiagnostics(manager) : null;
-        }
-    }
+    public long TotalAbandoned => _metrics.Abandoned;
 }
 
 /// <summary>
-/// Provides diagnostic information about the polling fallback mechanism.
+/// The polling fallback used for nodes that do not support subscriptions.
 /// </summary>
-public class PollingDiagnostics
+public sealed class PollingDiagnostics
 {
     private readonly Polling.PollingManager _pollingManager;
+    private readonly Polling.PollingMetrics _metrics;
 
-    internal PollingDiagnostics(Polling.PollingManager pollingManager)
+    internal PollingDiagnostics(Polling.PollingManager pollingManager, Polling.PollingMetrics metrics)
     {
         _pollingManager = pollingManager;
+        _metrics = metrics;
     }
 
     /// <summary>
@@ -140,34 +150,34 @@ public class PollingDiagnostics
     public int ItemCount => _pollingManager.PollingItemCount;
 
     /// <summary>
-    /// Gets the total number of successful read operations.
+    /// Gets the number of reads that succeeded.
     /// </summary>
-    public long TotalReads => _pollingManager.TotalReads;
+    public long TotalSuccessfulReads => _metrics.TotalReads;
 
     /// <summary>
-    /// Gets the total number of failed read operations.
+    /// Gets the number of reads that failed.
     /// </summary>
-    public long FailedReads => _pollingManager.FailedReads;
+    public long TotalFailedReads => _metrics.FailedReads;
 
     /// <summary>
-    /// Gets the total number of value changes detected.
+    /// Gets the number of value changes detected.
     /// </summary>
-    public long ValueChanges => _pollingManager.ValueChanges;
+    public long TotalValueChanges => _metrics.ValueChanges;
 
     /// <summary>
-    /// Gets the number of slow polls (poll duration exceeded interval).
+    /// Gets the number of polls whose duration exceeded the polling interval.
     /// </summary>
-    public long SlowPolls => _pollingManager.SlowPolls;
+    public long TotalSlowPolls => _metrics.SlowPolls;
+
+    /// <summary>
+    /// Gets the number of times the circuit breaker has tripped.
+    /// </summary>
+    public long TotalCircuitBreakerTrips => _metrics.CircuitBreakerTrips;
 
     /// <summary>
     /// Gets whether the circuit breaker is currently open.
     /// </summary>
     public bool IsCircuitBreakerOpen => _pollingManager.IsCircuitOpen;
-
-    /// <summary>
-    /// Gets the total number of circuit breaker trips.
-    /// </summary>
-    public long CircuitBreakerTrips => _pollingManager.CircuitBreakerTrips;
 
     /// <summary>
     /// Gets whether the polling loop is currently running.
@@ -176,34 +186,42 @@ public class PollingDiagnostics
 }
 
 /// <summary>
-/// Provides diagnostic information about the read-after-write mechanism for discrete properties.
+/// The verification reads issued after an outbound write to a discrete property.
 /// </summary>
-public class ReadAfterWriteDiagnostics
+public sealed class ReadAfterWriteDiagnostics
 {
     private readonly ReadAfterWrite.ReadAfterWriteManager _manager;
+    private readonly ReadAfterWrite.ReadAfterWriteMetrics _metrics;
 
-    internal ReadAfterWriteDiagnostics(ReadAfterWrite.ReadAfterWriteManager manager)
+    internal ReadAfterWriteDiagnostics(
+        ReadAfterWrite.ReadAfterWriteManager manager, ReadAfterWrite.ReadAfterWriteMetrics metrics)
     {
         _manager = manager;
+        _metrics = metrics;
     }
 
     /// <summary>
-    /// Gets the total number of read-after-writes scheduled.
+    /// Gets the number of pending verification reads.
     /// </summary>
-    public long Scheduled => _manager.Metrics.Scheduled;
+    public int PendingReads => _manager.PendingReadCount;
 
     /// <summary>
-    /// Gets the total number of read-after-writes successfully executed.
+    /// Gets the number of verification reads scheduled.
     /// </summary>
-    public long Executed => _manager.Metrics.Executed;
+    public long TotalScheduledReads => _metrics.Scheduled;
 
     /// <summary>
-    /// Gets the number of scheduled reads that were coalesced (replaced by subsequent writes).
+    /// Gets the number of verification reads executed.
     /// </summary>
-    public long Coalesced => _manager.Metrics.Coalesced;
+    public long TotalExecutedReads => _metrics.Executed;
 
     /// <summary>
-    /// Gets the number of failed read-after-write operations.
+    /// Gets the number of scheduled verification reads replaced by a subsequent write.
     /// </summary>
-    public long Failed => _manager.Metrics.Failed;
+    public long TotalCoalescedReads => _metrics.Coalesced;
+
+    /// <summary>
+    /// Gets the number of verification reads that failed.
+    /// </summary>
+    public long TotalFailedReads => _metrics.Failed;
 }

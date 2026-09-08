@@ -43,3 +43,19 @@ public partial class TestInlineContainer
         Children = new Dictionary<string, TestInlineContainer>();
     }
 }
+
+/// <summary>
+/// Test model whose dictionary property is declared broadly enough to hold any dictionary
+/// implementation, including <see cref="System.Collections.Immutable.ImmutableDictionary{TKey,TValue}"/>.
+/// </summary>
+[InterceptorSubject]
+public partial class TestBroadContainer
+{
+    public partial string Name { get; set; }
+    public partial IReadOnlyDictionary<string, TestItem> Items { get; set; }
+
+    public TestBroadContainer()
+    {
+        Items = new Dictionary<string, TestItem>();
+    }
+}

@@ -1,0 +1,110 @@
+﻿[assembly: System.Reflection.AssemblyMetadata("RepositoryUrl", "https://github.com/RicoSuter/Namotion.Interceptor")]
+[assembly: System.Runtime.Versioning.TargetFramework(".NETCoreApp,Version=v10.0", FrameworkDisplayName=".NET 10.0")]
+namespace HomeBlaze.History.Abstractions
+{
+    public static class BucketAlignment
+    {
+        public static System.DateTimeOffset BucketStart(System.DateTimeOffset ts, System.TimeSpan bucket) { }
+        public static System.DateTimeOffset FirstBucketStart(System.DateTimeOffset from, System.DateTimeOffset to, System.TimeSpan bucket, int maxBuckets) { }
+    }
+    public class HistoryAggregationNotSupportedException : System.Exception
+    {
+        public HistoryAggregationNotSupportedException(string aggregation, System.Collections.Generic.IReadOnlySet<string> available) { }
+        public string Aggregation { get; }
+        public System.Collections.Generic.IReadOnlySet<string> Available { get; }
+    }
+    public static class HistoryAggregations
+    {
+        public const string Count = "Count";
+        public const string First = "First";
+        public const string Last = "Last";
+        public const string Maximum = "Maximum";
+        public const string Minimum = "Minimum";
+        public const string SampleAverage = "SampleAverage";
+        public const string StandardDeviation = "StandardDeviation";
+        public const string Sum = "Sum";
+        public const string TimeWeightedAverage = "TimeWeightedAverage";
+        public static readonly System.Collections.Immutable.ImmutableArray<string> All;
+        public static readonly System.Collections.Generic.IReadOnlySet<string> AlwaysAvailable;
+    }
+    public readonly struct HistoryChainLeg : System.IEquatable<HomeBlaze.History.Abstractions.HistoryChainLeg>
+    {
+        public HistoryChainLeg(string Path, System.DateTimeOffset ValidFrom, System.DateTimeOffset ValidTo) { }
+        public string Path { get; init; }
+        public System.DateTimeOffset ValidFrom { get; init; }
+        public System.DateTimeOffset ValidTo { get; init; }
+    }
+    public static class HistoryColumns
+    {
+        public static HomeBlaze.History.Abstractions.ValueColumn GetValueColumnFor(System.Type propertyType) { }
+        public static bool IsRecordable(System.Type propertyType) { }
+        public static bool IsUlongProperty(System.Type propertyType) { }
+    }
+    public readonly struct HistoryCoverage : System.IEquatable<HomeBlaze.History.Abstractions.HistoryCoverage>
+    {
+        public HistoryCoverage(System.DateTimeOffset From, System.DateTimeOffset To) { }
+        public System.DateTimeOffset From { get; init; }
+        public System.DateTimeOffset To { get; init; }
+        public bool Contains(HomeBlaze.History.Abstractions.HistoryCoverage other) { }
+        public HomeBlaze.History.Abstractions.HistoryCoverage? Intersect(HomeBlaze.History.Abstractions.HistoryCoverage other) { }
+        public static System.Collections.Immutable.ImmutableArray<HomeBlaze.History.Abstractions.HistoryCoverage> Clip(System.Collections.Generic.IEnumerable<HomeBlaze.History.Abstractions.HistoryCoverage> ranges, HomeBlaze.History.Abstractions.HistoryCoverage window) { }
+        public static System.Collections.Immutable.ImmutableArray<HomeBlaze.History.Abstractions.HistoryCoverage> Normalize(System.Collections.Generic.IEnumerable<HomeBlaze.History.Abstractions.HistoryCoverage> ranges) { }
+    }
+    public readonly struct HistoryMove : System.IEquatable<HomeBlaze.History.Abstractions.HistoryMove>
+    {
+        public HistoryMove(System.DateTimeOffset Timestamp, string FromPath, string ToPath) { }
+        public string FromPath { get; init; }
+        public System.DateTimeOffset Timestamp { get; init; }
+        public string ToPath { get; init; }
+    }
+    public static class HistoryMoveChain
+    {
+        public static System.Collections.Generic.List<HomeBlaze.History.Abstractions.HistoryChainLeg> Resolve(System.Collections.Generic.IReadOnlyList<HomeBlaze.History.Abstractions.HistoryMove> moves, string currentPath) { }
+    }
+    public class HistoryPoint : System.IEquatable<HomeBlaze.History.Abstractions.HistoryPoint>
+    {
+        public HistoryPoint(System.DateTimeOffset Timestamp, double? Number, System.Text.Json.JsonElement? Json) { }
+        public System.Text.Json.JsonElement? Json { get; init; }
+        public double? Number { get; init; }
+        public System.DateTimeOffset Timestamp { get; init; }
+    }
+    public class HistoryQuery : System.IEquatable<HomeBlaze.History.Abstractions.HistoryQuery>
+    {
+        public HistoryQuery(string PropertyPath, System.DateTimeOffset From, System.DateTimeOffset To, System.TimeSpan? Bucket = default, string Aggregation = "Last", int MaxPoints = 10000, HomeBlaze.History.Abstractions.HistoryPoint? CarrySeed = null) { }
+        public string Aggregation { get; init; }
+        public System.TimeSpan? Bucket { get; init; }
+        public HomeBlaze.History.Abstractions.HistoryPoint? CarrySeed { get; init; }
+        public System.DateTimeOffset From { get; init; }
+        public int MaxPoints { get; init; }
+        public string PropertyPath { get; init; }
+        public System.DateTimeOffset To { get; init; }
+        public void Validate() { }
+    }
+    public class HistorySeries : System.IEquatable<HomeBlaze.History.Abstractions.HistorySeries>
+    {
+        public HistorySeries(string PropertyPath, System.Collections.Immutable.ImmutableArray<HomeBlaze.History.Abstractions.HistoryPoint> Points, bool Truncated, System.Collections.Immutable.ImmutableArray<HomeBlaze.History.Abstractions.HistoryCoverage> CoverageRanges) { }
+        public System.Collections.Immutable.ImmutableArray<HomeBlaze.History.Abstractions.HistoryCoverage> CoverageRanges { get; init; }
+        public System.Collections.Immutable.ImmutableArray<HomeBlaze.History.Abstractions.HistoryPoint> Points { get; init; }
+        public string PropertyPath { get; init; }
+        public bool Truncated { get; init; }
+    }
+    public interface IHistoryRecorder
+    {
+        void RecordMove(System.DateTimeOffset timestamp, string fromPath, string toPath);
+        bool TryRecord(string propertyPath, System.DateTimeOffset timestamp, object? value, System.Type propertyType);
+    }
+    public interface IHistoryStore
+    {
+        System.Collections.Immutable.ImmutableArray<HomeBlaze.History.Abstractions.HistoryCoverage> CoverageRanges { get; }
+        int Priority { get; }
+        System.Collections.Generic.IReadOnlySet<string> SupportedAggregations { get; }
+        System.Threading.Tasks.ValueTask<HomeBlaze.History.Abstractions.HistoryPoint?> GetSampleAtOrBeforeAsync(string propertyPath, System.DateTimeOffset asOf, System.Threading.CancellationToken cancellationToken);
+        System.Threading.Tasks.Task<HomeBlaze.History.Abstractions.HistorySeries> QueryAsync(HomeBlaze.History.Abstractions.HistoryQuery query, System.Threading.CancellationToken cancellationToken);
+    }
+    public enum ValueColumn
+    {
+        Long = 0,
+        Double = 1,
+        Json = 2,
+    }
+}

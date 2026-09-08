@@ -1,4 +1,6 @@
 using Moq;
+using Namotion.Interceptor.Connectors.Diagnostics;
+using Namotion.Interceptor.Connectors.Monitoring;
 using Namotion.Interceptor.Tracking.Change;
 
 namespace Namotion.Interceptor.Connectors.Tests;
@@ -354,6 +356,27 @@ public class SubjectSourceExtensionsTests
         Assert.Contains("Property5", failedNames);
     }
 
+    /// <summary>
+    /// Records a new maximum seen by several callers at once. A plain read-modify-write loses updates
+    /// when the writes overlap, which is the very situation these tests manufacture: the concurrent case
+    /// can then observe two of its three overlapping calls and fail for no reason, and the serialized
+    /// case can drop the evidence that serialization leaked.
+    /// </summary>
+    private static void RecordMaximum(ref int maximum, int candidate)
+    {
+        var observed = Volatile.Read(ref maximum);
+        while (candidate > observed)
+        {
+            var previous = Interlocked.CompareExchange(ref maximum, candidate, observed);
+            if (previous == observed)
+            {
+                return;
+            }
+
+            observed = previous;
+        }
+    }
+
     [Fact]
     public async Task WriteChangesInBatchesAsync_RegularSource_SerializesWrites()
     {
@@ -368,7 +391,7 @@ public class SubjectSourceExtensionsTests
             .Returns(async (ReadOnlyMemory<SubjectPropertyChange> _, CancellationToken ct) =>
             {
                 var current = Interlocked.Increment(ref concurrentCalls);
-                maxConcurrentCalls = Math.Max(maxConcurrentCalls, current);
+                RecordMaximum(ref maxConcurrentCalls, current);
 
                 // Wait a bit to allow potential concurrent calls to overlap
                 await Task.Delay(50, ct);
@@ -399,13 +422,13 @@ public class SubjectSourceExtensionsTests
         // Arrange
         var concurrentCalls = 0;
         var maxConcurrentCalls = 0;
-        var allStarted = new TaskCompletionSource();
-        var canContinue = new TaskCompletionSource();
+        var allStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var canContinue = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var source = new ConcurrentTestSource(async () =>
         {
             var current = Interlocked.Increment(ref concurrentCalls);
-            maxConcurrentCalls = Math.Max(maxConcurrentCalls, current);
+            RecordMaximum(ref maxConcurrentCalls, current);
 
             // Signal when all 3 calls have started
             if (current >= 3)
@@ -430,10 +453,11 @@ public class SubjectSourceExtensionsTests
             source.WriteChangesInBatchesAsync(changes, CancellationToken.None).AsTask()
         };
 
-        // Wait for all calls to start (or timeout)
-        var allStartedTask = allStarted.Task;
-        var timeoutTask = Task.Delay(1000);
-        await Task.WhenAny(allStartedTask, timeoutTask);
+        // Wait for all three calls to be in flight, and fail here if they never are. Letting a bounded
+        // wait expire silently opens the gate below while the calls are still queued, and the assertion
+        // then fails because they ran one after another rather than because the source refused to run
+        // them together.
+        await allStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         // Allow all to complete
         canContinue.SetResult();
@@ -492,29 +516,53 @@ public class SubjectSourceExtensionsTests
     }
 
     /// <summary>
-    /// Test source that implements ISupportsConcurrentWrites to opt-out of automatic synchronization.
+    /// Shared ISubjectSource member implementation for the two hand-rolled test doubles below,
+    /// which differ only in RootSubject and WriteChangesAsync. Neither exercises state transitions,
+    /// so State is fixed at Synchronizing for the lifetime of the double.
     /// </summary>
-    private sealed class ConcurrentTestSource(Func<Task<WriteResult>> writeCallback) : ISubjectSource, ISupportsConcurrentWrites
+    private abstract class StateTrackingTestSource : ISubjectSource
     {
         public IInterceptorSubject RootSubject => throw new NotSupportedException();
         public int WriteBatchSize => 0;
-        public async ValueTask<WriteResult> WriteChangesAsync(ReadOnlyMemory<SubjectPropertyChange> changes, CancellationToken cancellationToken)
-            => await writeCallback();
+        public abstract ValueTask<WriteResult> WriteChangesAsync(ReadOnlyMemory<SubjectPropertyChange> changes, CancellationToken cancellationToken);
         public Task<Action?> LoadInitialStateAsync(CancellationToken cancellationToken) => Task.FromResult<Action?>(null);
+
+        public SourceState State => SourceState.Synchronizing;
+
+        public DateTimeOffset StateChangeTime { get; } = DateTimeOffset.UtcNow;
+
+        public DateTimeOffset? LastSynchronizedAt => null;
+
+        public SourceDiagnostics Diagnostics { get; } = new(new SourceMetrics());
+
+        ConnectorDiagnostics ISubjectConnector.Diagnostics => Diagnostics;
+
+        public event EventHandler<SourceEvent>? StateChanged
+        {
+            add { }
+            remove { }
+        }
+    }
+
+    /// <summary>
+    /// Test source that implements ISupportsConcurrentWrites to opt-out of automatic synchronization.
+    /// </summary>
+    private sealed class ConcurrentTestSource(Func<Task<WriteResult>> writeCallback)
+        : StateTrackingTestSource, ISupportsConcurrentWrites
+    {
+        public override async ValueTask<WriteResult> WriteChangesAsync(ReadOnlyMemory<SubjectPropertyChange> changes, CancellationToken cancellationToken)
+            => await writeCallback();
     }
 
     /// <summary>
     /// Test source that blocks on write until explicitly unblocked.
     /// </summary>
-    private sealed class BlockingTestSource : ISubjectSource
+    private sealed class BlockingTestSource : StateTrackingTestSource
     {
         private readonly TaskCompletionSource _writeStarted = new();
         private readonly TaskCompletionSource _canComplete = new();
 
-        public IInterceptorSubject RootSubject => throw new NotSupportedException();
-        public int WriteBatchSize => 0;
-
-        public async ValueTask<WriteResult> WriteChangesAsync(ReadOnlyMemory<SubjectPropertyChange> changes, CancellationToken cancellationToken)
+        public override async ValueTask<WriteResult> WriteChangesAsync(ReadOnlyMemory<SubjectPropertyChange> changes, CancellationToken cancellationToken)
         {
             _writeStarted.TrySetResult();
             await _canComplete.Task;
@@ -522,7 +570,5 @@ public class SubjectSourceExtensionsTests
         }
 
         public void UnblockWrite() => _canComplete.TrySetResult();
-
-        public Task<Action?> LoadInitialStateAsync(CancellationToken cancellationToken) => Task.FromResult<Action?>(null);
     }
 }

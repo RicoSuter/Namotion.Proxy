@@ -9,7 +9,7 @@ public class BackgroundTaskLifetimeTests
     {
         // Arrange
         var order = new List<string>();
-        var monitorStarted = new TaskCompletionSource();
+        var monitorStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var lifetime = BackgroundTaskLifetime.Start(
             CancellationToken.None,
             NullLogger.Instance,
@@ -97,7 +97,7 @@ public class BackgroundTaskLifetimeTests
     {
         // Arrange
         var parentCts = new CancellationTokenSource();
-        var monitorExited = new TaskCompletionSource();
+        var monitorExited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var lifetime = BackgroundTaskLifetime.Start(
             parentCts.Token,
             NullLogger.Instance,

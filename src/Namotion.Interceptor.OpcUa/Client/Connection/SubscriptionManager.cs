@@ -39,11 +39,17 @@ internal class SubscriptionManager : IAsyncDisposable
     private readonly PollingManager? _pollingManager;
     private readonly IReadAfterWriteRegistrar? _readAfterWriteManager;
     private readonly OpcUaClientConfiguration _configuration;
+    private readonly Action<Exception> _reportError;
     private readonly ILogger _logger;
+    private readonly Func<Subscription, CancellationToken, Task> _applyChangesAsync;
 
     private readonly ConcurrentDictionary<uint, RegisteredSubjectProperty> _monitoredItems = new();
     private readonly ConcurrentDictionary<Subscription, byte> _subscriptions = new();
     private readonly ConcurrentDictionary<uint, int> _healAttempts = new();
+    private readonly Lock _trackingMutationLock = new();
+
+    private int _subscriptionCount;
+    private int _monitoredItemCount;
 
     // Subjects that detached mid-setup, so their monitored items may have been added after the
     // detach callback had already run. Drained by CompleteSetup's sweep. Used as a set; the value
@@ -81,9 +87,20 @@ internal class SubscriptionManager : IAsyncDisposable
     public IReadOnlyCollection<Subscription> Subscriptions => (IReadOnlyCollection<Subscription>)_subscriptions.Keys;
 
     /// <summary>
+    /// Gets how many subscriptions are currently held. Counting through <see cref="Subscriptions"/>
+    /// would allocate, because the underlying concurrent dictionary snapshots its keys.
+    /// </summary>
+    public int SubscriptionCount => Volatile.Read(ref _subscriptionCount);
+
+    /// <summary>
     /// Gets the current monitored items (thread-safe dictionary).
     /// </summary>
     public IReadOnlyDictionary<uint, RegisteredSubjectProperty> MonitoredItems => _monitoredItems;
+
+    /// <summary>
+    /// Gets how many monitored items are currently held without locking their backing dictionary.
+    /// </summary>
+    public int MonitoredItemCount => Volatile.Read(ref _monitoredItemCount);
 
     /// <summary>
     /// Returns true if any active subscription has stopped receiving publish responses from the server.
@@ -110,14 +127,19 @@ internal class SubscriptionManager : IAsyncDisposable
         PollingManager? pollingManager,
         IReadAfterWriteRegistrar? readAfterWriteManager,
         OpcUaClientConfiguration configuration,
-        ILogger logger)
+        Action<Exception> reportError,
+        ILogger logger,
+        Func<Subscription, CancellationToken, Task>? applyChangesAsync = null)
     {
         _source = source;
         _propertyWriter = propertyWriter;
         _pollingManager = pollingManager;
         _readAfterWriteManager = readAfterWriteManager;
         _configuration = configuration;
+        _reportError = reportError;
         _logger = logger;
+        _applyChangesAsync = applyChangesAsync ??
+            (static (subscription, cancellationToken) => subscription.ApplyChangesAsync(cancellationToken));
     }
 
     public async Task CreateBatchedSubscriptionsAsync(
@@ -136,8 +158,7 @@ internal class SubscriptionManager : IAsyncDisposable
         {
             oldSubscription.FastDataChangeCallback -= OnFastDataChange;
         }
-        _subscriptions.Clear();
-        _monitoredItems.Clear();
+        ClearTrackedCollections();
         _healAttempts.Clear();
         // Scoped to one setup cycle. A setup that throws before CompleteSetup would otherwise leave
         // entries behind, and the next cycle's sweep would drop items for a subject that has since
@@ -182,25 +203,13 @@ internal class SubscriptionManager : IAsyncDisposable
                     var item = monitoredItems[j];
                     subscription.AddItem(item);
 
-                    if (item.Handle is RegisteredSubjectProperty property)
-                    {
-                        _monitoredItems[item.ClientHandle] = property;
-                    }
+                    TrackMonitoredItem(item);
                 }
 
-                try
-                {
-                    await subscription.ApplyChangesAsync(cancellationToken).ConfigureAwait(false);
-                }
-                catch (ServiceResultException sre)
-                {
-                    _logger.LogWarning(sre, "ApplyChanges failed for a batch; attempting to keep valid OPC UA monitored items by removing failed ones.");
-                }
-
-                await FilterOutFailedMonitoredItemsAsync(subscription, cancellationToken).ConfigureAwait(false);
+                await ApplyChangesAndFilterFailedMonitoredItemsAsync(subscription, cancellationToken).ConfigureAwait(false);
 
                 // Add to collection AFTER initialization (temporal separation - health monitor never sees partial state)
-                _subscriptions.TryAdd(subscription, 0);
+                TryAddSubscription(subscription);
             }
 
             CompleteSetup(_subscriptions.Keys.SelectMany(subscription => subscription.MonitoredItems));
@@ -210,6 +219,14 @@ internal class SubscriptionManager : IAsyncDisposable
             // Also on the throw path. A setup that fails part way must not leave recording enabled,
             // or every later detach accumulates in _detachedDuringSetup with no sweep to drain it.
             _setupInProgress = false;
+        }
+    }
+
+    internal void TrackMonitoredItem(MonitoredItem item)
+    {
+        if (item.Handle is RegisteredSubjectProperty property)
+        {
+            SetMonitoredItem(item.ClientHandle, property);
         }
     }
 
@@ -238,7 +255,7 @@ internal class SubscriptionManager : IAsyncDisposable
     // Inbound notifications are dropped while shutting down or before the setup gate opens.
     private bool AreCallbacksSuppressed => _shuttingDown || !_callbacksEnabled;
 
-    private void OnFastDataChange(Subscription subscription, DataChangeNotification notification, IList<string> stringTable)
+    internal void OnFastDataChange(Subscription subscription, DataChangeNotification notification, IList<string> stringTable)
     {
         if (AreCallbacksSuppressed)
         {
@@ -270,11 +287,12 @@ internal class SubscriptionManager : IAsyncDisposable
                 }
             }
         }
-        catch
+        catch (Exception error)
         {
             // Return pooled list on exception to prevent pool exhaustion
             changes.Clear();
             ChangesPool.Return(changes);
+            ReportErrorIfRunning(error);
             throw;
         }
 
@@ -298,7 +316,7 @@ internal class SubscriptionManager : IAsyncDisposable
 
         // Pool item returned inside callback. Safe because ApplyUpdate never throws:
         // It wraps callback execution in try-catch and only throws on catastrophic failures (lock/memory corruption).
-        var state = (source: _source, receivedTimestamp, changes, logger: _logger);
+        var state = (manager: this, source: _source, receivedTimestamp, changes, logger: _logger);
         _propertyWriter.Write(state, static s =>
         {
             for (var i = 0; i < s.changes.Count; i++)
@@ -310,6 +328,7 @@ internal class SubscriptionManager : IAsyncDisposable
                 }
                 catch (Exception e)
                 {
+                    s.manager.ReportErrorIfRunning(e);
                     s.logger.LogError(e, "Failed to apply change for property {PropertyName}.", change.Property.Name);
                 }
             }
@@ -317,6 +336,14 @@ internal class SubscriptionManager : IAsyncDisposable
             s.changes.Clear();
             ChangesPool.Return(s.changes);
         });
+    }
+
+    private void ReportErrorIfRunning(Exception error, CancellationToken cancellationToken = default)
+    {
+        if (!_shuttingDown && !cancellationToken.IsCancellationRequested)
+        {
+            _reportError(error);
+        }
     }
 
     /// <summary>
@@ -330,18 +357,35 @@ internal class SubscriptionManager : IAsyncDisposable
         {
             subscription.FastDataChangeCallback -= OnFastDataChange;
             subscription.FastDataChangeCallback += OnFastDataChange;
-            _subscriptions.TryAdd(subscription, 0);
+            TryAddSubscription(subscription);
         }
 
         foreach (var oldSubscription in oldSubscriptions)
         {
-            _subscriptions.TryRemove(oldSubscription, out _);
+            TryRemoveSubscription(oldSubscription);
             oldSubscription.FastDataChangeCallback -= OnFastDataChange;
         }
 
 
         _logger.LogInformation("Updated subscription manager with {Count} transferred subscriptions (removed {OldCount} old)",
             transferredSubscriptions.Count, oldSubscriptions.Length);
+    }
+
+    internal async Task ApplyChangesAndFilterFailedMonitoredItemsAsync(
+        Subscription subscription,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _applyChangesAsync(subscription, cancellationToken).ConfigureAwait(false);
+        }
+        catch (ServiceResultException error)
+        {
+            ReportErrorIfRunning(error, cancellationToken);
+            _logger.LogWarning(error, "ApplyChanges failed for a batch; attempting to keep valid OPC UA monitored items by removing failed ones.");
+        }
+
+        await FilterOutFailedMonitoredItemsAsync(subscription, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task FilterOutFailedMonitoredItemsAsync(Subscription subscription, CancellationToken cancellationToken)
@@ -374,7 +418,7 @@ internal class SubscriptionManager : IAsyncDisposable
                 case FailedMonitoredItemDisposition.FallbackToPolling:
                     removedItems ??= [];
                     removedItems.Add(monitoredItem);
-                    _monitoredItems.TryRemove(monitoredItem.ClientHandle, out _);
+                    TryRemoveMonitoredItem(monitoredItem.ClientHandle);
                     polledItems ??= [];
                     polledItems.Add(monitoredItem);
                     _logger.LogWarning("Monitored item {DisplayName} does not support subscriptions ({Status}), falling back to polling",
@@ -384,7 +428,7 @@ internal class SubscriptionManager : IAsyncDisposable
                 case FailedMonitoredItemDisposition.Drop:
                     removedItems ??= [];
                     removedItems.Add(monitoredItem);
-                    _monitoredItems.TryRemove(monitoredItem.ClientHandle, out _);
+                    TryRemoveMonitoredItem(monitoredItem.ClientHandle);
                     _logger.LogError("OPC UA monitored item creation failed permanently for {DisplayName} (Handle={Handle}): {Status}",
                         monitoredItem.DisplayName, monitoredItem.ClientHandle, statusCode);
                     break;
@@ -450,7 +494,7 @@ internal class SubscriptionManager : IAsyncDisposable
     /// Removes the given items from the SDK subscription and applies the change (tolerating an
     /// ApplyChanges failure), then hands the polled items to the polling manager.
     /// </summary>
-    private async Task RemoveAndFallBackToPollingAsync(
+    internal async Task RemoveAndFallBackToPollingAsync(
         Subscription subscription,
         IReadOnlyList<MonitoredItem> toRemove,
         IReadOnlyList<MonitoredItem> toPoll,
@@ -463,10 +507,11 @@ internal class SubscriptionManager : IAsyncDisposable
 
         try
         {
-            await subscription.ApplyChangesAsync(cancellationToken).ConfigureAwait(false);
+            await _applyChangesAsync(subscription, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
+            ReportErrorIfRunning(ex, cancellationToken);
             _logger.LogWarning(ex, "ApplyChanges after removing failed OPC UA monitored items failed. Continuing with the remaining items.");
         }
 
@@ -539,7 +584,7 @@ internal class SubscriptionManager : IAsyncDisposable
 
             foreach (var monitoredItem in toEscalate)
             {
-                _monitoredItems.TryRemove(monitoredItem.ClientHandle, out _);
+                TryRemoveMonitoredItem(monitoredItem.ClientHandle);
                 _healAttempts.TryRemove(monitoredItem.ClientHandle, out _);
             }
 
@@ -588,7 +633,7 @@ internal class SubscriptionManager : IAsyncDisposable
         {
             if (kvp.Value.Reference.Subject == subject)
             {
-                _monitoredItems.TryRemove(kvp.Key, out _);
+                TryRemoveMonitoredItem(kvp.Key);
                 _healAttempts.TryRemove(kvp.Key, out _);
             }
         }
@@ -701,13 +746,75 @@ internal class SubscriptionManager : IAsyncDisposable
     /// </summary>
     internal void OnFastDataChangeForTesting(DataChangeNotification notification) => OnFastDataChange(null!, notification, []);
 
+    private bool TryAddSubscription(Subscription subscription)
+    {
+        lock (_trackingMutationLock)
+        {
+            if (!_subscriptions.TryAdd(subscription, 0))
+            {
+                return false;
+            }
+
+            Volatile.Write(ref _subscriptionCount, _subscriptionCount + 1);
+            return true;
+        }
+    }
+
+    private void TryRemoveSubscription(Subscription subscription)
+    {
+        lock (_trackingMutationLock)
+        {
+            if (_subscriptions.TryRemove(subscription, out _))
+            {
+                Volatile.Write(ref _subscriptionCount, _subscriptionCount - 1);
+            }
+        }
+    }
+
+    private void SetMonitoredItem(uint clientHandle, RegisteredSubjectProperty property)
+    {
+        lock (_trackingMutationLock)
+        {
+            if (_monitoredItems.TryAdd(clientHandle, property))
+            {
+                Volatile.Write(ref _monitoredItemCount, _monitoredItemCount + 1);
+            }
+            else
+            {
+                _monitoredItems[clientHandle] = property;
+            }
+        }
+    }
+
+    private void TryRemoveMonitoredItem(uint clientHandle)
+    {
+        lock (_trackingMutationLock)
+        {
+            if (_monitoredItems.TryRemove(clientHandle, out _))
+            {
+                Volatile.Write(ref _monitoredItemCount, _monitoredItemCount - 1);
+            }
+        }
+    }
+
+    private void ClearTrackedCollections()
+    {
+        lock (_trackingMutationLock)
+        {
+            _subscriptions.Clear();
+            _monitoredItems.Clear();
+            Volatile.Write(ref _subscriptionCount, 0);
+            Volatile.Write(ref _monitoredItemCount, 0);
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         _shuttingDown = true;
         _callbacksEnabled = false;
 
         var subscriptions = _subscriptions.Keys.ToArray();
-        _subscriptions.Clear();
+        ClearTrackedCollections();
 
         foreach (var subscription in subscriptions)
         {

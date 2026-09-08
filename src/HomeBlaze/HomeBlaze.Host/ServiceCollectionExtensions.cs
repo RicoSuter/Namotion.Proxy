@@ -1,4 +1,5 @@
 using HomeBlaze.Host.Services;
+using HomeBlaze.Host.TimeZones;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
 
@@ -20,6 +21,9 @@ public static class ServiceCollectionExtensions
 
         // MudBlazor services
         services.AddMudServices();
+
+        services.AddHttpContextAccessor();
+        services.AddScoped<TimeZoneInterop>();
 
         return services;
     }

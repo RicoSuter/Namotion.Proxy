@@ -29,12 +29,13 @@ HomeBlaze treats AI as a first-class concern with two complementary modes: **bui
 
 ### MCP Tool Layering [Implemented]
 
-MCP tools are split across two packages, configured via a single `McpServerConfiguration` object:
+MCP tools are split across packages, configured via a single `McpServerConfiguration` object:
 
 | Package | Tools | Scope |
 |---------|-------|-------|
 | `Namotion.Interceptor.Mcp` | `query`, `get_property`, `set_property`, `list_types` | Any Namotion.Interceptor application |
-| `HomeBlaze.AI` | `list_methods`, `invoke_method` (via `IMcpToolProvider`) + subject enrichment (`$type`, `$icon`, `$title` via `IMcpSubjectEnricher`) + concrete type discovery (via `IMcpTypeProvider`). History tools (`get_property_history`, `get_event_history`, `get_command_history`) planned for later | HomeBlaze-specific features |
+| `HomeBlaze.AI` | `list_methods`, `invoke_method` (via `IMcpToolProvider`) + subject enrichment (`$type`, `$icon`, `$title` via `IMcpSubjectEnricher`) + concrete type discovery (via `IMcpTypeProvider`) | HomeBlaze-specific features |
+| `HomeBlaze.History.Mcp` | `get_property_history`, and the planned `get_event_history` and `get_command_history` (see [Messages](messages.md)) | Ships with the history packages |
 
 This keeps the interceptor library independently usable. Method tools are HomeBlaze-specific because method discovery uses `MethodMetadata` with `[Operation]`/`[Query]` registry attributes — a HomeBlaze convention, not a core interceptor concept. Property-level metadata (units, position) is already in the registry as `StateMetadata` attributes — included directly in `query` responses when `includeAttributes=true`.
 
@@ -71,7 +72,7 @@ Agent writes are local writes — they flow through the normal write path (local
 | Agent runtime | MAF `ChatClientAgent` via composition | Built-in tool-calling loop, session management. Built on `Microsoft.Extensions.AI` |
 | Provider model | `ILlmProvider` subjects referenced by path, `CreateChatClient()` only | Centralized credentials, consumer doesn't care which model |
 | Interaction model | Pull + push (with declarative filters) for built-in; pull-only for external | Push avoids polling overhead; filters prevent unnecessary LLM calls |
-| Tool split | Core 4 tools in `Namotion.Interceptor.Mcp`, method tools in `HomeBlaze.AI` | Methods are a HomeBlaze convention |
+| Tool split | Core 4 tools in `Namotion.Interceptor.Mcp`, method tools in `HomeBlaze.AI`, history tool in `HomeBlaze.History.Mcp` | Methods are a HomeBlaze convention, and a tool ships with the feature it exposes |
 | Agent writes | Local writes, no source tagging | Source mechanism is for connector feedback-loop prevention, not attribution |
 
 ## Open Questions

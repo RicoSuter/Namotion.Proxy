@@ -40,6 +40,18 @@ jobs:
         id: filter
         with:
           filters: |
+            shared: &shared
+              - 'src/Namotion.Interceptor/**'
+              - 'src/Namotion.Interceptor.Generator/**'
+              - 'src/Namotion.Interceptor.Tracking/**'
+              - 'src/Namotion.Interceptor.Registry/**'
+              - 'src/Namotion.Interceptor.Connectors/**'
+              - 'src/Namotion.Interceptor.Dynamic/**'
+              # Test-only references: not used by the connectors, only by their test projects.
+              - 'src/Namotion.Interceptor.Testing/**'
+              - 'src/Namotion.Interceptor.Hosting/**'
+              - 'src/Namotion.Interceptor.Validation/**'
+              - 'src/Namotion.Interceptor.AspNetCore/**'
             homeblaze:
               - 'src/HomeBlaze/**'
             nugetplugins:
@@ -50,11 +62,14 @@ jobs:
               - 'src/HomeBlaze/HomeBlaze.Plugins/**'
               - 'src/HomeBlaze/HomeBlaze.Plugins.Tests/**'
             opcua:
+              - *shared
               - 'src/Namotion.Interceptor.OpcUa*/**'
               - 'src/HomeBlaze/*OpcUa*/**'
             websocket:
+              - *shared
               - 'src/Namotion.Interceptor.WebSocket*/**'
             mqtt:
+              - *shared
               - 'src/Namotion.Interceptor.Mqtt*/**'
 
   test:

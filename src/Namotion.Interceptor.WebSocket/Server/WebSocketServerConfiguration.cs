@@ -54,8 +54,14 @@ public class WebSocketServerConfiguration
     public TimeSpan HelloTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// The smallest heartbeat interval that can be configured.
+    /// </summary>
+    public static readonly TimeSpan MinimumHeartbeatInterval = TimeSpan.FromSeconds(1);
+
+    /// <summary>
     /// Interval between heartbeat messages. Default: 30 seconds.
-    /// Set to TimeSpan.Zero to disable heartbeats.
+    /// Set to TimeSpan.Zero to disable heartbeats, otherwise at least
+    /// <see cref="MinimumHeartbeatInterval"/>.
     /// </summary>
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(30);
 
@@ -128,9 +134,11 @@ public class WebSocketServerConfiguration
             throw new ArgumentException($"WriteBatchSize must be non-negative, got: {WriteBatchSize}", nameof(WriteBatchSize));
         }
 
-        if (HeartbeatInterval < TimeSpan.Zero)
+        if (HeartbeatInterval != TimeSpan.Zero && HeartbeatInterval < MinimumHeartbeatInterval)
         {
-            throw new ArgumentException($"HeartbeatInterval must be non-negative, got: {HeartbeatInterval}", nameof(HeartbeatInterval));
+            throw new ArgumentException(
+                $"HeartbeatInterval must be TimeSpan.Zero to disable heartbeats, or at least {MinimumHeartbeatInterval}, got: {HeartbeatInterval}",
+                nameof(HeartbeatInterval));
         }
 
         if (BroadcastTimeout <= TimeSpan.Zero)

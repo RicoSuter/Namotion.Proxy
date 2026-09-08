@@ -1,0 +1,139 @@
+@using HomeBlaze.Components.Abstractions
+@using HomeBlaze.Components.Abstractions.Attributes
+@using HomeBlaze.History.InMemory
+@using Namotion.Interceptor
+
+@attribute [SubjectComponent(SubjectComponentType.Edit, typeof(InMemoryHistoryStoreSubject))]
+@implements ISubjectEditComponent
+
+<MudForm>
+    <MudCheckBox @bind-Value="_isEnabled"
+                 @bind-Value:after="OnFieldChanged"
+                 Label="Enabled (auto-start on application startup)" />
+
+    <MudNumericField @bind-Value="_priority"
+                     @bind-Value:after="OnFieldChanged"
+                     Label="Priority"
+                     HelperText="Higher values are preferred for overlapping ranges (in-memory is the highest tier)."
+                     Min="0"
+                     Class="mt-4" />
+
+    <MudNumericField @bind-Value="_maxAgeSeconds"
+                     @bind-Value:after="OnFieldChanged"
+                     Label="Max Age (seconds)"
+                     HelperText="Retention window. Samples older than this are evicted on sweep."
+                     Min="1"
+                     Class="mt-4" />
+
+    <MudNumericField @bind-Value="_maxPointsPerProperty"
+                     @bind-Value:after="OnFieldChanged"
+                     Label="Max Points Per Property"
+                     HelperText="Ring-buffer capacity per property path."
+                     Min="1"
+                     Class="mt-4" />
+
+    <MudNumericField @bind-Value="_bufferTimeMilliseconds"
+                     @bind-Value:after="OnFieldChanged"
+                     Label="Buffer Time (ms)"
+                     HelperText="Change-queue buffer time before a batch is flushed to the recorder."
+                     Min="0"
+                     Class="mt-4" />
+
+    <MudNumericField @bind-Value="_maxJsonSize"
+                     @bind-Value:after="OnFieldChanged"
+                     Label="Max JSON Size (characters)"
+                     HelperText="Larger string values are recorded as an oversize placeholder."
+                     Min="1"
+                     Class="mt-4" />
+</MudForm>
+
+@code {
+    [Parameter]
+    public IInterceptorSubject? Subject { get; set; }
+
+    [Parameter]
+    public bool IsCreating { get; set; }
+
+    private InMemoryHistoryStoreSubject? Store => Subject as InMemoryHistoryStoreSubject;
+
+    private bool _isEnabled = true;
+    private int _priority;
+    private int _maxAgeSeconds;
+    private int _maxPointsPerProperty;
+    private int _bufferTimeMilliseconds;
+    private int _maxJsonSize;
+
+    private bool _originalIsEnabled = true;
+    private int _originalPriority;
+    private int _originalMaxAgeSeconds;
+    private int _originalMaxPointsPerProperty;
+    private int _originalBufferTimeMilliseconds;
+    private int _originalMaxJsonSize;
+
+    public bool IsValid => _priority >= 0 &&
+                           _maxAgeSeconds > 0 &&
+                           _maxPointsPerProperty > 0 &&
+                           _bufferTimeMilliseconds >= 0 &&
+                           _maxJsonSize > 0;
+
+    public bool IsDirty => _isEnabled != _originalIsEnabled ||
+                           _priority != _originalPriority ||
+                           _maxAgeSeconds != _originalMaxAgeSeconds ||
+                           _maxPointsPerProperty != _originalMaxPointsPerProperty ||
+                           _bufferTimeMilliseconds != _originalBufferTimeMilliseconds ||
+                           _maxJsonSize != _originalMaxJsonSize;
+
+    public string PreferredDialogSize => "Medium";
+
+    public event Action<bool>? IsValidChanged;
+    public event Action<bool>? IsDirtyChanged;
+
+    protected override void OnInitialized()
+    {
+        if (Store != null)
+        {
+            _isEnabled = Store.IsEnabled;
+            _priority = Store.Priority;
+            _maxAgeSeconds = Store.MaxAgeSeconds;
+            _maxPointsPerProperty = Store.MaxPointsPerProperty;
+            _bufferTimeMilliseconds = Store.BufferTimeMilliseconds;
+            _maxJsonSize = Store.MaxJsonSize;
+
+            _originalIsEnabled = _isEnabled;
+            _originalPriority = _priority;
+            _originalMaxAgeSeconds = _maxAgeSeconds;
+            _originalMaxPointsPerProperty = _maxPointsPerProperty;
+            _originalBufferTimeMilliseconds = _bufferTimeMilliseconds;
+            _originalMaxJsonSize = _maxJsonSize;
+        }
+    }
+
+    private void OnFieldChanged()
+    {
+        IsValidChanged?.Invoke(IsValid);
+        IsDirtyChanged?.Invoke(IsDirty);
+    }
+
+    public Task SaveAsync(CancellationToken cancellationToken)
+    {
+        if (Store != null && IsValid)
+        {
+            Store.IsEnabled = _isEnabled;
+            Store.Priority = _priority;
+            Store.MaxAgeSeconds = _maxAgeSeconds;
+            Store.MaxPointsPerProperty = _maxPointsPerProperty;
+            Store.BufferTimeMilliseconds = _bufferTimeMilliseconds;
+            Store.MaxJsonSize = _maxJsonSize;
+
+            _originalIsEnabled = _isEnabled;
+            _originalPriority = _priority;
+            _originalMaxAgeSeconds = _maxAgeSeconds;
+            _originalMaxPointsPerProperty = _maxPointsPerProperty;
+            _originalBufferTimeMilliseconds = _bufferTimeMilliseconds;
+            _originalMaxJsonSize = _maxJsonSize;
+
+            IsDirtyChanged?.Invoke(false);
+        }
+        return Task.CompletedTask;
+    }
+}

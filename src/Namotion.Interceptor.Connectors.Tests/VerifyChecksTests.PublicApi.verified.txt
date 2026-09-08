@@ -1,5 +1,8 @@
 ﻿[assembly: System.Reflection.AssemblyMetadata("RepositoryUrl", "https://github.com/RicoSuter/Namotion.Interceptor")]
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Namotion.Interceptor.Connectors.Tests")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Namotion.Interceptor.Mqtt.Tests")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Namotion.Interceptor.OpcUa.Tests")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Namotion.Interceptor.WebSocket.Tests")]
 [assembly: System.Runtime.Versioning.TargetFramework(".NETCoreApp,Version=v9.0", FrameworkDisplayName=".NET 9.0")]
 namespace Namotion.Interceptor.Connectors
 {
@@ -8,12 +11,39 @@ namespace Namotion.Interceptor.Connectors
         public System.Threading.Tasks.ValueTask DisposeAsync() { }
         public static Namotion.Interceptor.Connectors.BackgroundTaskLifetime Start(System.Threading.CancellationToken parentToken, Microsoft.Extensions.Logging.ILogger logger, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task> executeAsyncFunc, System.Func<System.Threading.Tasks.ValueTask>? disposeAsyncFunc = null) { }
     }
+    public static class ChangeDelivery
+    {
+        public static bool IsSuperseded(in Namotion.Interceptor.Tracking.Change.SubjectPropertyChange change, Namotion.Interceptor.Connectors.ChangeDeliveryRule rule) { }
+    }
+    public enum ChangeDeliveryRule
+    {
+        Unspecified = 0,
+        SourceValuesMayBeStale = 1,
+        SourceValuesAreSettled = 2,
+    }
     public class ChangeQueueProcessor : System.IDisposable
     {
-        public ChangeQueueProcessor(object? source, Namotion.Interceptor.IInterceptorSubjectContext context, System.Func<Namotion.Interceptor.PropertyReference, bool> propertyFilter, System.Func<System.ReadOnlyMemory<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange>, System.Threading.CancellationToken, System.Threading.Tasks.ValueTask> writeHandler, System.TimeSpan? bufferTime, int? maxQueueDepth, Microsoft.Extensions.Logging.ILogger logger) { }
+        public ChangeQueueProcessor(object? source, Namotion.Interceptor.IInterceptorSubjectContext context, System.Func<Namotion.Interceptor.PropertyReference, bool> propertyFilter, System.Func<System.ReadOnlyMemory<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange>, System.Threading.CancellationToken, System.Threading.Tasks.ValueTask> writeHandler, Namotion.Interceptor.Connectors.ChangeDeliveryRule deliveryRule, System.TimeSpan? bufferTime, int? maxQueueDepth, Microsoft.Extensions.Logging.ILogger logger, System.Action<long>? dropHandler = null) { }
         public long DropCount { get; }
+        public int QueueDepth { get; }
         public void Dispose() { }
         public System.Threading.Tasks.Task ProcessAsync(System.Threading.CancellationToken cancellationToken) { }
+    }
+    public sealed class ConnectorCommitLease
+    {
+        public ConnectorCommitLease() { }
+        public void ReleaseCommit() { }
+        public System.Threading.Tasks.Task RetireAsync() { }
+        public bool TryAcquireCommit() { }
+    }
+    public sealed class ConnectorRunAttempt : System.IDisposable
+    {
+        public ConnectorRunAttempt(System.Threading.CancellationToken stoppingToken) { }
+        public System.Threading.CancellationToken Token { get; }
+        public bool WasForceKilled { get; }
+        public System.Threading.Tasks.Task CancelAsync() { }
+        public void Dispose() { }
+        public System.Threading.Tasks.Task ForceKillAsync() { }
     }
     public class DefaultSubjectFactory : Namotion.Interceptor.Connectors.ISubjectFactory
     {
@@ -34,6 +64,7 @@ namespace Namotion.Interceptor.Connectors
     }
     public interface ISubjectConnector
     {
+        Namotion.Interceptor.Connectors.Diagnostics.ConnectorDiagnostics Diagnostics { get; }
         Namotion.Interceptor.IInterceptorSubject RootSubject { get; }
     }
     public interface ISubjectFactory
@@ -44,13 +75,20 @@ namespace Namotion.Interceptor.Connectors
     }
     public interface ISubjectSource : Namotion.Interceptor.Connectors.ISubjectConnector
     {
+        Namotion.Interceptor.Connectors.Diagnostics.SourceDiagnostics Diagnostics { get; }
+        System.DateTimeOffset? LastSynchronizedAt { get; }
+        Namotion.Interceptor.Connectors.Monitoring.SourceState State { get; }
+        System.DateTimeOffset StateChangeTime { get; }
         int WriteBatchSize { get; }
+        event System.EventHandler<Namotion.Interceptor.Connectors.Monitoring.SourceEvent>? StateChanged;
         System.Threading.Tasks.Task<System.Action?> LoadInitialStateAsync(System.Threading.CancellationToken cancellationToken);
         System.Threading.Tasks.ValueTask<Namotion.Interceptor.Connectors.WriteResult> WriteChangesAsync(System.ReadOnlyMemory<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange> changes, System.Threading.CancellationToken cancellationToken);
     }
     public interface ISupportsConcurrentWrites { }
     public static class InterceptorSubjectContextExtensions
     {
+        public static Namotion.Interceptor.IInterceptorSubjectContext WithSourceMonitoring(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
+        public static Namotion.Interceptor.IInterceptorSubjectContext WithSourceMonitoring(this Namotion.Interceptor.IInterceptorSubjectContext context, Microsoft.Extensions.DependencyInjection.IServiceCollection services) { }
         public static Namotion.Interceptor.IInterceptorSubjectContext WithSourceTransactions(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
     }
     public static class RegisteredSubjectPropertyExtensions
@@ -60,6 +98,7 @@ namespace Namotion.Interceptor.Connectors
     public class SourceOwnershipManager : System.IDisposable
     {
         public SourceOwnershipManager(Namotion.Interceptor.Connectors.ISubjectSource source, System.Action<Namotion.Interceptor.PropertyReference>? onReleasing = null, System.Action<Namotion.Interceptor.IInterceptorSubject>? onSubjectDetaching = null) { }
+        public int Count { get; }
         public System.Collections.Generic.IReadOnlyCollection<Namotion.Interceptor.PropertyReference> Properties { get; }
         public bool ClaimSource(Namotion.Interceptor.PropertyReference property) { }
         public void Dispose() { }
@@ -71,6 +110,19 @@ namespace Namotion.Interceptor.Connectors
         public static bool SetSource(this Namotion.Interceptor.PropertyReference property, Namotion.Interceptor.Connectors.ISubjectSource source) { }
         public static bool TryGetSource(this Namotion.Interceptor.PropertyReference property, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out Namotion.Interceptor.Connectors.ISubjectSource? source) { }
     }
+    public abstract class SubjectConnectorBase : Microsoft.Extensions.Hosting.BackgroundService, Namotion.Interceptor.Connectors.ISubjectConnector
+    {
+        protected SubjectConnectorBase(Namotion.Interceptor.Connectors.Diagnostics.ConnectorMetrics metrics) { }
+        public abstract Namotion.Interceptor.Connectors.Diagnostics.ConnectorDiagnostics Diagnostics { get; }
+        protected Namotion.Interceptor.Connectors.Diagnostics.ConnectorMetrics Metrics { get; }
+        public abstract Namotion.Interceptor.IInterceptorSubject RootSubject { get; }
+        public override void Dispose() { }
+        protected override sealed System.Threading.Tasks.Task ExecuteAsync(System.Threading.CancellationToken stoppingToken) { }
+        protected System.Threading.Tasks.Task ForceKillCurrentAttemptAsync() { }
+        protected abstract System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken stoppingToken);
+        protected System.Threading.Tasks.Task RunAttemptAsync(System.Threading.CancellationToken stoppingToken, System.Func<Namotion.Interceptor.Connectors.ConnectorRunAttempt, System.Threading.Tasks.Task> body) { }
+        public override System.Threading.Tasks.Task StartAsync(System.Threading.CancellationToken cancellationToken) { }
+    }
     public static class SubjectFactoryExtensions
     {
         public static Namotion.Interceptor.IInterceptorSubject CreateCollectionSubject(this Namotion.Interceptor.Connectors.ISubjectFactory subjectFactory, Namotion.Interceptor.Registry.Abstractions.RegisteredSubjectProperty property, object? index) { }
@@ -78,20 +130,26 @@ namespace Namotion.Interceptor.Connectors
     }
     public sealed class SubjectPropertyWriter
     {
-        public SubjectPropertyWriter(Namotion.Interceptor.Connectors.ISubjectSource source, Microsoft.Extensions.Logging.ILogger logger) { }
         public System.Threading.Tasks.Task LoadInitialStateAndResumeAsync(System.Threading.CancellationToken cancellationToken) { }
         public void StartBuffering() { }
         public void Write<TState>(TState state, System.Action<TState> update) { }
     }
-    public abstract class SubjectSourceBase : Microsoft.Extensions.Hosting.BackgroundService, Namotion.Interceptor.Connectors.ISubjectConnector, Namotion.Interceptor.Connectors.ISubjectSource
+    public abstract class SubjectSourceBase : Namotion.Interceptor.Connectors.SubjectConnectorBase, Namotion.Interceptor.Connectors.ISubjectConnector, Namotion.Interceptor.Connectors.ISubjectSource
     {
-        protected SubjectSourceBase(Namotion.Interceptor.IInterceptorSubjectContext context, Microsoft.Extensions.Logging.ILogger logger, System.TimeSpan? bufferTime = default, System.TimeSpan? retryTime = default, int writeRetryQueueSize = 1000) { }
-        public int PendingWriteCount { get; }
-        public abstract Namotion.Interceptor.IInterceptorSubject RootSubject { get; }
+        protected SubjectSourceBase(Namotion.Interceptor.IInterceptorSubjectContext context, Microsoft.Extensions.Logging.ILogger logger, System.TimeSpan? bufferTime = default, System.TimeSpan? retryTime = default, int writeRetryQueueSize = 1000, Namotion.Interceptor.Connectors.ThroughputCounter? incomingThroughput = null, Namotion.Interceptor.Connectors.ThroughputCounter? outgoingThroughput = null) { }
+        [get: System.Runtime.CompilerServices.PreserveBaseOverrides]
+        public new virtual Namotion.Interceptor.Connectors.Diagnostics.SourceDiagnostics Diagnostics { get; }
+        public System.DateTimeOffset? LastSynchronizedAt { get; }
+        protected new Namotion.Interceptor.Connectors.Diagnostics.SourceMetrics Metrics { get; }
+        public Namotion.Interceptor.Connectors.Monitoring.SourceState State { get; }
+        public System.DateTimeOffset StateChangeTime { get; }
         public virtual int WriteBatchSize { get; }
+        public event System.EventHandler<Namotion.Interceptor.Connectors.Monitoring.SourceEvent>? StateChanged;
         public override void Dispose() { }
-        protected override sealed System.Threading.Tasks.Task ExecuteAsync(System.Threading.CancellationToken stoppingToken) { }
         public abstract System.Threading.Tasks.Task<System.Action?> LoadInitialStateAsync(System.Threading.CancellationToken cancellationToken);
+        protected void ReportConnectionLost() { }
+        protected override sealed System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken stoppingToken) { }
+        public override System.Threading.Tasks.Task StartAsync(System.Threading.CancellationToken cancellationToken) { }
         protected abstract System.Threading.Tasks.Task<System.IAsyncDisposable?> StartListeningAsync(Namotion.Interceptor.Connectors.SubjectPropertyWriter propertyWriter, System.Threading.CancellationToken cancellationToken);
         public abstract System.Threading.Tasks.ValueTask<Namotion.Interceptor.Connectors.WriteResult> WriteChangesAsync(System.ReadOnlyMemory<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange> changes, System.Threading.CancellationToken cancellationToken);
     }
@@ -115,6 +173,70 @@ namespace Namotion.Interceptor.Connectors
         public static Namotion.Interceptor.Connectors.WriteResult Success { get; }
         public static Namotion.Interceptor.Connectors.WriteResult Failure(System.ReadOnlyMemory<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange> failedChanges, System.Exception error) { }
         public static Namotion.Interceptor.Connectors.WriteResult PartialFailure(System.ReadOnlyMemory<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange> failedChanges, System.Exception error) { }
+    }
+}
+namespace Namotion.Interceptor.Connectors.Diagnostics
+{
+    public class ConnectorDiagnostics
+    {
+        public ConnectorDiagnostics(Namotion.Interceptor.Connectors.Diagnostics.ConnectorMetrics metrics) { }
+        public bool? IsOperational { get; }
+        public System.Exception? LastError { get; }
+        public System.DateTimeOffset? OperationalChangeTime { get; }
+        public Namotion.Interceptor.Connectors.Diagnostics.QueueDiagnostics OutboundChanges { get; }
+        public System.DateTimeOffset? StartTime { get; }
+        public Namotion.Interceptor.Connectors.Diagnostics.ThroughputDiagnostics Throughput { get; }
+    }
+    public class ConnectorMetrics
+    {
+        public ConnectorMetrics(Namotion.Interceptor.Connectors.ThroughputCounter? incoming = null, Namotion.Interceptor.Connectors.ThroughputCounter? outgoing = null) { }
+        public Namotion.Interceptor.Connectors.ThroughputCounter? Incoming { get; }
+        public Namotion.Interceptor.Connectors.Diagnostics.QueueMetrics OutboundChanges { get; }
+        public Namotion.Interceptor.Connectors.ThroughputCounter? Outgoing { get; }
+        public void MarkNotOperational() { }
+        public void MarkOperational() { }
+        public void MarkStarted() { }
+        public void MarkStopped() { }
+        public void RegisterResettable(Namotion.Interceptor.Connectors.Diagnostics.IResettableMetrics metrics) { }
+        public void ReportError(System.Exception error) { }
+    }
+    public interface IResettableMetrics
+    {
+        void Reset();
+    }
+    public sealed class QueueDiagnostics
+    {
+        public QueueDiagnostics(Namotion.Interceptor.Connectors.Diagnostics.QueueMetrics metrics) { }
+        public int? Capacity { get; }
+        public int Depth { get; }
+        public long TotalDropped { get; }
+    }
+    public sealed class QueueMetrics
+    {
+        public QueueMetrics(string name = "queue") { }
+        public void AddDropped(long count) { }
+        public System.Action<long> CreateDropReporter() { }
+        public System.IDisposable Register(System.Func<int> depth, int? capacity) { }
+    }
+    public class SourceDiagnostics : Namotion.Interceptor.Connectors.Diagnostics.ConnectorDiagnostics
+    {
+        public SourceDiagnostics(Namotion.Interceptor.Connectors.Diagnostics.SourceMetrics metrics) { }
+        public int? ClaimedPropertyCount { get; }
+        public Namotion.Interceptor.Connectors.Diagnostics.QueueDiagnostics InboundBuffer { get; }
+        public Namotion.Interceptor.Connectors.Diagnostics.QueueDiagnostics OutboundRetries { get; }
+    }
+    public class SourceMetrics : Namotion.Interceptor.Connectors.Diagnostics.ConnectorMetrics
+    {
+        public SourceMetrics(Namotion.Interceptor.Connectors.ThroughputCounter? incoming = null, Namotion.Interceptor.Connectors.ThroughputCounter? outgoing = null) { }
+        public Namotion.Interceptor.Connectors.Diagnostics.QueueMetrics InboundBuffer { get; }
+        public Namotion.Interceptor.Connectors.Diagnostics.QueueMetrics OutboundRetries { get; }
+        public void RegisterClaimedProperties(System.Func<int> count) { }
+    }
+    public sealed class ThroughputDiagnostics
+    {
+        public ThroughputDiagnostics(Namotion.Interceptor.Connectors.ThroughputCounter? incoming, Namotion.Interceptor.Connectors.ThroughputCounter? outgoing) { }
+        public double? IncomingPerSecond { get; }
+        public double? OutgoingPerSecond { get; }
     }
 }
 namespace Namotion.Interceptor.Connectors.Mapping
@@ -161,6 +283,69 @@ namespace Namotion.Interceptor.Connectors.Mapping
         public ReverseCompositeMapper(params Namotion.Interceptor.Connectors.Mapping.IReversePropertyMapper<TMapping, TKey>[] mappers) { }
         public bool TryGetMapping(Namotion.Interceptor.Registry.Abstractions.RegisteredSubjectProperty property, Namotion.Interceptor.IInterceptorSubject rootSubject, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TMapping? mapping) { }
         public System.Threading.Tasks.ValueTask<Namotion.Interceptor.Registry.Abstractions.RegisteredSubjectProperty?> TryGetPropertyAsync(TKey key, Namotion.Interceptor.Registry.Abstractions.RegisteredSubject subject, System.Threading.CancellationToken cancellationToken) { }
+    }
+}
+namespace Namotion.Interceptor.Connectors.Monitoring
+{
+    public readonly struct SourceEvent : System.IEquatable<Namotion.Interceptor.Connectors.Monitoring.SourceEvent>
+    {
+        public SourceEvent(Namotion.Interceptor.Connectors.Monitoring.SourceEventKind Kind, Namotion.Interceptor.Connectors.ISubjectSource Source, Namotion.Interceptor.PropertyReference? Property, Namotion.Interceptor.Connectors.Monitoring.SourceState OldState, Namotion.Interceptor.Connectors.Monitoring.SourceState NewState, System.DateTimeOffset Timestamp) { }
+        public Namotion.Interceptor.Connectors.Monitoring.SourceState CurrentState { get; }
+        public Namotion.Interceptor.Connectors.Monitoring.SourceEventKind Kind { get; init; }
+        public Namotion.Interceptor.Connectors.Monitoring.SourceState NewState { get; init; }
+        public Namotion.Interceptor.Connectors.Monitoring.SourceState OldState { get; init; }
+        public Namotion.Interceptor.PropertyReference? Property { get; init; }
+        public Namotion.Interceptor.Connectors.ISubjectSource Source { get; init; }
+        public System.DateTimeOffset Timestamp { get; init; }
+    }
+    public enum SourceEventKind
+    {
+        SourceRegistered = 0,
+        SourceUnregistered = 1,
+        StateChanged = 2,
+        PropertyClaimed = 3,
+        PropertyReleased = 4,
+    }
+    [Namotion.Interceptor.Attributes.RunsAfter(new System.Type[] {
+            typeof(Namotion.Interceptor.Tracking.Lifecycle.ContextInheritanceHandler),
+            typeof(Namotion.Interceptor.Tracking.Parent.ParentTrackingHandler)})]
+    public class SourceMonitor : Namotion.Interceptor.Tracking.IStartupCompletionDeferrer, Namotion.Interceptor.Tracking.Lifecycle.ILifecycleHandler
+    {
+        public bool IsRegistrationComplete { get; }
+        public System.Collections.Immutable.ImmutableArray<Namotion.Interceptor.Connectors.ISubjectSource> Sources { get; }
+        public void CompleteSourceRegistration() { }
+        public System.IDisposable DeferWaitCompletion() { }
+        public void HandleLifecycleChange(Namotion.Interceptor.Tracking.Lifecycle.SubjectLifecycleChange change) { }
+        public void Register(Namotion.Interceptor.Connectors.ISubjectSource source) { }
+        public Namotion.Interceptor.Connectors.Monitoring.SourceSubscription Subscribe(System.Action<Namotion.Interceptor.Connectors.Monitoring.SourceEvent> handler) { }
+        public void Unregister(Namotion.Interceptor.Connectors.ISubjectSource source) { }
+        public System.Threading.Tasks.Task<Namotion.Interceptor.Connectors.Monitoring.SourceSynchronizationResult> WaitForSynchronizationAsync(Namotion.Interceptor.IInterceptorSubject subject, System.Threading.CancellationToken cancellationToken = default) { }
+    }
+    public static class SourceMonitoringExtensions
+    {
+        public static void CompleteSourceRegistration(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
+        public static System.IDisposable DeferWaitCompletion(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
+        public static Namotion.Interceptor.Connectors.Monitoring.SourceMonitor GetSourceMonitor(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
+        public static Namotion.Interceptor.Connectors.Monitoring.SourceState GetSourceState(this Namotion.Interceptor.PropertyReference property) { }
+        public static System.Threading.Tasks.Task<Namotion.Interceptor.Connectors.Monitoring.SourceSynchronizationResult> WaitForSynchronizationAsync(this Namotion.Interceptor.IInterceptorSubject subject, System.Threading.CancellationToken cancellationToken = default) { }
+    }
+    public enum SourceState
+    {
+        Unclaimed = 0,
+        Synchronizing = 1,
+        Synchronized = 2,
+        Stopped = 3,
+    }
+    public sealed class SourceSubscription : System.IDisposable
+    {
+        public System.Collections.Immutable.ImmutableArray<Namotion.Interceptor.Connectors.ISubjectSource> Sources { get; }
+        public void Dispose() { }
+    }
+    public enum SourceSynchronizationResult
+    {
+        Incomplete = 0,
+        Stale = 1,
+        Synchronized = 2,
     }
 }
 namespace Namotion.Interceptor.Connectors.Paths

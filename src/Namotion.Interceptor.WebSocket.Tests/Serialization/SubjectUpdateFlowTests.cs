@@ -258,6 +258,52 @@ public class SubjectUpdateFlowTests
     }
 
     [Fact]
+    public void PartialUpdate_DictionaryValueReplacedAtSameKey_ShouldRoundTripThroughJson()
+    {
+        // Arrange
+        var serverContext = InterceptorSubjectContext.Create().WithFullPropertyTracking().WithRegistry();
+        var originalItem = new TestItem(serverContext) { Label = "Original", Value = 1 };
+        var serverRoot = new TestRoot(serverContext)
+        {
+            Name = "Root",
+            Lookup = new Dictionary<string, TestItem> { ["key1"] = originalItem }
+        };
+
+        var clientContext = InterceptorSubjectContext.Create().WithFullPropertyTracking().WithRegistry();
+        var clientRoot = new TestRoot(clientContext)
+        {
+            Name = "Root",
+            Lookup = new Dictionary<string, TestItem> { ["key1"] = new TestItem(clientContext) { Label = "Original", Value = 1 } }
+        };
+
+        // Make change - replace the value at key1 with a different subject
+        var changes = new List<SubjectPropertyChange>();
+        using (serverContext.GetPropertyChangeObservable(System.Reactive.Concurrency.ImmediateScheduler.Instance)
+            .Subscribe(c => changes.Add(c)))
+        {
+            serverRoot.Lookup = new Dictionary<string, TestItem>
+            {
+                ["key1"] = new TestItem(serverContext) { Label = "Replacement", Value = 2 }
+            };
+        }
+
+        // Act
+        var update = SubjectUpdate.CreatePartialUpdateFromChanges(serverRoot, changes.ToArray(), []);
+        var serializer = new JsonWebSocketSerializer();
+        var bytes = serializer.SerializeMessage(MessageType.Update, update);
+        var (_, payloadStart, payloadLength) = serializer.DeserializeMessageEnvelope(bytes);
+        var deserialized = serializer.Deserialize<SubjectUpdate>(bytes.AsSpan(payloadStart, payloadLength));
+
+        clientRoot.ApplySubjectUpdate(deserialized, DefaultSubjectFactory.Instance, ChangeOrigin.Local);
+
+        // Assert
+        Assert.True(clientRoot.Lookup.ContainsKey("key1"));
+        Assert.Equal("Replacement", clientRoot.Lookup["key1"].Label);
+        Assert.Equal(2, clientRoot.Lookup["key1"].Value);
+        Assert.Single(clientRoot.Lookup);
+    }
+
+    [Fact]
     public void PartialUpdate_CollectionMove_ShouldRoundTripThroughJson()
     {
         // Arrange

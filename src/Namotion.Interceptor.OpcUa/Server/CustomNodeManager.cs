@@ -137,30 +137,37 @@ internal class CustomNodeManager : CustomNodeManager2
         _structureLock.Wait();
         try
         {
-            var registeredSubject = subject.TryGetRegisteredSubject();
-
-            // Remove variable nodes for this subject's properties
-            if (registeredSubject != null)
+            // DeleteNode flushes whatever change masks are pending and takes no lock of its own, so
+            // without this it can flush a value the write loop has set but not yet flushed itself,
+            // from a thread the write loop's guard does not cover. DeleteNode already takes this lock
+            // internally, so the order is unchanged.
+            lock (Lock)
             {
-                foreach (var property in registeredSubject.Properties)
+                var registeredSubject = subject.TryGetRegisteredSubject();
+
+                // Remove variable nodes for this subject's properties
+                if (registeredSubject != null)
                 {
-                    if (property.Reference.TryGetPropertyData(_serverService.OpcUaVariableKey, out var node)
-                        && node is BaseDataVariableState variableNode)
+                    foreach (var property in registeredSubject.Properties)
                     {
-                        DeleteNode(SystemContext, variableNode.NodeId);
-                        property.Reference.RemovePropertyData(_serverService.OpcUaVariableKey);
+                        if (property.Reference.TryGetPropertyData(_serverService.OpcUaVariableKey, out var node)
+                            && node is BaseDataVariableState variableNode)
+                        {
+                            DeleteNode(SystemContext, variableNode.NodeId);
+                            property.Reference.RemovePropertyData(_serverService.OpcUaVariableKey);
+                        }
                     }
                 }
-            }
 
-            // Remove object nodes
-            var keysToRemove = _subjects.Where(kvp => kvp.Key.Subject == subject).Select(kvp => kvp.Key).ToList();
-            foreach (var key in keysToRemove)
-            {
-                if (_subjects.TryGetValue(key, out var nodeState))
+                // Remove object nodes
+                var keysToRemove = _subjects.Where(kvp => kvp.Key.Subject == subject).Select(kvp => kvp.Key).ToList();
+                foreach (var key in keysToRemove)
                 {
-                    DeleteNode(SystemContext, nodeState.NodeId);
-                    _subjects.Remove(key);
+                    if (_subjects.TryGetValue(key, out var nodeState))
+                    {
+                        DeleteNode(SystemContext, nodeState.NodeId);
+                        _subjects.Remove(key);
+                    }
                 }
             }
         }
@@ -393,12 +400,17 @@ internal class CustomNodeManager : CustomNodeManager2
             variableNode.Timestamp = writeTimestamp.Value.UtcDateTime;
         }
 
+        // Assigning the value above leaves a pending change mask that nothing else clears, so the next
+        // flush of this node reports the creation value as if a client had written it. Cleared here,
+        // during CreateAddressSpace and before the handler is attached, so nothing observes it.
+        variableNode.ClearChangeMasks(SystemContext, false);
+
         variableNode.StateChanged += (_, _, changes) =>
         {
             if (changes.HasFlag(NodeStateChangeMasks.Value))
             {
-                // No lock needed: StateChanged fires from ClearChangeMasks which is always
-                // called under NodeManager.Lock (from WriteChangesAsync or SDK write handling).
+                // Callers that reach here hold NodeManager.Lock; every value set must be flushed by
+                // the same actor under that same hold, or a later flush misattributes it as a client write.
                 _serverService.UpdateProperty(property.Reference, variableNode.Timestamp, variableNode.Value);
             }
         };

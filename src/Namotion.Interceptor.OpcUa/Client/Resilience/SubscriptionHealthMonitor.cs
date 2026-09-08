@@ -11,10 +11,18 @@ namespace Namotion.Interceptor.OpcUa.Client.Resilience;
 internal sealed class SubscriptionHealthMonitor
 {
     private readonly ILogger _logger;
+    private readonly Action<Exception> _reportError;
+    private readonly Func<Subscription, CancellationToken, Task> _applyChangesAsync;
 
-    public SubscriptionHealthMonitor(ILogger logger)
+    public SubscriptionHealthMonitor(
+        ILogger logger,
+        Action<Exception> reportError,
+        Func<Subscription, CancellationToken, Task>? applyChangesAsync = null)
     {
         _logger = logger;
+        _reportError = reportError;
+        _applyChangesAsync = applyChangesAsync ??
+            (static (subscription, cancellationToken) => subscription.ApplyChangesAsync(cancellationToken));
     }
 
     public async Task CheckAndHealSubscriptionsAsync(IReadOnlyCollection<Subscription> subscriptions, CancellationToken cancellationToken)
@@ -32,7 +40,7 @@ internal sealed class SubscriptionHealthMonitor
                 try
                 {
                     // Try to heal failed monitored items by reapplying the subscription changes
-                    await subscription.ApplyChangesAsync(cancellationToken).ConfigureAwait(false);
+                    await _applyChangesAsync(subscription, cancellationToken).ConfigureAwait(false);
 
                     var stillUnhealthyCount = GetUnhealthyCount(subscription);
                     if (stillUnhealthyCount == 0)
@@ -50,6 +58,7 @@ internal sealed class SubscriptionHealthMonitor
                 }
                 catch (Exception ex)
                 {
+                    ReportErrorIfRunning(ex, cancellationToken);
                     _logger.LogError(ex, "Failed to heal OPC UA subscription {Id}.", subscription.Id);
                 }
             }
@@ -60,7 +69,16 @@ internal sealed class SubscriptionHealthMonitor
         }
         catch (Exception ex)
         {
+            ReportErrorIfRunning(ex, cancellationToken);
             _logger.LogError(ex, "OPC UA subscription health check failed.");
+        }
+    }
+
+    private void ReportErrorIfRunning(Exception error, CancellationToken cancellationToken)
+    {
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            _reportError(error);
         }
     }
 

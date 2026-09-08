@@ -12,10 +12,7 @@ namespace HomeBlaze.E2E.Tests;
 public class SubjectSetupDialogTests
 {
     private const int PageLoadTimeout = 30000;
-    private const int NetworkIdleTimeout = 15000;
     private const int ElementVisibilityTimeout = 5000;
-    private const int BlazorRenderDelay = 500;
-    private const int InputBindingDelay = 300;
 
     private readonly PlaywrightFixture _fixture;
 
@@ -26,7 +23,16 @@ public class SubjectSetupDialogTests
 
     #region Helper Methods
 
-    private async Task NavigateToDemoFolderAsync(IPage page)
+    /// <summary>
+    /// The Create operation of the subject pane the wizard is opened from. Scoped to the pane
+    /// container so it cannot resolve to the wizard's own Create button on step 2.
+    /// </summary>
+    private static ILocator PaneCreateButton(IPage page)
+    {
+        return page.Locator("#scrollContainer button:has-text('Create')").First;
+    }
+
+    private async Task OpenSubjectBrowserAsync(IPage page)
     {
         await page.GotoAsync($"{_fixture.ServerAddress}");
         await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
@@ -36,28 +42,34 @@ public class SubjectSetupDialogTests
         await browserLink.ClickAsync();
         await page.WaitForURLAsync(url => url.Contains("/browser"), new() { Timeout = PageLoadTimeout });
 
-        var demoFolder = page.GetByText("demo").First;
-        await demoFolder.ClickAsync();
-        await page.WaitForTimeoutAsync(BlazorRenderDelay);
+        // The URL changes before the browser has built its panes, and the pane's Create operation is
+        // what the wizard is opened from, so that button is the condition the next step depends on.
+        var createButton = PaneCreateButton(page);
+        await Assertions.Expect(createButton).ToBeVisibleAsync(new() { Timeout = PageLoadTimeout });
     }
 
     private async Task OpenWizardAsync(IPage page)
     {
-        var createButton = page.Locator("button:has-text('Create')").First;
-        await createButton.ClickAsync();
+        await PaneCreateButton(page).ClickAsync();
 
         var wizard = page.Locator("[data-testid='create-subject-wizard']");
         await Assertions.Expect(wizard).ToBeVisibleAsync(new() { Timeout = ElementVisibilityTimeout });
 
-        await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = NetworkIdleTimeout });
-        await page.WaitForTimeoutAsync(BlazorRenderDelay);
+        // The dialog frame appears before its content, and Step1_OnOpen counts type cards with
+        // CountAsync, which does not retry, so the cards are the condition to hold for.
+        var firstTypeCard = page.Locator("[data-testid^='type-card-']").First;
+        await Assertions.Expect(firstTypeCard).ToBeVisibleAsync(new() { Timeout = ElementVisibilityTimeout });
     }
 
     private async Task EnterNameAsync(IPage page, string name)
     {
         var nameInput = page.GetByLabel("Name");
         await nameInput.FillAsync(name);
-        await page.WaitForTimeoutAsync(InputBindingDelay);
+
+        // The field binds immediately and the circuit delivers events in order, so a later click
+        // cannot overtake the name this fill sends. This assertion only catches Blazor
+        // reverting the field; it is not a round trip to the server.
+        await Assertions.Expect(nameInput).ToHaveValueAsync(name, new() { Timeout = ElementVisibilityTimeout });
     }
 
     private async Task SelectTypeAsync(IPage page, string typeTestId)
@@ -89,7 +101,7 @@ public class SubjectSetupDialogTests
     public async Task Step1_OnOpen_ShowsExpectedUIElements()
     {
         var page = await _fixture.CreatePageAsync();
-        await NavigateToDemoFolderAsync(page);
+        await OpenSubjectBrowserAsync(page);
         await OpenWizardAsync(page);
 
         // Wizard dialog should be visible
@@ -127,7 +139,7 @@ public class SubjectSetupDialogTests
     public async Task Step1_TypeSelection_ShowsNextButtonAndHighlight()
     {
         var page = await _fixture.CreatePageAsync();
-        await NavigateToDemoFolderAsync(page);
+        await OpenSubjectBrowserAsync(page);
         await OpenWizardAsync(page);
 
         // Click type card without entering name
@@ -151,7 +163,7 @@ public class SubjectSetupDialogTests
     public async Task Step1_EnterNameAndSelectType_AutoAdvancesToStep2()
     {
         var page = await _fixture.CreatePageAsync();
-        await NavigateToDemoFolderAsync(page);
+        await OpenSubjectBrowserAsync(page);
         await OpenWizardAsync(page);
 
         // Enter name first, then select type - should auto-advance
@@ -174,7 +186,7 @@ public class SubjectSetupDialogTests
     public async Task Step2_OnAdvance_ShowsConfigurationAndCreateButton()
     {
         var page = await _fixture.CreatePageAsync();
-        await NavigateToDemoFolderAsync(page);
+        await OpenSubjectBrowserAsync(page);
         await OpenWizardAsync(page);
 
         // Advance to step 2 with Motor type
@@ -212,7 +224,7 @@ public class SubjectSetupDialogTests
     public async Task Navigation_CancelButton_ClosesDialog()
     {
         var page = await _fixture.CreatePageAsync();
-        await NavigateToDemoFolderAsync(page);
+        await OpenSubjectBrowserAsync(page);
         await OpenWizardAsync(page);
 
         var cancelButton = page.Locator("[data-testid='cancel-button']");
@@ -226,7 +238,7 @@ public class SubjectSetupDialogTests
     public async Task Navigation_BackButton_ReturnsToStep1AndPreservesState()
     {
         var page = await _fixture.CreatePageAsync();
-        await NavigateToDemoFolderAsync(page);
+        await OpenSubjectBrowserAsync(page);
         await OpenWizardAsync(page);
 
         // Enter a specific name and advance to step 2
@@ -265,7 +277,7 @@ public class SubjectSetupDialogTests
     public async Task Validation_NameErrors_PreventAdvancing()
     {
         var page = await _fixture.CreatePageAsync();
-        await NavigateToDemoFolderAsync(page);
+        await OpenSubjectBrowserAsync(page);
         await OpenWizardAsync(page);
 
         // Test 1: Empty name shows required error

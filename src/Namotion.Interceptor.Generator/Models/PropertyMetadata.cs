@@ -7,6 +7,8 @@ internal sealed record PropertyMetadata(
     bool IsPartial,
     bool IsVirtual,
     bool IsOverride,
+    bool IsNew,
+    bool IsSealed,
     bool IsDerived,
     bool IsRequired,
     bool HasGetter,
@@ -15,4 +17,5 @@ internal sealed record PropertyMetadata(
     bool IsFromInterface,
     string? GetterAccessModifier,
     string? SetterAccessModifier,
-    string? InterfaceTypeName = null);
+    string? InterfaceTypeName = null,
+    string? ExplicitInterfaceTypeName = null);

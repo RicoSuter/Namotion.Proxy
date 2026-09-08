@@ -10,7 +10,9 @@ namespace Namotion.Interceptor.OpcUa.Tests.Integration.Testing;
 public class SharedOpcUaServerFixture : IAsyncLifetime
 {
     private const int Port = 4840;
-    private const string CertificateStorePath = "pki-shared";
+    private const string CertificateStoreName = "pki-shared";
+
+    private static readonly string ClientCertificateStoreRoot = Path.Combine(AppContext.BaseDirectory, "pki-clients");
 
     private OpcUaTestServer<SharedTestModel>? _server;
     private readonly TestLogger _logger;
@@ -46,30 +48,46 @@ public class SharedOpcUaServerFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
+        // Absolute, and handed to the server in that same form. The SDK resolves a relative store path
+        // against the working directory, so under a runner that moves it the wipe below and the server
+        // would use different directories.
+        var certificateStorePath = Path.Combine(AppContext.BaseDirectory, CertificateStoreName);
+
         // Stale self-signed server certificates left in bin/ from a prior run can cause
         // the SDK to reject the server on startup (no usable application certificate),
         // which blocks every shared-server test. Wipe the assembly-scoped cert store
         // before bringing the server up so each assembly run starts from a clean slate.
-        if (Directory.Exists(CertificateStorePath))
-        {
-            try
-            {
-                Directory.Delete(CertificateStorePath, true);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Best-effort: another fixture instance may be racing, or a file is held by another process.
-                // Logged so a "every shared-server test fails" symptom can be traced back to a stale cert.
-                _logger.Log($"Failed to wipe shared cert store '{CertificateStorePath}': {ex.GetType().Name}: {ex.Message}");
-            }
-        }
+        WipeCertificateStore(certificateStorePath);
+
+        // Per-client stores are named per client and nothing deletes them individually, so the whole
+        // root goes here, before the first client of this assembly run creates one under it.
+        WipeCertificateStore(ClientCertificateStoreRoot);
 
         _server = new OpcUaTestServer<SharedTestModel>(_logger);
         await _server.StartAsync(
             createRoot: context => new SharedTestModel(context),
             initializeDefaults: InitializeTestData,
             baseAddress: $"opc.tcp://localhost:{Port}/",
-            certificateStoreBasePath: CertificateStorePath);
+            certificateStoreBasePath: certificateStorePath);
+    }
+
+    private void WipeCertificateStore(string path)
+    {
+        if (!Directory.Exists(path))
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.Delete(path, true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort: a file may be held by another process.
+            // Logged so a "every shared-server test fails" symptom can be traced back to a stale cert.
+            _logger.Log($"Failed to wipe cert store '{path}': {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private void InitializeTestData(IInterceptorSubjectContext context, SharedTestModel root)
@@ -195,7 +213,7 @@ public class SharedOpcUaServerFixture : IAsyncLifetime
             createRoot: context => new SharedTestModel(context),
             isConnected: root => root.Connected,
             serverUrl: ServerUrl,
-            certificateStoreBasePath: $"pki-client-{Guid.NewGuid():N}");
+            certificateStoreBasePath: CreateClientCertificateStorePath());
         return client;
     }
 
@@ -209,9 +227,12 @@ public class SharedOpcUaServerFixture : IAsyncLifetime
             createRoot: context => new Dynamic.DynamicSubject(context),
             isConnected: root => root.TryGetRegisteredProperty(nameof(SharedTestModel.Connected))?.GetValue() is true,
             serverUrl: ServerUrl,
-            certificateStoreBasePath: $"pki-client-{Guid.NewGuid():N}");
+            certificateStoreBasePath: CreateClientCertificateStorePath());
         return client;
     }
+
+    private static string CreateClientCertificateStorePath() =>
+        Path.Combine(ClientCertificateStoreRoot, Guid.NewGuid().ToString("N"));
 
     public async Task DisposeAsync()
     {

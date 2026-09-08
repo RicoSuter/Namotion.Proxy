@@ -87,7 +87,8 @@ public partial class OpcUaClient : BackgroundService, IConfigurable, ITitleProvi
     public partial string? StatusMessage { get; set; }
 
     /// <summary>
-    /// Whether the client is currently connected. Null when not running.
+    /// Whether the client is currently connected. Null when not running or before the client has
+    /// reported its liveness.
     /// </summary>
     [State]
     public partial bool? IsConnected { get; set; }
@@ -218,13 +219,13 @@ public partial class OpcUaClient : BackgroundService, IConfigurable, ITitleProvi
         if (_clientSource is { } source)
         {
             var diagnostics = source.Diagnostics;
-            IsConnected = diagnostics.IsConnected;
-            IncomingChangesPerSecond = diagnostics.IncomingChangesPerSecond;
-            OutgoingChangesPerSecond = diagnostics.OutgoingChangesPerSecond;
+            IsConnected = diagnostics.IsOperational;
+            IncomingChangesPerSecond = diagnostics.Throughput.IncomingPerSecond;
+            OutgoingChangesPerSecond = diagnostics.Throughput.OutgoingPerSecond;
             MonitoredItemCount = diagnostics.MonitoredItemCount;
-            PollingItemCount = diagnostics.PollingItemCount;
-            PendingWriteCount = diagnostics.PendingWriteCount;
-            TotalReconnections = diagnostics.TotalReconnectionAttempts;
+            PollingItemCount = diagnostics.Polling?.ItemCount ?? 0;
+            PendingWriteCount = diagnostics.OutboundRetries.Depth;
+            TotalReconnections = diagnostics.Reconnects.TotalAttempts;
         }
     }
 

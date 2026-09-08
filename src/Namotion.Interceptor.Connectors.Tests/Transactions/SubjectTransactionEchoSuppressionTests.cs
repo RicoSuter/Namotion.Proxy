@@ -334,7 +334,8 @@ public class SubjectTransactionEchoSuppressionTests : TransactionTestBase
             },
             bufferTime: TimeSpan.FromMilliseconds(8),
             maxQueueDepth: null,
-            logger: NullLogger.Instance);
+            logger: NullLogger.Instance,
+            deliveryRule: ChangeDeliveryRule.SourceValuesMayBeStale);
 
         using var processorCts = new CancellationTokenSource();
         var processTask = processor.ProcessAsync(processorCts.Token);
@@ -361,10 +362,11 @@ public class SubjectTransactionEchoSuppressionTests : TransactionTestBase
         }
         finally
         {
-            // Follow the ChangeQueueProcessorTests lifecycle pattern: cancel, dispose, then await.
+            // Await the consumer before disposing: Dispose tears down the subscription's signal,
+            // which a still-running TryDequeue may be about to wait on (ObjectDisposedException).
             await processorCts.CancelAsync();
-            processor.Dispose();
             try { await processTask; } catch (OperationCanceledException) { }
+            processor.Dispose();
         }
 
         // Assert: the server-side processor received the FirstName change with the confirming source

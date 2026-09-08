@@ -1,5 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 
+using Namotion.Interceptor.Connectors.Monitoring;
+
 namespace Namotion.Interceptor.Connectors;
 
 /// <summary>
@@ -29,8 +31,15 @@ public static class SourcePropertyExtensions
     /// </returns>
     public static bool SetSource(this PropertyReference property, ISubjectSource source)
     {
-        var existingOrNew = property.GetOrSetPropertyData(SourceKey, source);
-        return ReferenceEquals(existingOrNew, source);
+        // Add-if-absent, not GetOrSet: only this distinguishes a fresh claim from a re-claim.
+        if (property.TryAddPropertyData(SourceKey, source))
+        {
+            PublishOwnershipChange(property, source, SourceEventKind.PropertyClaimed);
+            return true;
+        }
+
+        // Check-then-act: the result reflects ownership at this read, not a lasting guarantee.
+        return property.TryGetPropertyData(SourceKey, out var existing) && ReferenceEquals(existing, source);
     }
 
     /// <summary>
@@ -63,6 +72,41 @@ public static class SourcePropertyExtensions
     /// <returns><c>true</c> if the source was removed; <c>false</c> if the property had no source or a different source.</returns>
     public static bool RemoveSource(this PropertyReference property, ISubjectSource expectedSource)
     {
-        return property.TryRemovePropertyData(SourceKey, expectedSource);
+        if (!property.TryRemovePropertyData(SourceKey, expectedSource))
+        {
+            return false;
+        }
+
+        PublishOwnershipChange(property, expectedSource, SourceEventKind.PropertyReleased);
+        return true;
+    }
+
+    private static void PublishOwnershipChange(
+        PropertyReference property, ISubjectSource source, SourceEventKind kind)
+    {
+        // Usually length 0 or 1 and cached on the context's copy-on-write state snapshot, so a tree
+        // without monitoring pays one array check per claim and nothing else.
+        var monitors = property.Subject.Context.GetSourceMonitors();
+        if (monitors.IsEmpty)
+        {
+            return;
+        }
+
+        // With no subscribers this skips the clock, the event and the monitor's lock entirely,
+        // which is the common shape. The event is identical per monitor, so build it at most once.
+        SourceEvent? sourceEvent = null;
+        foreach (var monitor in monitors)
+        {
+            if (!monitor.HasSubscribers)
+            {
+                continue;
+            }
+
+            sourceEvent ??= kind == SourceEventKind.PropertyClaimed
+                ? new SourceEvent(kind, source, property, SourceState.Unclaimed, source.State, DateTimeOffset.UtcNow)
+                : new SourceEvent(kind, source, property, source.State, SourceState.Unclaimed, DateTimeOffset.UtcNow);
+
+            monitor.PublishUnderLock(sourceEvent.Value);
+        }
     }
 }

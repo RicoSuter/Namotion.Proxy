@@ -31,6 +31,17 @@ public class OpcUaReconnectionTests
         config.ReconnectInterval = TimeSpan.FromSeconds(2); // Try reconnecting frequently
     };
 
+    // Isolates the SDK reconnect path: the health check loop is the only other place that raises
+    // liveness, so an interval far longer than the whole test leaves the reconnect completion as the
+    // only candidate.
+    private static readonly Action<OpcUaClientConfiguration> HealthCheckSuppressedConfig = config =>
+    {
+        config.SessionTimeout = TimeSpan.FromSeconds(30);
+        config.KeepAliveInterval = TimeSpan.FromSeconds(1);
+        config.ReconnectInterval = TimeSpan.FromSeconds(2);
+        config.SubscriptionHealthCheckInterval = TimeSpan.FromMinutes(5);
+    };
+
     public OpcUaReconnectionTests(ITestOutputHelper output)
     {
         _output = output;
@@ -96,6 +107,11 @@ public class OpcUaReconnectionTests
             client.Source.CurrentSessionChanged += OnSessionChanged;
             try
             {
+                // LastError is sticky for the whole epoch, so a connect attempt that failed once and
+                // succeeded on retry leaves it populated. Captured as a baseline instead, so what
+                // follows means nothing failed after the connection was established.
+                var errorAfterConnecting = client.Source!.Diagnostics.LastError;
+
                 // Verify initial sync
                 server.Root.Name = "Initial";
                 await AsyncTestHelpers.WaitUntilAsync(
@@ -104,16 +120,16 @@ public class OpcUaReconnectionTests
                     message: "Initial sync should complete");
                 logger.Log("Initial sync verified");
 
-                Assert.Null(client.Source!.Diagnostics.LastError);
+                Assert.Same(errorAfterConnecting, client.Source!.Diagnostics.LastError);
 
-                var initialAttempts = client.Source!.Diagnostics.TotalReconnectionAttempts;
+                var initialAttempts = client.Source!.Diagnostics.Reconnects.TotalAttempts;
 
                 // Stop server and wait for client to detect disconnection
                 logger.Log("Stopping server...");
                 await server.StopAsync();
 
                 await AsyncTestHelpers.WaitUntilAsync(
-                    () => !client.Source!.Diagnostics.IsConnected,
+                    () => client.Source!.Diagnostics.IsOperational == false,
                     timeout: TimeSpan.FromSeconds(90),
                     message: "Client should detect disconnection");
                 logger.Log("Client detected disconnection");
@@ -130,8 +146,8 @@ public class OpcUaReconnectionTests
                 logger.Log($"Client received: {client.Root.Name}");
 
                 // Verify metrics
-                var finalAttempts = client.Source!.Diagnostics.TotalReconnectionAttempts;
-                var successfulReconnections = client.Source!.Diagnostics.SuccessfulReconnections;
+                var finalAttempts = client.Source!.Diagnostics.Reconnects.TotalAttempts;
+                var successfulReconnections = client.Source!.Diagnostics.Reconnects.TotalSucceeded;
 
                 logger.Log($"Reconnection attempts: {initialAttempts} -> {finalAttempts}");
                 logger.Log($"Successful reconnections: {successfulReconnections}");
@@ -142,7 +158,14 @@ public class OpcUaReconnectionTests
                     $"Should have at least 1 successful reconnection, had {successfulReconnections}");
 
                 // After a healthy reconnect the connector is connected again with a live session.
-                Assert.True(client.Source!.Diagnostics.IsConnected);
+                // Waited for rather than asserted outright: liveness is edge-driven, and which edge
+                // raises it depends on which reconnect path ran. Bounded at four health check
+                // intervals (5s each here), so a rise that arrived late enough to be worthless
+                // still fails.
+                await AsyncTestHelpers.WaitUntilAsync(
+                    () => client.Source!.Diagnostics.IsOperational == true,
+                    timeout: TimeSpan.FromSeconds(20),
+                    message: "Client should report itself operational again after reconnecting");
                 Assert.NotNull(client.Source.CurrentSession);
 
                 // Session swap visible to consumers. The reconnect cycle takes one of two paths
@@ -162,10 +185,10 @@ public class OpcUaReconnectionTests
                 // Reconnection counter invariant: once all in-flight attempts have resolved,
                 // Total == Successful + Failed + Abandoned. We are connected with a live session
                 // here, so no attempt is in flight. Capture once to avoid torn reads across counters.
-                var total = client.Source!.Diagnostics.TotalReconnectionAttempts;
-                var success = client.Source!.Diagnostics.SuccessfulReconnections;
-                var failed = client.Source!.Diagnostics.FailedReconnections;
-                var abandoned = client.Source!.Diagnostics.AbandonedReconnections;
+                var total = client.Source!.Diagnostics.Reconnects.TotalAttempts;
+                var success = client.Source!.Diagnostics.Reconnects.TotalSucceeded;
+                var failed = client.Source!.Diagnostics.Reconnects.TotalFailed;
+                var abandoned = client.Source!.Diagnostics.Reconnects.TotalAbandoned;
                 Assert.Equal(total, success + failed + abandoned);
 
                 logger.Log("Test passed");
@@ -223,6 +246,57 @@ public class OpcUaReconnectionTests
             logger.Log($"Client received: {client.Root.Name}");
 
             logger.Log("Test passed");
+        }
+        finally
+        {
+            if (client != null) await client.DisposeAsync();
+            if (server != null) await server.DisposeAsync();
+            port?.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task WhenTheSdkTransfersItsSubscriptions_ThenLivenessRisesWithoutWaitingForTheNextHealthCheck()
+    {
+        // A server restart makes the SDK recreate the session and carry the subscriptions across, so
+        // reporting the connector as down until the next health check would show an operator
+        // "disconnected" while values update.
+
+        OpcUaTestServer<TestRoot>? server = null;
+        OpcUaTestClient<TestRoot>? client = null;
+        PortLease? port = null;
+
+        try
+        {
+            // Arrange
+            (server, client, port, var logger) = await StartServerAndClientAsync(HealthCheckSuppressedConfig);
+
+            Assert.NotNull(client.Source);
+            await AsyncTestHelpers.WaitUntilAsync(
+                () => client.Source!.Diagnostics.IsOperational == true,
+                timeout: TimeSpan.FromSeconds(60),
+                message: "Client should report operational after the initial connect");
+
+            // Act
+            await server.StopAsync();
+            await AsyncTestHelpers.WaitUntilAsync(
+                () => client.Source!.Diagnostics.IsOperational == false,
+                timeout: TimeSpan.FromSeconds(60),
+                message: "Client should detect the outage");
+            logger.Log("Client detected disconnection");
+
+            await server.RestartAsync();
+
+            // Assert - the health check loop cannot be what raises this: its next tick is five minutes
+            // out. The bound is far below that, so a rise that arrived late enough to be worthless
+            // still fails.
+            await AsyncTestHelpers.WaitUntilAsync(
+                () => client.Source!.Diagnostics.IsOperational == true,
+                timeout: TimeSpan.FromSeconds(30),
+                message: "Client should report operational as soon as the reconnect transferred its subscriptions");
+
+            Assert.True(client.Source!.Diagnostics.Reconnects.TotalSucceeded >= 1,
+                "The rise should follow a completed reconnect rather than an outage that never happened");
         }
         finally
         {
@@ -293,7 +367,7 @@ public class OpcUaReconnectionTests
             logger.Log("Stopping server...");
             await server.StopAsync();
             await AsyncTestHelpers.WaitUntilAsync(
-                () => !client.Source!.Diagnostics.IsConnected,
+                () => client.Source!.Diagnostics.IsOperational == false,
                 timeout: TimeSpan.FromSeconds(90),
                 message: "Client should detect disconnection");
             logger.Log("Client detected disconnection");

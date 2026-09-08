@@ -50,7 +50,7 @@ public class WebSocketSubjectHandlerSequenceTests
     }
 
     [Fact]
-    public async Task RunHeartbeatLoopAsync_WithZeroInterval_ShouldReturnImmediately()
+    public async Task WhenHeartbeatsAreDisabled_ThenTheLoopParksUntilCancelled()
     {
         // Arrange
         var context = InterceptorSubjectContext
@@ -64,12 +64,19 @@ public class WebSocketSubjectHandlerSequenceTests
             new WebSocketServerConfiguration { HeartbeatInterval = TimeSpan.Zero },
             NullLogger.Instance);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        using var cts = new CancellationTokenSource();
 
-        // Act - Should return immediately without blocking
-        await handler.RunHeartbeatLoopAsync(cts.Token);
+        // Act
+        var task = handler.RunHeartbeatLoopAsync(cts.Token);
+        var completedEarly = task.IsCompleted;
+        await cts.CancelAsync();
+        await task;
 
-        // Assert - If we get here, the method returned immediately (heartbeat disabled)
+        // Assert
+        // Both callers race this task against the change processor and treat either one finishing
+        // as a reason to restart, so completing here would spin the server rebuilding its host.
+        Assert.False(completedEarly);
+        Assert.True(task.IsCompletedSuccessfully);
     }
 
     [Fact]

@@ -99,6 +99,7 @@ namespace Namotion.Interceptor
     public static class InterceptorSubjectExtensions
     {
         public static void SetData(this Namotion.Interceptor.IInterceptorSubject subject, string key, object? value) { }
+        public static bool TryAddData(this Namotion.Interceptor.IInterceptorSubject subject, string key, object? value) { }
         public static bool TryGetData(this Namotion.Interceptor.IInterceptorSubject subject, string key, out object? value) { }
     }
     public static class PropertyChangedEventArgsCache
@@ -120,9 +121,12 @@ namespace Namotion.Interceptor
         public override bool Equals(object? obj) { }
         public override int GetHashCode() { }
         public object? GetOrSetPropertyData(string key, object? value) { }
+        public void MarkAsPublishedToSource() { }
         public void RemovePropertyData(string key) { }
         public void SetPropertyData(string key, object? value) { }
+        public bool TryAddPropertyData(string key, object? value) { }
         public bool TryGetPropertyData(string key, out object? value) { }
+        public bool TryGetWriteState(bool includeSourceCommitsInRevision, out long commitRevision, out bool publishedToAnySource) { }
         public System.DateTimeOffset? TryGetWriteTimestamp() { }
         public bool TryRemovePropertyData(string key, object? expectedValue) { }
         public static bool operator !=(Namotion.Interceptor.PropertyReference left, Namotion.Interceptor.PropertyReference right) { }
@@ -200,6 +204,7 @@ namespace Namotion.Interceptor.Interceptors
         public object? InvokeMethod(string methodName, object?[] parameters, System.Func<Namotion.Interceptor.IInterceptorSubject, object?[], object?> invokeMethod) { }
         public override bool RemoveFallbackContext(Namotion.Interceptor.IInterceptorSubjectContext context) { }
         public bool SetPropertyValue<TProperty>(string propertyName, TProperty newValue, TProperty currentValue, System.Action<Namotion.Interceptor.IInterceptorSubject, TProperty> writeValue) { }
+        public static Namotion.Interceptor.Interceptors.IInterceptorExecutor GetOrCreate(ref Namotion.Interceptor.Interceptors.IInterceptorExecutor? context, Namotion.Interceptor.IInterceptorSubject subject) { }
     }
     public delegate object? InvokeMethodInterceptionDelegate(ref Namotion.Interceptor.Interceptors.MethodInvocationContext context);
     public struct MethodInvocationContext

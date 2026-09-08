@@ -74,7 +74,8 @@ public abstract class TransactionTestBase
             },
             bufferTime: TimeSpan.FromMilliseconds(8),
             maxQueueDepth: null,
-            logger: NullLogger.Instance);
+            logger: NullLogger.Instance,
+            deliveryRule: ChangeDeliveryRule.SourceValuesMayBeStale);
 
         using var processorCts = new CancellationTokenSource();
         var processTask = processor.ProcessAsync(processorCts.Token);

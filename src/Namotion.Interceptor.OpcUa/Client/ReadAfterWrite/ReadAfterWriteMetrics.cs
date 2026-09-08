@@ -1,9 +1,11 @@
+using Namotion.Interceptor.Connectors.Diagnostics;
+
 namespace Namotion.Interceptor.OpcUa.Client.ReadAfterWrite;
 
 /// <summary>
 /// Thread-safe metrics for read-after-write operations.
 /// </summary>
-internal sealed class ReadAfterWriteMetrics
+internal sealed class ReadAfterWriteMetrics : IResettableMetrics
 {
     private long _scheduled;
     private long _executed;
@@ -41,9 +43,16 @@ internal sealed class ReadAfterWriteMetrics
     public void RecordCoalesced() => Interlocked.Increment(ref _coalesced);
 
     /// <summary>
-    /// Records a failed read-after-write operation.
+    /// Records failed read-after-write operations.
     /// </summary>
-    public void RecordFailed() => Interlocked.Increment(ref _failed);
+    /// <param name="count">Number of reads that failed (must be non-negative).</param>
+    internal void RecordFailed(int count)
+    {
+        if (count > 0)
+        {
+            Interlocked.Add(ref _failed, count);
+        }
+    }
 
     /// <inheritdoc/>
     public override string ToString() =>
@@ -59,5 +68,14 @@ internal sealed class ReadAfterWriteMetrics
         {
             Interlocked.Add(ref _executed, count);
         }
+    }
+
+    /// <inheritdoc />
+    public void Reset()
+    {
+        Interlocked.Exchange(ref _scheduled, 0);
+        Interlocked.Exchange(ref _executed, 0);
+        Interlocked.Exchange(ref _coalesced, 0);
+        Interlocked.Exchange(ref _failed, 0);
     }
 }

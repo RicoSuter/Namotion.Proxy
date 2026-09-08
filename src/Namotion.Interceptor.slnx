@@ -51,6 +51,7 @@
   <Folder Name="/HomeBlaze/Abstractions/">
     <Project Path="HomeBlaze/HomeBlaze.Abstractions/HomeBlaze.Abstractions.csproj" />
     <Project Path="HomeBlaze/HomeBlaze.Components.Abstractions/HomeBlaze.Components.Abstractions.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.Components.Tests/HomeBlaze.Components.Tests.csproj" />
     <Project Path="HomeBlaze/HomeBlaze.Storage.Abstractions/HomeBlaze.Storage.Abstractions.csproj" />
   </Folder>
   <Folder Name="/HomeBlaze/Devices/">
@@ -72,6 +73,23 @@
     <Project Path="HomeBlaze/Namotion.Devices.Ecowitt/Namotion.Devices.Ecowitt.csproj" />
     <Project Path="HomeBlaze/Namotion.Devices.Ecowitt.Tests/Namotion.Devices.Ecowitt.Tests.csproj" />
     <Project Path="HomeBlaze/Namotion.Devices.Ecowitt.HomeBlaze/Namotion.Devices.Ecowitt.HomeBlaze.csproj" />
+  </Folder>
+  <Folder Name="/HomeBlaze/History/">
+    <Project Path="HomeBlaze/HomeBlaze.History/HomeBlaze.History.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.History.Tests/HomeBlaze.History.Tests.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.History.Abstractions/HomeBlaze.History.Abstractions.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.History.Abstractions.Tests/HomeBlaze.History.Abstractions.Tests.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.History.Blazor/HomeBlaze.History.Blazor.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.History.Blazor.Tests/HomeBlaze.History.Blazor.Tests.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.History.InMemory/HomeBlaze.History.InMemory.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.History.InMemory.Blazor/HomeBlaze.History.InMemory.Blazor.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.History.InMemory.Tests/HomeBlaze.History.InMemory.Tests.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.History.Mcp/HomeBlaze.History.Mcp.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.History.Mcp.Tests/HomeBlaze.History.Mcp.Tests.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.History.Sqlite/HomeBlaze.History.Sqlite.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.History.Sqlite.Blazor/HomeBlaze.History.Sqlite.Blazor.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.History.Sqlite.Tests/HomeBlaze.History.Sqlite.Tests.csproj" />
+    <Project Path="HomeBlaze/HomeBlaze.History.Parity.Tests/HomeBlaze.History.Parity.Tests.csproj" />
   </Folder>
   <Folder Name="/HomeBlaze/NuGet/">
     <Project Path="HomeBlaze/Namotion.NuGet.Plugins.Tests/Namotion.NuGet.Plugins.Tests.csproj" />

@@ -18,9 +18,8 @@ using System.Text.Json.Serialization;
 #pragma warning disable CS8669
 #pragma warning disable CS0649
 #pragma warning disable CS0067
+#pragma warning disable CS9193
 
-namespace YourDefaultNamespace
-{
     public partial class BaseClass : IInterceptorSubject, INotifyPropertyChanged, IRaisePropertyChanged
     {
         public event PropertyChangedEventHandler? PropertyChanged;
@@ -34,13 +33,13 @@ namespace YourDefaultNamespace
         private IReadOnlyDictionary<string, SubjectPropertyMetadata>? _properties;
 
         [JsonIgnore]
-        IInterceptorSubjectContext IInterceptorSubject.Context => _context ??= new InterceptorExecutor(this);
+        IInterceptorSubjectContext IInterceptorSubject.Context => InterceptorExecutor.GetOrCreate(ref _context, this);
 
         [JsonIgnore]
         ConcurrentDictionary<(string? property, string key), object?> IInterceptorSubject.Data { get; } = new();
 
         [JsonIgnore]
-        IReadOnlyDictionary<string, SubjectPropertyMetadata> IInterceptorSubject.Properties => _properties ?? DefaultProperties;
+        IReadOnlyDictionary<string, SubjectPropertyMetadata> IInterceptorSubject.Properties => GetInstanceProperties() ?? DefaultProperties;
 
         [JsonIgnore]
         object IInterceptorSubject.SyncRoot { get; } = new object();
@@ -49,7 +48,7 @@ namespace YourDefaultNamespace
         {
             lock (((IInterceptorSubject)this).SyncRoot)
             {
-                _properties = (_properties ?? DefaultProperties)
+                _properties = ((IInterceptorSubject)this).Properties
                     .Concat(properties.Select(p => new KeyValuePair<string, SubjectPropertyMetadata>(p.Name, p)))
                     .ToFrozenDictionary();
             }
@@ -58,15 +57,12 @@ namespace YourDefaultNamespace
         public static IReadOnlyDictionary<string, SubjectPropertyMetadata> DefaultProperties { get; } =
             new Dictionary<string, SubjectPropertyMetadata>
             {
-                {
-                    "VirtualProp",
-                    new SubjectPropertyMetadata(
+                    ["VirtualProp"] = new SubjectPropertyMetadata(
                         typeof(BaseClass).GetProperty(nameof(VirtualProp), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
                         (o) => ((BaseClass)o).VirtualProp,
                         (o, v) => ((BaseClass)o).VirtualProp = (string)v,
                         isIntercepted: true,
-                        isDynamic: false)
-                },
+                        isDynamic: false),
             }
             .ToFrozenDictionary();
 
@@ -105,13 +101,16 @@ namespace YourDefaultNamespace
         partial void OnVirtualPropChanged(string newValue);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private TProperty GetPropertyValue<TProperty>(string propertyName, Func<IInterceptorSubject, TProperty> readValue)
+        protected IReadOnlyDictionary<string, SubjectPropertyMetadata>? GetInstanceProperties() => _properties;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        protected TProperty GetPropertyValue<TProperty>(string propertyName, Func<IInterceptorSubject, TProperty> readValue)
         {
             return _context is not null ? _context.GetPropertyValue(propertyName, readValue)! : readValue(this)!;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool SetPropertyValue<TProperty>(string propertyName, TProperty newValue, TProperty currentValue, Action<IInterceptorSubject, TProperty> setValue)
+        protected bool SetPropertyValue<TProperty>(string propertyName, TProperty newValue, TProperty currentValue, Action<IInterceptorSubject, TProperty> setValue)
         {
             if (_context is null)
             {
@@ -125,9 +124,8 @@ namespace YourDefaultNamespace
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private object? InvokeMethod(string methodName, Func<IInterceptorSubject, object?[], object?> invokeMethod, params object?[] parameters)
+        protected object? InvokeMethod(string methodName, Func<IInterceptorSubject, object?[], object?> invokeMethod, params object?[] parameters)
         {
             return _context is not null ? _context.InvokeMethod(methodName, parameters, invokeMethod) : invokeMethod(this, parameters);
         }
     }
-}

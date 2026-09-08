@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Logging.Abstractions;
-using Moq;
 using Namotion.Interceptor.Connectors;
 using Namotion.Interceptor.Dynamic;
 using Namotion.Interceptor.OpcUa.Client;
@@ -19,7 +18,7 @@ namespace Namotion.Interceptor.OpcUa.Tests.Client;
 /// Wires up a DynamicSubject, OpcUaSubjectClientSource, and SubscriptionManager
 /// without a live OPC UA session. The SubjectPropertyWriter is put into the
 /// applying (non-buffering) state by calling StartBuffering + LoadInitialStateAndResumeAsync
-/// against a mock ISubjectSource that returns null initial state.
+/// against the real source, whose initial state load returns null while the subject has no mapped properties.
 /// </summary>
 internal sealed class SubscriptionManagerTestHarness
 {
@@ -73,14 +72,9 @@ internal sealed class SubscriptionManagerTestHarness
         // The SubjectPropertyWriter buffers updates until LoadInitialStateAndResumeAsync is called
         // (its _updates field starts as a non-null list at construction). We need it in the
         // applying state (i.e., _updates == null) so that a delivered notification actually
-        // updates subjects in tests. We back the writer with a mock ISubjectSource that returns
-        // null initial state so LoadInitialStateAndResumeAsync succeeds without a live session.
-        var mockSource = new Mock<ISubjectSource>();
-        mockSource
-            .Setup(s => s.LoadInitialStateAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Action?)null);
-
-        var propertyWriter = new SubjectPropertyWriter(mockSource.Object, NullLogger.Instance);
+        // updates subjects in tests. The subject has no mapped properties yet, so the source's
+        // initial state load returns null without needing a live session.
+        var propertyWriter = new SubjectPropertyWriter(source, NullLogger.Instance);
         propertyWriter.StartBuffering();
         propertyWriter.LoadInitialStateAndResumeAsync(CancellationToken.None).GetAwaiter().GetResult();
 
@@ -90,6 +84,7 @@ internal sealed class SubscriptionManagerTestHarness
             pollingManager: null,
             readAfterWriteManager: readAfterWriteSpy,
             configuration,
+            source.ReportBackgroundError,
             NullLogger<OpcUaSubjectClientSource>.Instance);
 
         return new SubscriptionManagerTestHarness(subject, manager, readAfterWriteSpy);

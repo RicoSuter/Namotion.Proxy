@@ -35,6 +35,7 @@ public class SubscriptionManagerShutdownTests
             pollingManager: null,
             readAfterWriteManager: null,
             configuration,
+            source.ReportBackgroundError,
             NullLogger.Instance);
 
         await manager.DisposeAsync();

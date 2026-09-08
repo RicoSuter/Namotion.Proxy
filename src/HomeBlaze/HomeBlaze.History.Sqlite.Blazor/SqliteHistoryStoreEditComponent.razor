@@ -1,0 +1,177 @@
+@using HomeBlaze.Components.Abstractions
+@using HomeBlaze.Components.Abstractions.Attributes
+@using HomeBlaze.History.Sqlite
+@using Namotion.Interceptor
+
+@attribute [SubjectComponent(SubjectComponentType.Edit, typeof(SqliteHistoryStoreSubject))]
+@implements ISubjectEditComponent
+
+<MudForm>
+    <MudCheckBox @bind-Value="_isEnabled"
+                 @bind-Value:after="OnFieldChanged"
+                 Label="Enabled (auto-start on application startup)" />
+
+    <MudTextField @bind-Value="_databasePath"
+                  @bind-Value:after="OnFieldChanged"
+                  Label="Database Path"
+                  HelperText="Folder for the SQLite database files. Relative paths are stored under the app data directory (outside your Data folder); absolute paths are used as-is. Leave empty for the default 'History' folder."
+                  Class="mt-4" />
+
+    <MudSelect T="PartitionInterval"
+               @bind-Value="_partitionInterval"
+               @bind-Value:after="OnFieldChanged"
+               Label="Partition Interval"
+               HelperText="The time span a single partition database file covers."
+               Class="mt-4">
+        @foreach (var interval in Enum.GetValues<PartitionInterval>())
+        {
+            <MudSelectItem Value="interval">@interval</MudSelectItem>
+        }
+    </MudSelect>
+
+    <MudNumericField @bind-Value="_priority"
+                     @bind-Value:after="OnFieldChanged"
+                     Label="Priority"
+                     HelperText="Higher values are preferred for overlapping ranges (SQLite is the persistent tier)."
+                     Min="0"
+                     Class="mt-4" />
+
+    <MudNumericField @bind-Value="_maxAgeDays"
+                     @bind-Value:after="OnFieldChanged"
+                     Label="Max Age (days)"
+                     HelperText="Retention window. Partition files ending before now minus this are deleted on sweep."
+                     Min="1"
+                     Class="mt-4" />
+
+    <MudNumericField @bind-Value="_flushIntervalSeconds"
+                     @bind-Value:after="OnFieldChanged"
+                     Label="Flush Interval (seconds)"
+                     HelperText="Interval between flushes of the pending sample batch to the partition files."
+                     Min="1"
+                     Max="@MaxFlushIntervalSeconds"
+                     Class="mt-4" />
+
+    <MudNumericField @bind-Value="_bufferTimeMilliseconds"
+                     @bind-Value:after="OnFieldChanged"
+                     Label="Buffer Time (ms)"
+                     HelperText="Change-queue buffer time before a batch is flushed to the recorder."
+                     Min="0"
+                     Class="mt-4" />
+
+    <MudNumericField @bind-Value="_maxJsonSize"
+                     @bind-Value:after="OnFieldChanged"
+                     Label="Max JSON Size (characters)"
+                     HelperText="Larger string values are recorded as an oversize placeholder."
+                     Min="1"
+                     Class="mt-4" />
+</MudForm>
+
+@code {
+    [Parameter]
+    public IInterceptorSubject? Subject { get; set; }
+
+    [Parameter]
+    public bool IsCreating { get; set; }
+
+    private SqliteHistoryStoreSubject? Store => Subject as SqliteHistoryStoreSubject;
+
+    private bool _isEnabled = true;
+    private string _databasePath = string.Empty;
+    private PartitionInterval _partitionInterval;
+    private int _priority;
+    private int _maxAgeDays;
+    private int _flushIntervalSeconds;
+    private int _bufferTimeMilliseconds;
+    private int _maxJsonSize;
+
+    private bool _originalIsEnabled = true;
+    private string _originalDatabasePath = string.Empty;
+    private PartitionInterval _originalPartitionInterval;
+    private int _originalPriority;
+    private int _originalMaxAgeDays;
+    private int _originalFlushIntervalSeconds;
+    private int _originalBufferTimeMilliseconds;
+    private int _originalMaxJsonSize;
+
+    // Matches the clamp the store applies, so the form rejects a value rather than accepting one that is
+    // silently changed on the way in.
+    private const int MaxFlushIntervalSeconds = 24 * 60 * 60;
+
+    public bool IsValid => _priority >= 0 &&
+                           _maxAgeDays > 0 &&
+                           _flushIntervalSeconds > 0 &&
+                           _flushIntervalSeconds <= MaxFlushIntervalSeconds &&
+                           _bufferTimeMilliseconds >= 0 &&
+                           _maxJsonSize > 0;
+
+    public bool IsDirty => _isEnabled != _originalIsEnabled ||
+                           _databasePath != _originalDatabasePath ||
+                           _partitionInterval != _originalPartitionInterval ||
+                           _priority != _originalPriority ||
+                           _maxAgeDays != _originalMaxAgeDays ||
+                           _flushIntervalSeconds != _originalFlushIntervalSeconds ||
+                           _bufferTimeMilliseconds != _originalBufferTimeMilliseconds ||
+                           _maxJsonSize != _originalMaxJsonSize;
+
+    public string PreferredDialogSize => "Medium";
+
+    public event Action<bool>? IsValidChanged;
+    public event Action<bool>? IsDirtyChanged;
+
+    protected override void OnInitialized()
+    {
+        if (Store != null)
+        {
+            _isEnabled = Store.IsEnabled;
+            _databasePath = Store.DatabasePath;
+            _partitionInterval = Store.PartitionInterval;
+            _priority = Store.Priority;
+            _maxAgeDays = Store.MaxAgeDays;
+            _flushIntervalSeconds = Store.FlushIntervalSeconds;
+            _bufferTimeMilliseconds = Store.BufferTimeMilliseconds;
+            _maxJsonSize = Store.MaxJsonSize;
+
+            _originalIsEnabled = _isEnabled;
+            _originalDatabasePath = _databasePath;
+            _originalPartitionInterval = _partitionInterval;
+            _originalPriority = _priority;
+            _originalMaxAgeDays = _maxAgeDays;
+            _originalFlushIntervalSeconds = _flushIntervalSeconds;
+            _originalBufferTimeMilliseconds = _bufferTimeMilliseconds;
+            _originalMaxJsonSize = _maxJsonSize;
+        }
+    }
+
+    private void OnFieldChanged()
+    {
+        IsValidChanged?.Invoke(IsValid);
+        IsDirtyChanged?.Invoke(IsDirty);
+    }
+
+    public Task SaveAsync(CancellationToken cancellationToken)
+    {
+        if (Store != null && IsValid)
+        {
+            Store.IsEnabled = _isEnabled;
+            Store.DatabasePath = _databasePath;
+            Store.PartitionInterval = _partitionInterval;
+            Store.Priority = _priority;
+            Store.MaxAgeDays = _maxAgeDays;
+            Store.FlushIntervalSeconds = _flushIntervalSeconds;
+            Store.BufferTimeMilliseconds = _bufferTimeMilliseconds;
+            Store.MaxJsonSize = _maxJsonSize;
+
+            _originalIsEnabled = _isEnabled;
+            _originalDatabasePath = _databasePath;
+            _originalPartitionInterval = _partitionInterval;
+            _originalPriority = _priority;
+            _originalMaxAgeDays = _maxAgeDays;
+            _originalFlushIntervalSeconds = _flushIntervalSeconds;
+            _originalBufferTimeMilliseconds = _bufferTimeMilliseconds;
+            _originalMaxJsonSize = _maxJsonSize;
+
+            IsDirtyChanged?.Invoke(false);
+        }
+        return Task.CompletedTask;
+    }
+}

@@ -200,7 +200,7 @@ public class HomeBlazeMcpToolProviderTests
         Assert.Contains("failed", error.GetString());
     }
 
-    private static (TestThing room, McpServerConfiguration config, McpToolFactory factory) CreateTestSetup(bool isReadOnly)
+    internal static (TestThing room, McpServerConfiguration config, McpToolFactory factory) CreateTestSetup(bool isReadOnly)
     {
         var context = InterceptorSubjectContext.Create()
             .WithFullPropertyTracking()

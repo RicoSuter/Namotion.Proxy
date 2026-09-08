@@ -163,6 +163,31 @@ public class WebSocketServerConfigurationTests
     }
 
     [Fact]
+    public void WhenHeartbeatIntervalIsPositiveButBelowTheMinimum_ThenValidateThrows()
+    {
+        // Arrange - a heartbeat is broadcast to every connected client, so a sub-second interval
+        // floods the connections rather than probing them.
+        var configuration = new WebSocketServerConfiguration { HeartbeatInterval = TimeSpan.FromMilliseconds(500) };
+
+        // Act & Assert
+        var exception = Assert.Throws<ArgumentException>(configuration.Validate);
+        Assert.Equal(nameof(WebSocketServerConfiguration.HeartbeatInterval), exception.ParamName);
+    }
+
+    [Fact]
+    public void WhenHeartbeatIntervalIsExactlyTheMinimum_ThenValidateAccepts()
+    {
+        // Arrange
+        var configuration = new WebSocketServerConfiguration
+        {
+            HeartbeatInterval = WebSocketServerConfiguration.MinimumHeartbeatInterval
+        };
+
+        // Act & Assert
+        configuration.Validate(); // should not throw
+    }
+
+    [Fact]
     public void Validate_WithValidConfiguration_ShouldNotThrow()
     {
         // Arrange

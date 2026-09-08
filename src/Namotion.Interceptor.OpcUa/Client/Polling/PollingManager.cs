@@ -19,36 +19,45 @@ internal sealed class PollingManager : IAsyncDisposable
 {
     private readonly OpcUaSubjectClientSource _source;
     private readonly ILogger _logger;
-    private readonly SessionManager _sessionManager;
+    private readonly Func<ISession?> _sessionProvider;
     private readonly SubjectPropertyWriter _propertyWriter;
     private readonly OpcUaClientConfiguration _configuration;
     private readonly CircuitBreaker _circuitBreaker;
-    private readonly PollingMetrics _metrics = new();
+    private readonly PollingMetrics _metrics;
+    private readonly Action<Exception> _reportError;
 
     private readonly ConcurrentDictionary<string, PollingItem> _pollingItems = new();
+    private readonly Lock _pollingItemsMutationLock = new();
     private readonly PeriodicTimer _timer;
     private readonly CancellationTokenSource _cts = new();
     private readonly Lock _startLock = new();
 
     private Task? _pollingTask;
     private ISession? _lastKnownSession;
+    private int _pollingItemCount;
     private int _disposed;
 
     public PollingManager(OpcUaSubjectClientSource source,
-        SessionManager sessionManager,
+        Func<ISession?> sessionProvider,
         SubjectPropertyWriter propertyWriter,
         OpcUaClientConfiguration configuration,
+        PollingMetrics metrics,
+        Action<Exception> reportError,
         ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(logger);
-        ArgumentNullException.ThrowIfNull(sessionManager);
+        ArgumentNullException.ThrowIfNull(sessionProvider);
         ArgumentNullException.ThrowIfNull(propertyWriter);
+        ArgumentNullException.ThrowIfNull(metrics);
+        ArgumentNullException.ThrowIfNull(reportError);
 
         _source = source;
         _logger = logger;
-        _sessionManager = sessionManager;
+        _sessionProvider = sessionProvider;
         _propertyWriter = propertyWriter;
         _configuration = configuration;
+        _metrics = metrics;
+        _reportError = reportError;
 
         _circuitBreaker = new CircuitBreaker(configuration.PollingCircuitBreakerThreshold, configuration.PollingCircuitBreakerCooldown);
         _timer = new PeriodicTimer(configuration.PollingInterval);
@@ -57,32 +66,7 @@ internal sealed class PollingManager : IAsyncDisposable
     /// <summary>
     /// Gets the number of items currently being polled.
     /// </summary>
-    public int PollingItemCount => _pollingItems.Count;
-
-    /// <summary>
-    /// Gets the total number of successful read operations performed.
-    /// </summary>
-    public long TotalReads => _metrics.TotalReads;
-
-    /// <summary>
-    /// Gets the total number of failed read operations.
-    /// </summary>
-    public long FailedReads => _metrics.FailedReads;
-
-    /// <summary>
-    /// Gets the total number of value changes detected and processed.
-    /// </summary>
-    public long ValueChanges => _metrics.ValueChanges;
-
-    /// <summary>
-    /// Gets the total number of slow polls (poll duration exceeded polling interval).
-    /// </summary>
-    public long SlowPolls => _metrics.SlowPolls;
-
-    /// <summary>
-    /// Gets the total number of times the circuit breaker has tripped due to persistent failures.
-    /// </summary>
-    public long CircuitBreakerTrips => _circuitBreaker.TripCount;
+    public int PollingItemCount => Volatile.Read(ref _pollingItemCount);
 
     /// <summary>
     /// Gets whether the circuit breaker is currently open (polling suspended due to persistent failures).
@@ -137,9 +121,6 @@ internal sealed class PollingManager : IAsyncDisposable
     /// </summary>
     public void AddItem(MonitoredItem monitoredItem)
     {
-        if (Volatile.Read(ref _disposed) == 1)
-            return;
-
         var key = monitoredItem.StartNodeId.ToString();
 
         // Extract RegisteredSubjectProperty from handle
@@ -155,7 +136,7 @@ internal sealed class PollingManager : IAsyncDisposable
             LastValue: null
         );
 
-        if (_pollingItems.TryAdd(key, pollingItem))
+        if (TryAddPollingItem(key, pollingItem))
         {
             _logger.LogInformation("Added node {NodeId} to polling fallback (subscription not supported)", key);
         }
@@ -170,7 +151,7 @@ internal sealed class PollingManager : IAsyncDisposable
         {
             if (kvp.Value.Property.Reference.Subject == subject)
             {
-                _pollingItems.TryRemove(kvp.Key, out _);
+                TryRemovePollingItem(kvp.Key);
             }
         }
     }
@@ -181,7 +162,7 @@ internal sealed class PollingManager : IAsyncDisposable
     /// </summary>
     public void Clear()
     {
-        _pollingItems.Clear();
+        ClearPollingItems();
     }
 
     private async Task PollLoopAsync(CancellationToken cancellationToken)
@@ -202,6 +183,7 @@ internal sealed class PollingManager : IAsyncDisposable
             }
             catch (Exception ex)
             {
+                ReportErrorIfRunning(ex, cancellationToken);
                 _logger.LogError(ex, "Fatal error in polling loop. Restarting after delay...");
 
                 // Wait before restarting to avoid tight failure loop
@@ -238,7 +220,7 @@ internal sealed class PollingManager : IAsyncDisposable
             return;
         }
 
-        var session = _sessionManager.CurrentSession;
+        var session = _sessionProvider();
         if (session is null || !session.Connected)
         {
             _logger.LogDebug("No active session available for polling (null: {IsNull}, connected: {Connected})",
@@ -259,6 +241,7 @@ internal sealed class PollingManager : IAsyncDisposable
 
         var startTime = DateTimeOffset.UtcNow;
         var pollSucceeded = false;
+        var pollCancelled = false;
 
         try
         {
@@ -275,8 +258,14 @@ internal sealed class PollingManager : IAsyncDisposable
 
             pollSucceeded = true;
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            pollCancelled = true;
+            throw;
+        }
         catch (Exception ex)
         {
+            ReportErrorIfRunning(ex, cancellationToken);
             _logger.LogError(ex, "Error polling items");
             pollSucceeded = false;
         }
@@ -287,14 +276,15 @@ internal sealed class PollingManager : IAsyncDisposable
             {
                 _circuitBreaker.RecordSuccess();
             }
-            else if (_circuitBreaker.RecordFailure())
+            else if (!pollCancelled && _circuitBreaker.RecordFailure())
             {
+                _metrics.RecordCircuitBreakerTrip();
                 _logger.LogError("Circuit breaker opened after consecutive failures. Polling suspended temporarily.");
             }
 
             // Detect slow polls that exceed the polling interval
             var duration = DateTimeOffset.UtcNow - startTime;
-            if (duration > _configuration.PollingInterval)
+            if (!pollCancelled && duration > _configuration.PollingInterval)
             {
                 _metrics.RecordSlowPoll();
                 _logger.LogWarning("Slow poll detected: polling took {Duration}ms, which exceeds interval of {Interval}ms. Consider increasing polling interval or batch size.",
@@ -330,7 +320,7 @@ internal sealed class PollingManager : IAsyncDisposable
         return Equals(a, b);
     }
 
-    private async Task ReadBatchAsync(Session session, ArraySegment<PollingItem> batch, CancellationToken cancellationToken)
+    private async Task ReadBatchAsync(ISession session, ArraySegment<PollingItem> batch, CancellationToken cancellationToken)
     {
         try
         {
@@ -374,8 +364,14 @@ internal sealed class PollingManager : IAsyncDisposable
                 }
             }
         }
+        catch (Exception) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
         catch (Exception ex)
         {
+            ReportErrorIfRunning(ex, cancellationToken);
+
             // Batch-level failure - count all items in batch as failed
             for (var i = 0; i < batch.Count; i++)
             {
@@ -414,7 +410,7 @@ internal sealed class PollingManager : IAsyncDisposable
             };
 
             // Queue update using same pattern as subscriptions
-            var state = (source: _source, update, receivedTimestamp, logger: _logger);
+            var state = (source: _source, manager: this, update, receivedTimestamp, logger: _logger);
             _propertyWriter.Write(state, static s =>
             {
                 try
@@ -423,6 +419,7 @@ internal sealed class PollingManager : IAsyncDisposable
                 }
                 catch (Exception e)
                 {
+                    s.manager.ReportErrorIfRunning(e);
                     s.logger.LogError(e, "Failed to apply polled value change for {Path}", s.update.Property.Name);
                 }
             });
@@ -435,13 +432,57 @@ internal sealed class PollingManager : IAsyncDisposable
         }
     }
 
+    private void ReportErrorIfRunning(Exception error, CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _disposed) == 0 &&
+            !_cts.IsCancellationRequested &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            _reportError(error);
+        }
+    }
+
+    private bool TryAddPollingItem(string key, PollingItem item)
+    {
+        lock (_pollingItemsMutationLock)
+        {
+            if (Volatile.Read(ref _disposed) == 1 || !_pollingItems.TryAdd(key, item))
+            {
+                return false;
+            }
+
+            Volatile.Write(ref _pollingItemCount, _pollingItemCount + 1);
+            return true;
+        }
+    }
+
+    private void TryRemovePollingItem(string key)
+    {
+        lock (_pollingItemsMutationLock)
+        {
+            if (_pollingItems.TryRemove(key, out _))
+            {
+                Volatile.Write(ref _pollingItemCount, _pollingItemCount - 1);
+            }
+        }
+    }
+
+    private void ClearPollingItems()
+    {
+        lock (_pollingItemsMutationLock)
+        {
+            _pollingItems.Clear();
+            Volatile.Write(ref _pollingItemCount, 0);
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 1)
             return;
 
         _logger.LogDebug("Disposing OPC UA polling manager (Total reads: {TotalReads}, Failed: {FailedReads}, Value changes: {ValueChanges}, Slow polls: {SlowPolls}, Circuit breaker trips: {Trips})",
-            _metrics.TotalReads, _metrics.FailedReads, _metrics.ValueChanges, _metrics.SlowPolls, _circuitBreaker.TripCount);
+            _metrics.TotalReads, _metrics.FailedReads, _metrics.ValueChanges, _metrics.SlowPolls, _metrics.CircuitBreakerTrips);
 
         // Cancel work and stop timer
         await _cts.CancelAsync();
@@ -465,7 +506,7 @@ internal sealed class PollingManager : IAsyncDisposable
         }
 
         _cts.Dispose();
-        _pollingItems.Clear();
+        ClearPollingItems();
     }
 
     private record struct PollingItem(

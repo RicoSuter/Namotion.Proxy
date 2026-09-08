@@ -71,7 +71,7 @@ public class SubjectSourceRetryQueueTests
             }
             person.FirstName = "John";
             await AsyncTestHelpers.WaitUntilAsync(
-                () => source.PendingWriteCount > 0,
+                () => source.Diagnostics.OutboundRetries.Depth > 0,
                 message: "Wholesale-failed write was not queued for retry.");
 
             // Recover the source; subsequent outbound writes flush the retry queue first.

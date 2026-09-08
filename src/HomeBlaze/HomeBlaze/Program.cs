@@ -1,5 +1,8 @@
 using HomeBlaze.AI;
 using HomeBlaze.Components;
+using HomeBlaze.History.InMemory.Blazor;
+using HomeBlaze.History.Mcp;
+using HomeBlaze.History.Sqlite.Blazor;
 using HomeBlaze.Host;
 using HomeBlaze.Samples;
 using HomeBlaze.OpcUa;
@@ -42,7 +45,13 @@ if (mcpEnabled)
 {
     builder.Services.AddMcpServer()
         .WithHttpTransport(options => options.Stateless = true)
-        .WithHomeBlazeMcpTools(isReadOnly: builder.Configuration.GetValue("McpServer:ReadOnly", true));
+        .WithHomeBlazeMcpTools(
+            isReadOnly: builder.Configuration.GetValue("McpServer:ReadOnly", true),
+            // The history package contributes its own tool; the AI package knows nothing about it.
+            context => new HistoryMcpToolProvider(
+                context.RootSubjectProvider,
+                context.PathProvider,
+                context.Services.GetRequiredService<ILoggerFactory>().CreateLogger<HistoryMcpToolProvider>()));
 }
 
 // Add services to the container.
@@ -76,7 +85,11 @@ typeProvider
     .AddAssembly(typeof(WallboxCharger).Assembly)
     .AddAssembly(typeof(WallboxChargerWidget).Assembly)
     .AddAssembly(typeof(EcowittGateway).Assembly)
-    .AddAssembly(typeof(EcowittGatewayWidget).Assembly);
+    .AddAssembly(typeof(EcowittGatewayWidget).Assembly)
+    .AddAssembly(typeof(HomeBlaze.History.InMemory.InMemoryHistoryStoreSubject).Assembly) // HomeBlaze.History.InMemory
+    .AddAssembly(typeof(InMemoryHistoryStoreEditComponent).Assembly)               // HomeBlaze.History.InMemory.Blazor
+    .AddAssembly(typeof(HomeBlaze.History.Sqlite.SqliteHistoryStoreSubject).Assembly)     // HomeBlaze.History.Sqlite
+    .AddAssembly(typeof(SqliteHistoryStoreEditComponent).Assembly);               // HomeBlaze.History.Sqlite.Blazor
 
 // Register HomeBlaze.Plugins subject types
 typeProvider.AddAssembly(typeof(PluginManager).Assembly);

@@ -1,0 +1,22 @@
+﻿[assembly: System.Reflection.AssemblyMetadata("RepositoryUrl", "https://github.com/RicoSuter/Namotion.Interceptor")]
+[assembly: System.Runtime.Versioning.TargetFramework(".NETCoreApp,Version=v9.0", FrameworkDisplayName=".NET 9.0")]
+namespace Namotion.Interceptor.Hosting
+{
+    public static class HostedSubjectServiceCollectionExtensions
+    {
+        public static Microsoft.Extensions.DependencyInjection.IServiceCollection AddHostedSubject<T>(this Microsoft.Extensions.DependencyInjection.IServiceCollection services, System.Action<T>? configure = null, System.Func<System.IServiceProvider, Namotion.Interceptor.IInterceptorSubjectContext?>? contextResolver = null)
+            where T :  class, Microsoft.Extensions.Hosting.IHostedService { }
+    }
+    public static class InterceptorHostingExtensions
+    {
+        public static bool AttachHostedService(this Namotion.Interceptor.IInterceptorSubject subject, Microsoft.Extensions.Hosting.IHostedService hostedService) { }
+        public static System.Threading.Tasks.Task<bool> AttachHostedServiceAsync(this Namotion.Interceptor.IInterceptorSubject subject, Microsoft.Extensions.Hosting.IHostedService hostedService, System.Threading.CancellationToken cancellationToken) { }
+        public static bool DetachHostedService(this Namotion.Interceptor.IInterceptorSubject subject, Microsoft.Extensions.Hosting.IHostedService hostedService) { }
+        public static System.Threading.Tasks.Task<bool> DetachHostedServiceAsync(this Namotion.Interceptor.IInterceptorSubject subject, Microsoft.Extensions.Hosting.IHostedService hostedService, System.Threading.CancellationToken cancellationToken) { }
+        public static System.Collections.Immutable.ImmutableArray<Microsoft.Extensions.Hosting.IHostedService> GetAttachedHostedServices(this Namotion.Interceptor.IInterceptorSubject subject) { }
+    }
+    public static class InterceptorSubjectContextExtensions
+    {
+        public static Namotion.Interceptor.IInterceptorSubjectContext WithHostedServices(this Namotion.Interceptor.IInterceptorSubjectContext context, Microsoft.Extensions.DependencyInjection.IServiceCollection serviceCollection) { }
+    }
+}

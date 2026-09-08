@@ -7,6 +7,13 @@ namespace Namotion.Interceptor.Tracking.Transactions;
 /// Implement this interface and register it with <see cref="IInterceptorSubjectContext"/>
 /// to enable external source writes during transaction commit.
 /// </summary>
+/// <remarks>
+/// The transaction invokes both callbacks while its live ambient transaction is committing. Subject
+/// property reads and writes on a flow carrying that transaction throw <see cref="InvalidOperationException"/>.
+/// Commit-owned synchronous local replay remains allowed, including property hooks, change handlers,
+/// and derived cascades initiated by that replay. This authorization does not extend into these callbacks.
+/// Disposed and terminal transactions are inactive and use normal property access semantics.
+/// </remarks>
 public interface ITransactionWriter
 {
     /// <summary>
@@ -16,14 +23,21 @@ public interface ITransactionWriter
     /// requirement, since only the writer knows the source mappings.
     /// </summary>
     /// <remarks>
+    /// Do not read or write subject properties from this callback, and do not suppress ambient
+    /// execution-context flow to bypass the committing access boundary. This includes getters: sibling
+    /// or landed-model state is outside the frozen snapshot and can make a source payload inconsistent.
+    /// Construct source operations from <paramref name="changes"/>, <paramref name="requirement"/>, and
+    /// writer-owned configuration, and any required subject state captured before
+    /// <see cref="SubjectTransaction.CommitAsync"/>.
+    ///
     /// Report failures via <see cref="SourceWriteResult"/>, never throw: a throw returns neither the
     /// written set nor the revert state, so the transaction fails terminally with nothing reverted.
     /// After (and only after) a source accepts a change, replace that slot in <paramref name="changes"/>
     /// with the same change marked by the accepting source (<see cref="SubjectPropertyChange.WithOrigin"/>),
     /// so the commit's local apply and revert notifications are recognized as echoes by that source's
     /// outbound queue. Change only the slot's <see cref="SubjectPropertyChange.Origin"/>, never move a
-    /// change to a different slot, and leave failed slots untouched. Not marking at all is harmless but
-    /// keeps the legacy double write (the queue re-pushes each committed value).
+    /// change to a different slot, and leave failed slots untouched. Not marking at all is allowed, but
+    /// the queue then re-pushes each committed value.
     /// <paramref name="changes"/> is a pooled buffer owned by the commit: do not retain or mutate it after
     /// the returned task completes. Parallel per-source writers must touch only their own source's slots.
     /// Enable <see cref="SubjectTransaction.ValidateWriterContract"/> while developing an implementation.
@@ -45,6 +59,11 @@ public interface ITransactionWriter
     /// values back to each source.
     /// </summary>
     /// <remarks>
+    /// Do not read or write subject properties from this callback, and do not suppress ambient
+    /// execution-context flow to bypass the committing access boundary. Construct inverse source
+    /// operations from <paramref name="written"/>, <paramref name="revertState"/>, writer-owned
+    /// configuration, and any required subject state captured before <see cref="SubjectTransaction.CommitAsync"/>.
+    ///
     /// Implementations must report revert failures via <see cref="SourceRevertResult"/> rather than
     /// throwing. A throw is treated as if every requested revert failed and the commit fails terminally.
     /// </remarks>

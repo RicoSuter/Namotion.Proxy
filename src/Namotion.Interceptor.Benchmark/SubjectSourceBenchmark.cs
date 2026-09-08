@@ -27,6 +27,7 @@ public class SubjectSourceBenchmark
     private readonly AutoResetEvent _signal = new(false);
     private Action<object?>[] _updates;
     private SubjectPropertyWriter _propertyWriter;
+    private long _stubRevision;
 
     [GlobalSetup]
     public async Task Setup()
@@ -53,7 +54,11 @@ public class SubjectSourceBenchmark
         var registeredSubject = _car.TryGetRegisteredSubject()!;
         foreach (var name in _propertyNames)
         {
-            var property = registeredSubject.AddProperty(name, typeof(string), static _ => "foo", static (_, _) => { });
+            // Closure-backed so the getter returns what the setter stored, the way the OPC UA loader
+            // registers dynamic properties. A constant getter with a no-op setter measures a write path
+            // where nothing is ever stored, which is not the path production takes.
+            object? value = null;
+            var property = registeredSubject.AddProperty(name, typeof(string), _ => value, (_, newValue) => value = newValue);
             property.Reference.SetSource(_source);
         }
 
@@ -82,7 +87,11 @@ public class SubjectSourceBenchmark
             _propertyWriter.Write(null, _updates[i]);
         }
 
-        _signal.WaitOne();
+        if (!_signal.WaitOne(TimeSpan.FromSeconds(30)))
+        {
+            throw new InvalidOperationException(
+                "Timed out waiting for writes to reach the source: the connector delivered nothing.");
+        }
     }
 
     [Benchmark]
@@ -93,13 +102,23 @@ public class SubjectSourceBenchmark
         var queue = _context.GetService<PropertyChangeInterceptor>();
         for (var i = 0; i < _propertyNames.Length; i++)
         {
+            // The executor the chain would thread through; this benchmark stops at the stub terminal
+            // below, so it is only carried, never used.
             var context = new PropertyWriteContext<int>(
+                (InterceptorExecutor)((IInterceptorSubject)_car).Context,
                 new PropertyReference(_car, _propertyNames[i]),
                 0,
                 i);
 
-            // The stub next models the terminal, which sets IsWritten when the value is stored.
-            queue.WriteProperty(ref context, (ref PropertyWriteContext<int> c) => c.IsWritten = true);
+            // The stub next models the terminal, which sets IsWritten and stamps a commit revision when
+            // the value is stored. Stamping matters: a change carrying revision 0 short-circuits the
+            // delivered-revision filter, so leaving it unstamped would measure the merge while skipping
+            // the per-survivor supersession check that production always pays.
+            queue.WriteProperty(ref context, (ref PropertyWriteContext<int> c) =>
+            {
+                c.IsWritten = true;
+                c.Revision = ++_stubRevision;
+            });
         }
 
         _source.Wait();
@@ -149,7 +168,11 @@ public class SubjectSourceBenchmark
 
         public void Wait()
         {
-            _signal.WaitOne();
+            if (!_signal.WaitOne(TimeSpan.FromSeconds(30)))
+            {
+                throw new InvalidOperationException(
+                    "Timed out waiting for writes to reach the source: the connector delivered nothing.");
+            }
         }
 
         protected override Task<IAsyncDisposable?> StartListeningAsync(

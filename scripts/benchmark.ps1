@@ -5,6 +5,7 @@
 # Usage:
 #   pwsh scripts/benchmark.ps1                       # Run all benchmarks
 #   pwsh scripts/benchmark.ps1 -Filter "*Source*"   # Filter by pattern
+#   pwsh scripts/benchmark.ps1 -Filter "*Registry*","*Source*"  # Several patterns, matched as OR
 #   pwsh scripts/benchmark.ps1 -Stash               # Auto-stash uncommitted changes
 #   pwsh scripts/benchmark.ps1 -Short               # Quick benchmark (fewer iterations)
 #   pwsh scripts/benchmark.ps1 -LocalOnly           # Run on current branch only (no comparison)
@@ -16,7 +17,7 @@
 # Output: benchmark_YYYY-MM-DD_HHmmss.md in current directory
 
 param(
-    [string]$Filter = "*",
+    [string[]]$Filter = @("*"),
     [switch]$Stash,
     [switch]$Short,
     [switch]$LocalOnly,
@@ -37,6 +38,21 @@ if ($LaunchCount -gt 1) { $ExtraArgs += "--launchCount"; $ExtraArgs += "$LaunchC
 # layout cannot bias the comparison (this is a decision tool). Disable with -MemoryRandomization:$false
 # for a faster, layout-fixed run. Note: it does not randomize JIT code placement.
 if ($MemoryRandomization) { $ExtraArgs += "--memoryRandomization" }
+
+# BenchmarkDotNet rejects a repeated --filter flag, so several patterns have to travel as positional
+# values behind a single one. PowerShell on Linux glob-expands a splatted pattern against the working
+# directory before the process sees it, and only the combined --filter=<pattern> form escapes that, so
+# exactly one pattern can be protected. Put a pattern that would otherwise expand into that slot.
+$Ordered = @($Filter)
+$Expanding = @($Ordered | Where-Object { @(Get-ChildItem -Path $_ -Force -ErrorAction SilentlyContinue).Count -gt 0 })
+if ($Expanding.Count -gt 1) {
+    Write-Error "More than one -Filter pattern matches a file or directory in $(Get-Location), and only one can be protected from shell expansion: $($Expanding -join ', '). Make them more specific."
+    exit 1
+}
+if ($Expanding.Count -eq 1) { $Ordered = @($Expanding[0]) + @($Ordered | Where-Object { $_ -ne $Expanding[0] }) }
+$FilterArgs = @("--filter=$($Ordered[0])")
+if ($Ordered.Count -gt 1) { $FilterArgs += $Ordered[1..($Ordered.Count - 1)] }
+$FilterDisplay = $Ordered -join " "
 
 # ============ HELPER FUNCTIONS ============
 
@@ -76,8 +92,8 @@ function Clear-BenchmarkArtifacts {
 function Run-Benchmark {
     param([string]$Label, [string]$OutputPath)
 
-    Write-Host "Running benchmark on $Label (filter: $Filter)..."
-    dotnet run --project $BenchmarkProject -c Release -- --filter "$Filter" --exporters markdown --join @script:ExtraArgs | Out-Host
+    Write-Host "Running benchmark on $Label (filter: $script:FilterDisplay)..."
+    dotnet run --project $BenchmarkProject -c Release -- @script:FilterArgs --exporters markdown --join @script:ExtraArgs | Out-Host
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Benchmark failed on $Label"
         return $false
@@ -112,7 +128,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "Current branch: $OriginalBranch"
 if (-not $LocalOnly) { Write-Host "Base branch: $BaseBranch" }
-Write-Host "Filter: $Filter"
+Write-Host "Filter: $FilterDisplay"
 Write-Host ""
 
 # Check for uncommitted changes
@@ -191,7 +207,7 @@ if ($LocalOnly) {
 # Benchmark Results
 
 **Date:** $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-**Filter:** $Filter
+**Filter:** $FilterDisplay
 **Branch:** $OriginalBranch
 
 ---
@@ -205,7 +221,7 @@ $CurrentBranchContent
 # Benchmark Comparison
 
 **Date:** $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-**Filter:** $Filter
+**Filter:** $FilterDisplay
 **Base branch:** $BaseBranch
 **Compared branch:** $OriginalBranch
 

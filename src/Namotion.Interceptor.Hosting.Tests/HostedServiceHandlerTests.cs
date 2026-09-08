@@ -175,6 +175,7 @@ public class HostedServiceHandlerTests
         });
     }
 
+
     private static async Task RunWithAppLifecycleAsync(Func<IInterceptorSubjectContext, Task> action)
     {
         var builder = Host.CreateApplicationBuilder();

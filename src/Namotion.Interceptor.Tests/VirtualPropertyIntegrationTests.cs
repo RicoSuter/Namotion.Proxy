@@ -1,4 +1,5 @@
 using Namotion.Interceptor.Attributes;
+using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Tracking;
 
 namespace Namotion.Interceptor.Tests;
@@ -63,6 +64,41 @@ public class VirtualPropertyIntegrationTests
         // Assert - Entire chain works
         Assert.Equal("Bob", manager.Name);
         Assert.Equal(5, manager.TeamSize);
+    }
+
+    [Fact]
+    public void WhenWritingThroughAThreeLevelHierarchy_ThenBaseAndDerivedWritesAreIntercepted()
+    {
+        // Arrange: the value alone proves nothing here, because a base-declared property kept its
+        // value even while base-declared writes bypassed the interceptor chain.
+        var writeInterceptor = new RecordingWriteInterceptor();
+        var context = InterceptorSubjectContext
+            .Create()
+            .WithFullPropertyTracking()
+            .WithService(() => writeInterceptor);
+
+        var manager = new VirtualManager(context);
+
+        // Act
+        manager.Name = "Rico";
+        manager.Department = "Engineering";
+        manager.TeamSize = 4;
+
+        // Assert
+        Assert.Contains(writeInterceptor.Writes, write => write.PropertyName == "Name");
+        Assert.Contains(writeInterceptor.Writes, write => write.PropertyName == "Department");
+        Assert.Contains(writeInterceptor.Writes, write => write.PropertyName == "TeamSize");
+    }
+
+    private sealed class RecordingWriteInterceptor : IWriteInterceptor
+    {
+        public List<(string PropertyName, object? Value)> Writes { get; } = [];
+
+        public void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next)
+        {
+            Writes.Add((context.Property.Name, context.NewValue));
+            next(ref context);
+        }
     }
 }
 
