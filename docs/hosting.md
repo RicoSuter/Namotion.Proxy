@@ -145,17 +145,18 @@ await person.AttachHostedServiceAsync(
 A context-taking constructor can attach a hosted subject before its object initializer or deserializer has populated configuration. There is no timing delay that guarantees initialization completes first. Construct and populate a detached subject before attaching it, or use a startup scope. The scope keeps context-taking construction available while delaying captured service starts:
 
 ```csharp
-using (var startup = context.DeferHostedServiceStartup())
+using (context.DeferHostedServiceStartup())
 {
     var person = new Person(context) { FirstName = "John", LastName = "Doe" };
     person.AttachHostedService(new PersonBackgroundService(person));
-    startup?.Complete();
 }
 ```
 
-The scope follows the current execution flow for that context. Starts wait until the scope and all enclosing scopes are completed and disposed. Disposal without `Complete()` cancels captured starts, including when initialization throws. Cancellation does not detach subjects; normal detach and host shutdown still stop their attached services. The extension returns null when hosted services are not configured. Do not await an attaching service's startup inside its open scope, since that startup is waiting for scope disposal.
+The scope follows the current execution flow for that context. Starts wait until the scope and all enclosing scopes are disposed, so the `using` is the whole contract. An exception unwinding through it releases the captured starts like any other exit: the scope decides when a start runs, not whether the subject is fit to run, so a subject whose configuration threw still starts and reports its own failure. The extension returns null when hosted services are not configured. Do not await an attaching service's startup inside its open scope, since that startup is waiting for scope disposal.
 
-`AddHostedSubject<T>()` holds a scope through its configuration callback. HomeBlaze deserialization uses this scope while populating configuration. Root loading holds an enclosing scope until the root is published, attached and registered as a context service.
+Scopes should be disposed in reverse creation order in the execution flow that created them. Nothing enforces it: disposal out of order, from another flow, or more than once releases the scope's own starts and is otherwise ignored, so a misuse is silent rather than loud. A scope that is never disposed at all holds the starts it captured for the lifetime of the host.
+
+`AddHostedSubject<T>()` holds a scope through its configuration callback. HomeBlaze deserialization uses this scope while populating configuration. Root loading holds an enclosing scope until the root is published, attached, registered as a context service and signalled through `RootLoaded`, so a service that waits on that task inside its own `StartAsync` is not racing it.
 
 ## Deferred Starts and Startup Completion
 

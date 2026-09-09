@@ -149,8 +149,12 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
             {
                 pending.Add(action);
             }
+
             foreach (var action in pending)
             {
+                // Cancelled for starts, which must not begin during shutdown. A stop reads the same
+                // token as "shut down without waiting" and still runs, since the service it stops
+                // has already left _hostedServices and StopAsync above therefore skipped it.
                 await action.Execute(new CancellationToken(true));
             }
         }
@@ -175,31 +179,37 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
                 await _stoppingCts.CancelAsync();
             }
             
-            Task[] tasks;
+            IHostedService[] started;
             lock (_hostedServices)
             {
-                tasks = _hostedServices
-                    .Select(async hostedService =>
-                    {
-                        try
-                        {
-                            _logger?.LogInformation("Stopping hosted service {Service}.", hostedService.ToString());
-                            await hostedService.StopAsync(cancellationToken);
-                        }
-                        catch (Exception exception)
-                        {
-                            if (exception is not OperationCanceledException)
-                            {
-                                _logger?.LogError(exception, "Failed to stop hosted service {Service}.", hostedService.ToString());
-                            }
-                        }
-                    })
-                    .ToArray();
-                
+                // Every attached service, including one whose deferred start never ran: shutdown is
+                // the last owner of the stop, and skipping those would orphan a service that a
+                // detach arriving during shutdown has already been refused
+                // (WhenShutdownCancellationDetachesADeferredService_ThenShutdownStillStopsIt).
+                // Telling the two apart needs a record of which starts actually ran, which this
+                // handler does not keep.
+                started = _hostedServices.ToArray();
+
                 _hostedServices.Clear();
             }
-            
-            await Task.WhenAll(tasks);
+
+            // Materialized outside the lock: an async lambda runs up to its first await inline, so
+            // building the tasks under the lock would enter every StopAsync while holding it.
+            await Task.WhenAll(started.Select(async hostedService =>
+            {
+                try
+                {
+                    _logger?.LogInformation("Stopping hosted service {Service}.", hostedService.ToString());
+                    await hostedService.StopAsync(cancellationToken);
+                }
+                catch (Exception exception)
+                {
+                    if (exception is not OperationCanceledException)
+                    {
+                        _logger?.LogError(exception, "Failed to stop hosted service {Service}.", hostedService.ToString());
+                    }
+                }
+            }));
         }
         finally
         {
@@ -271,7 +281,9 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
     internal async Task AttachHostedServiceAsync(
         IHostedService hostedService, IInterceptorSubjectContext context, CancellationToken cancellationToken)
     {
-        var tcs = new TaskCompletionSource();
+        // Continuations run off the completing thread: the action loop completes this, and a caller
+        // that resumes inline would otherwise run its own work on the loop's only thread.
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_hostedServices)
         {
             if (IsStopping)
@@ -297,7 +309,8 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
     
     internal async Task DetachHostedServiceAsync(IHostedService hostedService, CancellationToken cancellationToken)
     {
-        var tcs = new TaskCompletionSource();
+        // See AttachHostedServiceAsync for why the continuations must not run inline.
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_hostedServices)
         {
             if (IsStopping)
@@ -340,7 +353,7 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
                     {
                         token.ThrowIfCancellationRequested();
                         cancellation.Token.ThrowIfCancellationRequested();
-                        _deferredStarts.Remove(hostedService);
+                        RemoveDeferredStart(hostedService, cancellation);
                     }
                 }
 
@@ -362,11 +375,10 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
                 {
                     lock (_hostedServices)
                     {
-                        if (_deferredStarts.TryGetValue(hostedService, out var current) &&
-                            ReferenceEquals(current, cancellation))
-                        {
-                            _deferredStarts.Remove(hostedService);
-                        }
+                        // Under the lock, so a detach cannot be holding this source while it is
+                        // cancelled and disposed here: it takes the entry out under the same lock,
+                        // and whichever of the two removes it owns the rest of its lifetime.
+                        RemoveDeferredStart(hostedService, cancellation);
                         cancellation.Cancel();
                         cancellation.Dispose();
                     }
@@ -396,26 +408,53 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
         }));
     }
 
+    /// <summary>
+    /// Drops the deferred-start entry for <paramref name="hostedService"/>, if it is still the one
+    /// <paramref name="cancellation"/> belongs to. Callers must hold the lock on
+    /// <see cref="_hostedServices"/>.
+    /// </summary>
+    /// <remarks>
+    /// A detach and re-attach in between installs a newer source for the same service, and dropping
+    /// that one would leave the newer start with nothing left to cancel it.
+    /// </remarks>
+    private void RemoveDeferredStart(IHostedService hostedService, CancellationTokenSource cancellation)
+    {
+        if (_deferredStarts.TryGetValue(hostedService, out var current) && ReferenceEquals(current, cancellation))
+        {
+            _deferredStarts.Remove(hostedService);
+        }
+    }
+
     private void PostStopService(IHostedService hostedService, TaskCompletionSource? tcs)
     {
-        if (_deferredStarts.Remove(hostedService, out var cancellation))
+        if (_deferredStarts.Remove(hostedService, out var deferredStart))
         {
-            cancellation.Cancel();
+            deferredStart.Cancel();
         }
+
         if (IsStopping)
         {
             tcs?.TrySetCanceled();
             return;
         }
+
         _actions.Post((null, Task.CompletedTask, async token =>
         {
             try
             {
-                await Task.Delay(50, token); // TODO: Fix small delay to let sync property assignments/deserialization complete
+                // A grace period inherited from the start path, which no longer has one; nothing is
+                // known to depend on it here. Suppressing the cancellation rather than throwing is
+                // what lets shutdown's drain reach the stop below: the service has already left
+                // _hostedServices, so nothing else stops it.
+                await Task.Delay(50, token).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
                 _logger?.LogInformation("Stopping detached hosted service {Service}.", hostedService.ToString());
                 await hostedService.StopAsync(token);
                 tcs?.TrySetResult();
+            }
+            catch (OperationCanceledException exception)
+            {
+                tcs?.TrySetCanceled(exception.CancellationToken);
             }
             catch (Exception ex)
             {

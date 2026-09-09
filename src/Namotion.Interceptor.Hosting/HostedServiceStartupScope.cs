@@ -1,20 +1,19 @@
 namespace Namotion.Interceptor.Hosting;
 
 /// <summary>
-/// Defers hosted-service starts captured in this scope until it and its enclosing scopes complete.
+/// Defers hosted-service starts captured in this scope until it and its enclosing scopes are disposed.
 /// </summary>
 /// <remarks>
-/// Call <see cref="Complete"/> before disposal to allow startup. Otherwise captured starts are canceled.
-/// Do not await a captured service's startup before completing and disposing the scope.
+/// Disposal is the only release, so a <c>using</c> is the whole contract and an exception unwinding
+/// through it releases the captured starts like any other exit.
+/// Do not await a captured service's startup before disposing the scope.
 /// Scopes must be disposed in reverse creation order in the creating execution flow.
-/// Canceling startup does not detach subjects; normal detach and host shutdown still stop attached services.
 /// </remarks>
 public sealed class HostedServiceStartupScope : IDisposable
 {
     private readonly AsyncLocal<HostedServiceStartupScope?> _current;
     private readonly HostedServiceStartupScope? _parent;
-    private readonly TaskCompletionSource<bool> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private bool _completed;
+    private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _disposed;
 
     internal HostedServiceStartupScope(AsyncLocal<HostedServiceStartupScope?> current)
@@ -25,39 +24,29 @@ public sealed class HostedServiceStartupScope : IDisposable
     }
 
     /// <summary>
-    /// Allows captured starts after this scope and all enclosing scopes are successfully disposed.
-    /// </summary>
-    public void Complete()
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        _completed = true;
-    }
-
-    /// <summary>
-    /// Releases successful startup or cancels captured starts when <see cref="Complete"/> was not called.
+    /// Releases the starts captured in this scope, once its enclosing scopes are released too.
     /// </summary>
     public void Dispose()
     {
-        if (_disposed) return;
-        if (!ReferenceEquals(_current.Value, this))
+        // Ahead of the disposed check, so a scope already released from another execution flow is
+        // still cleared from the flow that created it. Skipping it there would pin that flow's
+        // current scope to a disposed one for good, and every later attach on it would take the
+        // deferred path for a scope nobody can release again.
+        if (ReferenceEquals(_current.Value, this))
         {
-            throw new InvalidOperationException("Hosted-service startup scopes must be disposed in reverse creation order.");
+            _current.Value = _parent;
         }
 
+        if (_disposed) return;
         _disposed = true;
-        _current.Value = _parent;
-        _completion.TrySetResult(_completed);
+        _completion.TrySetResult();
     }
 
-    internal bool IsReady => _completion.Task.IsCompleted &&
-        (!_completion.Task.Result || _parent is null || _parent.IsReady);
+    internal bool IsReady => _completion.Task.IsCompleted && (_parent is null || _parent.IsReady);
 
     internal async Task WaitAsync(CancellationToken cancellationToken)
     {
-        if (!await _completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false))
-        {
-            throw new OperationCanceledException("Hosted-service initialization did not complete.", cancellationToken);
-        }
+        await _completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         if (_parent is not null)
         {
