@@ -5,6 +5,7 @@ using Namotion.Interceptor.Registry.Abstractions;
 using Namotion.Interceptor.Tracking.Lifecycle;
 using Opc.Ua;
 using Opc.Ua.Client;
+using ReferenceEqualityComparer = System.Collections.Generic.ReferenceEqualityComparer;
 
 namespace Namotion.Interceptor.OpcUa.Client;
 
@@ -52,7 +53,9 @@ internal sealed class OpcUaLoadContext : IDisposable
 
     public ISession Session { get; }
     public List<MonitoredItem> MonitoredItems { get; } = new();
-    public HashSet<IInterceptorSubject> LoadedSubjects { get; } = new();
+
+    // Subjects are graph nodes by reference; a model with value equality would otherwise lose a sibling.
+    public HashSet<IInterceptorSubject> LoadedSubjects { get; } = new(ReferenceEqualityComparer.Instance);
     public Dictionary<NodeId, IInterceptorSubject> SubjectsByNodeId { get; } = new();
     public CancellationToken CancellationToken { get; }
 

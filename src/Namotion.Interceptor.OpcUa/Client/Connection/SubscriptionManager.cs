@@ -10,6 +10,7 @@ using Namotion.Interceptor.Tracking.Performance;
 using Namotion.Interceptor.Tracking.Change;
 using Opc.Ua;
 using Opc.Ua.Client;
+using ReferenceEqualityComparer = System.Collections.Generic.ReferenceEqualityComparer;
 
 namespace Namotion.Interceptor.OpcUa.Client.Connection;
 
@@ -53,7 +54,7 @@ internal class SubscriptionManager : IAsyncDisposable
 
     // Subjects whose detach ran while setup was still tracking items; drained by the sweep in
     // CompleteSetup. Used as a set; the value is ignored.
-    private readonly ConcurrentDictionary<IInterceptorSubject, byte> _detachedDuringSetup = new();
+    private readonly ConcurrentDictionary<IInterceptorSubject, byte> _detachedDuringSetup = new(ReferenceEqualityComparer.Instance);
 
     // True from BeginSetup until CompleteSetup starts; see RemoveItemsForSubject.
     private volatile bool _setupInProgress;
@@ -649,7 +650,7 @@ internal class SubscriptionManager : IAsyncDisposable
         // Enumerate the dictionary rather than its Values property, which takes every bucket lock
         // and copies. Testing the seen-set first also keeps the registry lookup to one per distinct
         // subject instead of one per monitored item.
-        var seen = new HashSet<IInterceptorSubject>();
+        var seen = new HashSet<IInterceptorSubject>(ReferenceEqualityComparer.Instance);
         foreach (var entry in _monitoredItems)
         {
             var subject = entry.Value.Reference.Subject;

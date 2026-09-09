@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Namotion.Interceptor.Connectors;
 using Namotion.Interceptor.OpcUa.Mapping;
@@ -408,7 +408,7 @@ internal sealed class OpcUaSubjectLoader
             _ => value,
             (_, o) => value = o,
             _configuration.TypeResolver!.GetAttributesForDynamicProperty(
-                new OpcUaDynamicPropertyContext(context.Session, nodeReference, resolvedNodeId, inferredType, registeredSubject)));
+                new OpcUaDynamicPropertyContext(context.Session, nodeReference, resolvedNodeId, inferredType, registeredSubject, nodeReference.BrowseName.Name)));
     }
 
     /// <returns>

@@ -12,9 +12,11 @@ namespace Namotion.Interceptor.OpcUa.Client;
 /// <param name="NodeId">The node's id, resolved against the session's namespace table.</param>
 /// <param name="PropertyType">The CLR type the property is being created with.</param>
 /// <param name="Subject">The subject gaining the property.</param>
+/// <param name="PropertyName">The name the property is being registered under.</param>
 public readonly record struct OpcUaDynamicPropertyContext(
     ISession Session,
     ReferenceDescription Node,
     NodeId NodeId,
     Type PropertyType,
-    RegisteredSubject Subject);
+    RegisteredSubject Subject,
+    string PropertyName);

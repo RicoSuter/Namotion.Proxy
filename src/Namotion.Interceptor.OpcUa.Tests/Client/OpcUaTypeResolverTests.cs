@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Namotion.Interceptor.Dynamic;
 using Namotion.Interceptor.OpcUa.Client;
@@ -408,12 +408,6 @@ public class OpcUaTypeResolverTests
         var readCallCount = 0;
         var submittedNodeCounts = new List<int>();
         var mockSession = CreateMockSession();
-        SetupReadAsync(mockSession, new Dictionary<NodeId, (NodeId, int)>
-        {
-            [node1Id] = (DataTypeIds.Float, -1),
-            [node2Id] = (DataTypeIds.Int64, -1),
-            [node3Id] = (DataTypeIds.Int32, -1)
-        });
         mockSession
             .Setup(s => s.ReadAsync(
                 It.IsAny<RequestHeader>(),

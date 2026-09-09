@@ -542,7 +542,7 @@ For custom type conversions (used by both client and server), see [Custom Value 
 
 Extend `OpcUaTypeResolver` to customize how the client infers C# types from OPC UA node metadata during dynamic property discovery. This is useful when you want specific OPC UA nodes to map to custom C# classes.
 
-The resolver reads the address space in batches, so it has one seam per decision, and each takes a context carrying the session, the node and its resolved `NodeId`. `ResolveObjectNodeTypeAsync` classifies one Object node from the children the loader already browsed. `ResolveVariableNodeTypeAsync` types one Variable node from its already-read DataType and ValueRank attributes. Both are where a rule based on the browse name belongs. `TryMapBuiltInType` maps one OPC UA built-in type for every node at once. Overriding `ResolveVariableNodeTypesAsync` itself replaces the batched read, which is only worth doing when the types come from somewhere other than the server.
+The resolver reads the address space in batches, so it has one seam per decision, and each per-node seam takes a context carrying the session, the node and its resolved `NodeId`. `ResolveObjectNodeTypeAsync` classifies one Object node from the children the loader already browsed. `ResolveVariableNodeTypeAsync` types one Variable node from its already-read DataType and ValueRank attributes. Both are where a rule based on the browse name belongs. `TryMapBuiltInType` maps one OPC UA built-in type for every node at once. Overriding `ResolveVariableNodeTypesAsync` itself replaces the batched read, which is only worth doing when the types come from somewhere other than the server.
 
 ```csharp
 public class CustomTypeResolver : OpcUaTypeResolver
@@ -583,7 +583,9 @@ public class CustomTypeResolver : OpcUaTypeResolver
 }
 ```
 
-Both per-node seams are asynchronous so an override can read the server to classify a node, but the base implementations never do, and every such read costs one round-trip per node. `ResolveVariableNodeTypeAsync` returns null when the type cannot be inferred, and the loader then skips that node. Its two attribute values have already been classified, so a bad status reaching it is permanent and null is the right answer. A transient status never reaches it: `ResolveVariableNodeTypesAsync` throws `OpcUaTransientServiceException` first, which aborts the load so the source retries it, and an override that replaces the batched read must do the same.
+Both per-node seams are asynchronous so an override can read the server to classify a node, and every such read costs one round-trip per node. The base object seam never reads the server; the base variable seam reads it only to walk a custom DataType up the type tree to its built-in type. `ResolveVariableNodeTypeAsync` returns null when the type cannot be inferred, and the loader then skips that node. Its two attribute values have already been classified, so a bad status reaching it is permanent and null is the right answer. A transient status never reaches it: `ResolveVariableNodeTypesAsync` throws `OpcUaTransientServiceException` first, which aborts the load so the source retries it, and an override that replaces the batched read must do the same.
+
+The two decoration seams, `GetAttributesForDynamicProperty` and `GetAttributesForDynamicAttribute`, return the attributes stamped on a member the loader adds for a discovered node: the base `OpcUaNodeAttribute` is what makes the member addressable by the mapper and re-matches it to the same node on the next load, so an override that drops it unmaps the member. HomeBlaze overrides both to stamp its own framework attribute alongside the base one.
 
 ### Custom Subject Factory
 

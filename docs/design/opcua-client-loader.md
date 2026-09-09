@@ -46,7 +46,7 @@ Either way the block happens while the lifecycle lock is held, so it stalls ever
 
 `GetBrowseBatchSize` caps a browse batch by the server's continuation-point quota only when `MaxReferencesPerNode` is non-zero, because at zero the server returns every reference in the first response and issues no continuation point for the quota to bind on.
 
-That is not a theoretical saving. In the round-trip measurement on the 241-subject test address space, whose server reports a quota of 100 against an operation limit of 4000, capping unconditionally cost 7 of the 16 round-trips the same load then took. The measurement predates the once-per-level restructuring, so the absolute numbers have moved; the reason the cap is conditional has not.
+That is not a theoretical saving. In the round-trip measurement on the 241-subject test address space, whose server reports a quota of 100 against an operation limit of 4000, capping unconditionally cost 7 of the 16 round-trips the same load then took. The measurement was taken before the loader browsed each level in one call, so the absolute numbers have moved; the reason the cap is conditional has not.
 
 ## Two status predicates, not one
 

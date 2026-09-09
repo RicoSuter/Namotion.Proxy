@@ -1,4 +1,4 @@
-﻿using HomeBlaze.Abstractions.Attributes;
+using HomeBlaze.Abstractions.Attributes;
 using Microsoft.Extensions.Logging;
 using Namotion.Interceptor.OpcUa.Client;
 

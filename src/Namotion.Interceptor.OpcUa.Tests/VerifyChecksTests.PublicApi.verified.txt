@@ -164,9 +164,10 @@ namespace Namotion.Interceptor.OpcUa.Client
     }
     public readonly struct OpcUaDynamicPropertyContext : System.IEquatable<Namotion.Interceptor.OpcUa.Client.OpcUaDynamicPropertyContext>
     {
-        public OpcUaDynamicPropertyContext(Opc.Ua.Client.ISession Session, Opc.Ua.ReferenceDescription Node, Opc.Ua.NodeId NodeId, System.Type PropertyType, Namotion.Interceptor.Registry.Abstractions.RegisteredSubject Subject) { }
+        public OpcUaDynamicPropertyContext(Opc.Ua.Client.ISession Session, Opc.Ua.ReferenceDescription Node, Opc.Ua.NodeId NodeId, System.Type PropertyType, Namotion.Interceptor.Registry.Abstractions.RegisteredSubject Subject, string PropertyName) { }
         public Opc.Ua.ReferenceDescription Node { get; init; }
         public Opc.Ua.NodeId NodeId { get; init; }
+        public string PropertyName { get; init; }
         public System.Type PropertyType { get; init; }
         public Opc.Ua.Client.ISession Session { get; init; }
         public Namotion.Interceptor.Registry.Abstractions.RegisteredSubject Subject { get; init; }

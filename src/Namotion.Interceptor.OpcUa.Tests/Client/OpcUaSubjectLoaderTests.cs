@@ -1,7 +1,10 @@
 using Namotion.Interceptor.Registry;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using Namotion.Interceptor.Attributes;
 using Namotion.Interceptor.Dynamic;
 using Namotion.Interceptor.OpcUa.Attributes;
+using Namotion.Interceptor.OpcUa.Client;
 using Namotion.Interceptor.Registry.Abstractions;
 using Opc.Ua;
 using Opc.Ua.Client;
@@ -376,4 +379,186 @@ public class OpcUaSubjectLoaderTests : OpcUaSubjectLoaderTestsBase
         // Assert
         Assert.Empty(ownership.Properties);
     }
+
+    [Fact]
+    public async Task WhenTwoCollectionItemsAreEqualButDistinct_ThenBothAreLoaded()
+    {
+        // Arrange: Container.Items holds two instances that compare equal by value. Each is its
+        // own graph node, so each has to be browsed, claimed and monitored on its own.
+        var containerId = new NodeId(1, 0);
+        var itemsId = new NodeId(5001, 2);
+        var firstItemId = new NodeId(5002, 2);
+        var secondItemId = new NodeId(5003, 2);
+        var firstValueId = new NodeId(5004, 2);
+        var secondValueId = new NodeId(5005, 2);
+
+        var browseTree = new Dictionary<NodeId, ReferenceDescription[]>
+        {
+            [containerId] = [CreateObjectReferenceDescription("Items", itemsId)],
+            [itemsId] =
+            [
+                CreateObjectReferenceDescription("Items[0]", firstItemId),
+                CreateObjectReferenceDescription("Items[1]", secondItemId)
+            ],
+            [firstItemId] = [CreateTestReferenceDescription("Value", firstValueId)],
+            [secondItemId] = [CreateTestReferenceDescription("Value", secondValueId)]
+        };
+
+        var modelContext = CreateSubjectContext();
+        var first = new ValueEqualityItem(modelContext) { Key = "same" };
+        var second = new ValueEqualityItem(modelContext) { Key = "same" };
+        var container = new ValueEqualityContainer(modelContext) { Items = [first, second] };
+        var (loader, ownership, source) = CreateLoaderFor(container);
+
+        var mockSession = CreateMockSession();
+        SetupBrowseAsync(mockSession, browseTree);
+
+        var containerNode = CreateObjectReferenceDescription("Container", containerId);
+
+        // Act
+        var monitoredItems = await loader.LoadSubjectAsync(container, containerNode, mockSession.Object, CancellationToken.None);
+
+        // Assert
+        Assert.NotNull(first.TryGetRegisteredSubject());
+        Assert.NotNull(second.TryGetRegisteredSubject());
+        Assert.Contains(ownership.Properties, property => ReferenceEquals(property.Subject, first));
+        Assert.Contains(ownership.Properties, property => ReferenceEquals(property.Subject, second));
+        AssertMonitoredAndClaimed(source, monitoredItems, firstValueId, secondValueId);
+    }
+
+    [Fact]
+    public async Task WhenDynamicMembersAreDecorated_ThenTheResolverSeesTheMemberItDecorates()
+    {
+        // Arrange: Root gains the dynamic property Temperature, which gains the dynamic attribute
+        // EngineeringUnits. Namespace index 1 is urn:test in the mock session's table.
+        var rootId = new NodeId(1, 0);
+        var temperatureId = new NodeId(2001, 1);
+        var unitsId = new NodeId(2002, 1);
+
+        var mockSession = CreateMockSession();
+        SetupBrowseAsync(mockSession, new Dictionary<NodeId, ReferenceDescription[]>
+        {
+            [rootId] = [CreateTestReferenceDescription("Temperature", temperatureId)],
+            [temperatureId] = [CreateTestReferenceDescription("EngineeringUnits", unitsId)]
+        });
+        SetupReadAsync(mockSession, new Dictionary<NodeId, (NodeId, int)>
+        {
+            [temperatureId] = (DataTypeIds.Double, -1),
+            [unitsId] = (DataTypeIds.String, -1)
+        });
+
+        var resolver = new RecordingTypeResolver();
+        var (loader, _, subject) = CreateLoader(
+            shouldAddDynamicProperties: (_, _) => Task.FromResult(true),
+            shouldAddDynamicAttributes: (_, _) => Task.FromResult(true),
+            typeResolver: resolver);
+
+        var rootNode = CreateObjectReferenceDescription("Root", rootId);
+
+        // Act
+        await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
+
+        // Assert
+        var registeredSubject = subject.TryGetRegisteredSubject()!;
+        var temperature = registeredSubject.TryGetProperty("Temperature")!;
+        var units = temperature.TryGetAttribute("EngineeringUnits")!;
+
+        var propertyContext = Assert.Single(resolver.PropertyContexts);
+        Assert.Same(registeredSubject, propertyContext.Subject);
+        Assert.Equal(temperatureId, propertyContext.NodeId);
+        Assert.Equal(typeof(double), propertyContext.PropertyType);
+        Assert.Equal("Temperature", propertyContext.PropertyName);
+
+        var attributeContext = Assert.Single(resolver.AttributeContexts);
+        Assert.Same(temperature, attributeContext.Property);
+        Assert.Equal("EngineeringUnits", attributeContext.AttributeName);
+
+        Assert.Contains(temperature.ReflectionAttributes, attribute => attribute is DecoratedAttribute);
+        Assert.Contains(units.ReflectionAttributes, attribute => attribute is DecoratedAttribute);
+        var nodeAttribute = Assert.Single(temperature.ReflectionAttributes.OfType<OpcUaNodeAttribute>());
+        Assert.Equal("2001", nodeAttribute.NodeIdentifier);
+        Assert.Equal("urn:test", nodeAttribute.NodeNamespaceUri);
+    }
+
+    [Fact]
+    public async Task WhenTheSameSubjectIsLoadedTwice_ThenTheDynamicPropertyIsReMatchedAndMonitored()
+    {
+        // Arrange
+        var rootId = new NodeId(1, 0);
+        var temperatureId = new NodeId(2001, 1);
+
+        var mockSession = CreateMockSession();
+        SetupBrowseAsync(mockSession, new Dictionary<NodeId, ReferenceDescription[]>
+        {
+            [rootId] = [CreateTestReferenceDescription("Temperature", temperatureId)]
+        });
+        SetupReadAsync(mockSession, new Dictionary<NodeId, (NodeId, int)>
+        {
+            [temperatureId] = (DataTypeIds.Double, -1)
+        });
+
+        var (loader, _, subject) = CreateLoader(
+            shouldAddDynamicProperties: (_, _) => Task.FromResult(true));
+
+        var rootNode = CreateObjectReferenceDescription("Root", rootId);
+        var registeredSubject = subject.TryGetRegisteredSubject()!;
+
+        await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
+        var propertyCount = registeredSubject.Properties.Length;
+        var temperature = registeredSubject.TryGetProperty("Temperature");
+
+        // Act
+        var monitoredItems = await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
+
+        // Assert
+        Assert.Equal(propertyCount, registeredSubject.Properties.Length);
+        Assert.Same(temperature, registeredSubject.TryGetProperty("Temperature"));
+        var monitoredItem = Assert.Single(monitoredItems);
+        Assert.Equal(temperatureId, monitoredItem.StartNodeId);
+    }
+
+    private sealed class DecoratedAttribute : Attribute;
+
+    private sealed class RecordingTypeResolver() : OpcUaTypeResolver(NullLogger<OpcUaTypeResolver>.Instance)
+    {
+        public List<OpcUaDynamicPropertyContext> PropertyContexts { get; } = [];
+
+        public List<OpcUaDynamicAttributeContext> AttributeContexts { get; } = [];
+
+        public override Attribute[] GetAttributesForDynamicProperty(OpcUaDynamicPropertyContext property)
+        {
+            PropertyContexts.Add(property);
+            return [..base.GetAttributesForDynamicProperty(property), new DecoratedAttribute()];
+        }
+
+        public override Attribute[] GetAttributesForDynamicAttribute(OpcUaDynamicAttributeContext attribute)
+        {
+            AttributeContexts.Add(attribute);
+            return [..base.GetAttributesForDynamicAttribute(attribute), new DecoratedAttribute()];
+        }
+    }
+}
+
+[InterceptorSubject]
+public partial class ValueEqualityContainer
+{
+    [OpcUaNode("Items")]
+    public partial ValueEqualityItem[]? Items { get; set; }
+}
+
+/// <summary>
+/// A subject whose <see cref="object.Equals(object?)"/> and <see cref="object.GetHashCode"/> compare by value,
+/// which is legal for a hand-written subject and must not merge distinct graph nodes.
+/// </summary>
+[InterceptorSubject]
+public partial class ValueEqualityItem
+{
+    [OpcUaNode("Value")]
+    public partial double Value { get; set; }
+
+    public string Key { get; init; } = "";
+
+    public override bool Equals(object? obj) => obj is ValueEqualityItem other && other.Key == Key;
+
+    public override int GetHashCode() => Key.GetHashCode();
 }

@@ -157,6 +157,10 @@ public class OpcUaTypeResolver
                 // An override that reads from the server itself has to be able to abort the load.
                 throw;
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to infer CLR type for node {BrowseName}.", reference.BrowseName.Name);
