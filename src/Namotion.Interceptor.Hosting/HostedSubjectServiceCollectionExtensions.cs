@@ -42,7 +42,6 @@ public static class HostedSubjectServiceCollectionExtensions
                 : ActivatorUtilities.CreateInstance<T>(serviceProvider);
 
             configure?.Invoke(instance);
-            startup?.Complete();
             return instance;
         });
 

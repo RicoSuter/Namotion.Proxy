@@ -4,7 +4,6 @@ namespace Namotion.Interceptor.Hosting
 {
     public sealed class HostedServiceStartupScope : System.IDisposable
     {
-        public void Complete() { }
         public void Dispose() { }
     }
     public static class HostedSubjectServiceCollectionExtensions

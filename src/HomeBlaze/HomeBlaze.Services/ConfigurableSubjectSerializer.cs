@@ -89,7 +89,6 @@ public class ConfigurableSubjectSerializer
         }
 
         PopulateConfigurationProperties(subject, type, root);
-        startup?.Complete();
         return subject;
     }
 
