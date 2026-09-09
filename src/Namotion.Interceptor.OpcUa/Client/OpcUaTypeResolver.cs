@@ -21,7 +21,27 @@ public class OpcUaTypeResolver
         _logger = logger;
     }
 
-    public virtual Attribute[] GetDynamicPropertyAttributes(ISession session, ReferenceDescription node)
+    /// <summary>
+    /// Returns the attributes to stamp on a property the loader is adding for a discovered node.
+    /// The base returns one <see cref="OpcUaNodeAttribute"/> carrying the node's browse name and
+    /// identifier, which is what makes the property addressable by the mapper and what re-matches
+    /// it to the same node on the next load. An override that drops it unmaps the property.
+    /// </summary>
+    public virtual Attribute[] GetAttributesForDynamicProperty(OpcUaDynamicPropertyContext property)
+    {
+        return CreateNodeAttributes(property.Session, property.Node);
+    }
+
+    /// <summary>
+    /// Returns the attributes to stamp on an attribute the loader is adding for a discovered node,
+    /// with the same contract as <see cref="GetAttributesForDynamicProperty"/>.
+    /// </summary>
+    public virtual Attribute[] GetAttributesForDynamicAttribute(OpcUaDynamicAttributeContext attribute)
+    {
+        return CreateNodeAttributes(attribute.Session, attribute.Node);
+    }
+
+    private static Attribute[] CreateNodeAttributes(ISession session, ReferenceDescription node)
     {
         var namespaceUri = node.NodeId.NamespaceUri ?? session.NamespaceUris.GetString(node.NodeId.NamespaceIndex);
         return

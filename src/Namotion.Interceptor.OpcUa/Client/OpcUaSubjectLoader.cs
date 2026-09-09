@@ -407,7 +407,8 @@ internal sealed class OpcUaSubjectLoader
             inferredType,
             _ => value,
             (_, o) => value = o,
-            _configuration.TypeResolver!.GetDynamicPropertyAttributes(context.Session, nodeReference));
+            _configuration.TypeResolver!.GetAttributesForDynamicProperty(
+                new OpcUaDynamicPropertyContext(context.Session, nodeReference, resolvedNodeId, inferredType, registeredSubject)));
     }
 
     /// <returns>

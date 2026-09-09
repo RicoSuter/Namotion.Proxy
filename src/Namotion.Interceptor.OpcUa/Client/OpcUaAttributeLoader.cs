@@ -284,7 +284,9 @@ internal sealed class OpcUaAttributeLoader
                 inferredType,
                 _ => value,
                 (_, o) => value = o,
-                _configuration.TypeResolver!.GetDynamicPropertyAttributes(context.Session, entry.ChildNode));
+                _configuration.TypeResolver!.GetAttributesForDynamicAttribute(
+                    new OpcUaDynamicAttributeContext(
+                        context.Session, entry.ChildNode, entry.ChildNodeId, inferredType, entry.OwnerProperty, entry.BrowseName)));
 
             _loader.MonitorValueNode(entry.ChildNodeId, dynamicAttribute, context);
             nextRound.Add(new TraversalEntry(dynamicAttribute, entry.ChildNodeId, entry.RootProperty));
