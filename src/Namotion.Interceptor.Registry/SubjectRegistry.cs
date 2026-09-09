@@ -22,7 +22,7 @@ namespace Namotion.Interceptor.Registry;
 [RunsBefore(typeof(ParentTrackingHandler), typeof(ContextInheritanceHandler))]
 public class SubjectRegistry : ISubjectRegistry, ISubjectIdRegistry, ISubjectIdRegistryWriter, ILifecycleHandler, IPropertyLifecycleHandler
 {
-    private readonly Dictionary<IInterceptorSubject, RegisteredSubject> _knownSubjects = new();
+    private readonly Dictionary<IInterceptorSubject, RegisteredSubject> _knownSubjects = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<string, IInterceptorSubject> _subjectIdToSubject = new();
     private ImmutableDictionary<IInterceptorSubject, RegisteredSubject>? _knownSubjectsSnapshot;
 
@@ -45,7 +45,7 @@ public class SubjectRegistry : ISubjectRegistry, ISubjectIdRegistry, ISubjectIdR
             if (snapshot is not null)
                 return snapshot;
 
-            snapshot = _knownSubjects.ToImmutableDictionary();
+            snapshot = _knownSubjects.ToImmutableDictionary(ReferenceEqualityComparer.Instance);
             Volatile.Write(ref _knownSubjectsSnapshot, snapshot);
             return snapshot;
         }

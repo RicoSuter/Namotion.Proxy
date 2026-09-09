@@ -7,7 +7,7 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 
 public class LifecycleInterceptor : IWriteInterceptor, ILifecycleInterceptor
 {
-    private readonly Dictionary<IInterceptorSubject, PropertyReferenceSet> _attachedSubjects = [];
+    private readonly Dictionary<IInterceptorSubject, PropertyReferenceSet> _attachedSubjects = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<PropertyReference, object?> _lastProcessedValues = new(PropertyReference.Comparer);
 
     [ThreadStatic]
@@ -525,7 +525,7 @@ public class LifecycleInterceptor : IWriteInterceptor, ILifecycleInterceptor
     private static HashSet<IInterceptorSubject> GetSubjectHashSet()
     {
         _subjectHashSetPool ??= new Stack<HashSet<IInterceptorSubject>>();
-        return _subjectHashSetPool.Count > 0 ? _subjectHashSetPool.Pop() : new HashSet<IInterceptorSubject>(8);
+        return _subjectHashSetPool.Count > 0 ? _subjectHashSetPool.Pop() : new HashSet<IInterceptorSubject>(8, ReferenceEqualityComparer.Instance);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
