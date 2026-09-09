@@ -626,9 +626,9 @@ internal sealed class MqttSubjectClientSource : SubjectSourceBase, IFaultInjecta
             : await _configuration.Mapper.TryGetPropertyAsync(new MqttLookupKey(path), registered, CancellationToken.None).ConfigureAwait(false);
         var propertyReference = property?.Reference;
 
-        // Add first, then validate (guarantees no memory leak)
-        if (_topicToProperty.TryAdd(topic, propertyReference) &&
-            propertyReference is { } resolvedProperty &&
+        // A missing path can become reachable after a structural change; only cache resolved properties.
+        if (propertyReference is { } resolvedProperty &&
+            _topicToProperty.TryAdd(topic, propertyReference) &&
             !IsRetainable(resolvedProperty.Subject))
         {
             _topicToProperty.TryRemove(topic, out _);

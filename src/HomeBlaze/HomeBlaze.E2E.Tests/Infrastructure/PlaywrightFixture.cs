@@ -2,7 +2,6 @@ using HomeBlaze.Components;
 using HomeBlaze.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Playwright;
-using Namotion.Interceptor.Testing;
 
 namespace HomeBlaze.E2E.Tests.Infrastructure;
 
@@ -29,15 +28,18 @@ public class PlaywrightFixture : IAsyncLifetime
         var address = _factory.ServerAddress;
         Console.WriteLine($"Test server started at: {address}");
 
-        // The root subject is loaded by a background service, so the server serves requests before
-        // the object graph behind them exists. A page that renders the browser in that window gets
-        // an empty pane list and never rebuilds it, so whichever test runs first waits out its full
-        // timeout for a button that will not appear.
+        // The root subject is loaded by a background service, so the server serves requests before the
+        // object graph behind them exists. The UI waits that window out on its own, but the wait would
+        // otherwise land inside the first test's own timeout instead of here.
         var rootManager = _factory.ServerServices.GetRequiredService<RootManager>();
-        await AsyncTestHelpers.WaitUntilAsync(
-            () => rootManager.IsLoaded,
-            TimeSpan.FromSeconds(60),
-            message: "The root subject was not loaded before the tests started");
+        try
+        {
+            await rootManager.RootLoaded.WaitAsync(TimeSpan.FromSeconds(60));
+        }
+        catch (TimeoutException exception)
+        {
+            throw new TimeoutException("The root subject was not loaded before the tests started", exception);
+        }
 
         // Initialize Playwright and launch browser
         _playwright = await Playwright.CreateAsync();

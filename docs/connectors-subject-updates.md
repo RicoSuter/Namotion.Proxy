@@ -354,7 +354,7 @@ For complete updates (no `operations`), items at indices that don't exist locall
 
 ## Circular References
 
-Circular references are handled naturally by the flat structure. Each subject appears exactly once in the `subjects` dictionary, and references use string IDs:
+Circular references are handled naturally by the flat structure. Each subject instance appears exactly once in the `subjects` dictionary, and references use string IDs. Distinct instances retain distinct IDs even when their `Equals` implementation considers them equal:
 
 ```json
 {

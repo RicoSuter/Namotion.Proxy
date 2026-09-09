@@ -45,10 +45,26 @@
             <MudIconButton Icon="@Icons.Material.Filled.MoreVert" Color="Color.Inherit" Edge="Edge.End"/>
         </MudAppBar>
         <MudDrawer id="nav-drawer" @bind-Open="_drawerOpen" ClipMode="DrawerClipMode.Always" Elevation="2">
-            <NavMenu/>
+            <NavMenu Root="@RootManager.Root"/>
         </MudDrawer>
         <MudMainContent Class="pt-16 px-4 pt-4">
-            @Body
+            @if (_isRootLoaded || IsErrorPage)
+            {
+                @Body
+            }
+            else if (_rootLoadFailed)
+            {
+                <MudAlert Severity="Severity.Error">
+                    The configuration could not be loaded. See the server log for details.
+                </MudAlert>
+            }
+            else
+            {
+                <div class="d-flex flex-column justify-center align-center" style="height: calc(100vh - 128px);">
+                    <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large"/>
+                    <MudText Class="mt-4">Loading configuration...</MudText>
+                </div>
+            }
         </MudMainContent>
     </MudLayout>
 </CascadingValue>
@@ -60,9 +76,13 @@
 </div>
 
 @code {
+    private readonly CancellationTokenSource _disposalTokenSource = new();
+
     private bool _drawerOpen = true;
     private bool _isDarkMode = true;
     private MudTheme? _theme;
+    private bool _isRootLoaded;
+    private bool _rootLoadFailed;
 
     protected override void OnInitialized()
     {
@@ -70,12 +90,41 @@
         DeveloperMode.OnChange += OnStateHasChanged;
         NavigationManager.LocationChanged += OnLocationChanged;
 
+        _isRootLoaded = RootManager.RootLoaded.IsCompletedSuccessfully;
+
         _theme = new()
         {
             PaletteLight = _lightPalette,
             PaletteDark = _darkPalette,
             LayoutProperties = new LayoutProperties()
         };
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _isRootLoaded)
+        {
+            return;
+        }
+
+        // Not in OnInitializedAsync: prerendering withholds the response until every initialization task completes.
+        try
+        {
+            await RootManager.RootLoaded.WaitAsync(_disposalTokenSource.Token);
+            _isRootLoaded = true;
+        }
+        catch (OperationCanceledException) when (_disposalTokenSource.IsCancellationRequested || RootManager.RootLoaded.IsCanceled)
+        {
+            // Either this component or the host is going away, so there is nothing to report. A
+            // cancellation from anywhere else is a failed load and falls through to the alert.
+            return;
+        }
+        catch (Exception)
+        {
+            _rootLoadFailed = true;
+        }
+
+        StateHasChanged();
     }
 
     private void DrawerToggle()
@@ -105,6 +154,9 @@
     {
         DeveloperMode.OnChange -= OnStateHasChanged;
         NavigationManager.LocationChanged -= OnLocationChanged;
+
+        _disposalTokenSource.Cancel();
+        _disposalTokenSource.Dispose();
     }
 
     private void OnStateHasChanged()
@@ -125,6 +177,12 @@
         return NavigationResolver.GetChildItems(RootManager.Root)
             .Where(item => item.Location == NavigationLocation.AppBar && item.IsPage && item.Alignment == alignment);
     }
+
+    // The error page is shown exactly when the system is unhealthy, so it must render even if the
+    // root never loads.
+    private bool IsErrorPage => NavigationManager
+        .ToBaseRelativePath(NavigationManager.Uri)
+        .StartsWith("Error", StringComparison.OrdinalIgnoreCase);
 
     private bool IsActive(NavigationItem item)
     {
