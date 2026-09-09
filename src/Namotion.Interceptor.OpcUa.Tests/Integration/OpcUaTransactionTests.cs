@@ -1,5 +1,10 @@
+using System.Collections.Concurrent;
+using System.Reactive.Concurrency;
+using System.Reactive.Linq;
 using Namotion.Interceptor.OpcUa.Tests.Integration.Testing;
 using Namotion.Interceptor.Testing;
+using Namotion.Interceptor.Tracking;
+using Namotion.Interceptor.Tracking.Change;
 using Namotion.Interceptor.Tracking.Transactions;
 using Xunit.Abstractions;
 
@@ -17,10 +22,16 @@ public class OpcUaTransactionTests : SharedServerTestBase
     [Fact]
     public async Task Transaction_CommitSingleProperty_ServerReceivesChangeOnlyAfterCommit()
     {
+        // Arrange
         var serverArea = ServerFixture.ServerRoot.Transactions.SingleProperty;
         var clientArea = Client!.Root!.Transactions.SingleProperty;
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => clientArea.Name == serverArea.Name,
+            timeout: TimeSpan.FromSeconds(90),
+            message: "Client should receive the isolated area's initial name");
         var initialName = serverArea.Name;
 
+        // Act
         using (var transaction = await Client.Context.BeginTransactionAsync(TransactionFailureHandling.BestEffort))
         {
             clientArea.Name = "Transaction Value";
@@ -31,6 +42,7 @@ public class OpcUaTransactionTests : SharedServerTestBase
             await transaction.CommitAsync(CancellationToken.None);
         }
 
+        // Assert
         await AsyncTestHelpers.WaitUntilAsync(
             () => serverArea.Name == "Transaction Value",
             timeout: TimeSpan.FromSeconds(90),
@@ -40,11 +52,17 @@ public class OpcUaTransactionTests : SharedServerTestBase
     [Fact]
     public async Task Transaction_CommitMultipleProperties_ServerReceivesAllChangesOnlyAfterCommit()
     {
+        // Arrange
         var serverArea = ServerFixture.ServerRoot.Transactions.MultiProperty;
         var clientArea = Client!.Root!.Transactions.MultiProperty;
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => clientArea.Name == serverArea.Name && clientArea.Number == serverArea.Number,
+            timeout: TimeSpan.FromSeconds(90),
+            message: "Client should receive the isolated area's initial values");
         var initialName = serverArea.Name;
         var initialNumber = serverArea.Number;
 
+        // Act
         using (var transaction = await Client.Context.BeginTransactionAsync(TransactionFailureHandling.BestEffort))
         {
             clientArea.Name = "Multi-Property Test";
@@ -57,6 +75,7 @@ public class OpcUaTransactionTests : SharedServerTestBase
             await transaction.CommitAsync(CancellationToken.None);
         }
 
+        // Assert
         await AsyncTestHelpers.WaitUntilAsync(
             () => serverArea.Name == "Multi-Property Test" && serverArea.Number == 123.45m,
             timeout: TimeSpan.FromSeconds(90),
@@ -69,69 +88,83 @@ public class OpcUaTransactionTests : SharedServerTestBase
     [Fact]
     public async Task Transaction_DisposedWithoutCommit_ServerShouldNotReceiveChanges()
     {
-        var serverArea = ServerFixture.ServerRoot.Transactions.SingleProperty;
-        var clientArea = Client!.Root!.Transactions.SingleProperty;
-
-        // First, set a known value via committed transaction
-        using (var setupTransaction = await Client.Context.BeginTransactionAsync(TransactionFailureHandling.BestEffort))
-        {
-            clientArea.Name = "InitialValue";
-            await setupTransaction.CommitAsync(CancellationToken.None);
-        }
-
+        // Arrange
+        var serverArea = ServerFixture.ServerRoot.Transactions.SinglePropertyRollback;
+        var clientArea = Client!.Root!.Transactions.SinglePropertyRollback;
         await AsyncTestHelpers.WaitUntilAsync(
-            () => serverArea.Name == "InitialValue",
+            () => clientArea.Name == "InitialValue",
             timeout: TimeSpan.FromSeconds(90),
-            message: "Server should have initial value from setup transaction");
+            message: "Client should receive the rollback area's initial value");
+        var changes = new ConcurrentQueue<SubjectPropertyChange>();
+        using var subscription = Client.Context.GetPropertyChangeObservable(ImmediateScheduler.Instance)
+            .Where(change => ReferenceEquals(change.Property.Subject, clientArea))
+            .Subscribe(changes.Enqueue);
 
-        // Start transaction, make changes, but dispose without commit
-        using (var transaction = await Client.Context.BeginTransactionAsync(TransactionFailureHandling.BestEffort))
+        // Act
+        SubjectTransaction transaction;
+        using (transaction = await Client.Context.BeginTransactionAsync(TransactionFailureHandling.BestEffort))
         {
             clientArea.Name = "UncommittedValue";
-            // Intentionally NOT calling CommitAsync - dispose will rollback
+            Assert.Single(transaction.GetPendingChanges());
+            Assert.Equal("UncommittedValue", clientArea.Name);
         }
 
-        // Wait to ensure no sync happens
-        await Task.Delay(TimeSpan.FromSeconds(2));
+        // The ordinary outbound path must make progress before checking the remote state.
+        Client.Root.Transactions.SynchronizationMarker = "Single rollback completed";
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => ServerFixture.ServerRoot.Transactions.SynchronizationMarker == "Single rollback completed",
+            timeout: TimeSpan.FromSeconds(90),
+            message: "Server should receive the write following transaction disposal");
 
-        // Server should still have initial value
+        // Assert
+        Assert.Null(SubjectTransaction.Current);
+        Assert.Empty(transaction.GetPendingChanges());
+        Assert.DoesNotContain(changes, change => change.GetNewValue<string>() == "UncommittedValue");
+        Assert.Equal("InitialValue", clientArea.Name);
         Assert.Equal("InitialValue", serverArea.Name);
-        Logger.Log("Transaction rollback verified - server did not receive uncommitted changes");
     }
 
     [Fact]
     public async Task Transaction_MultipleProperties_DisposedWithoutCommit_ServerShouldNotReceiveChanges()
     {
-        var serverArea = ServerFixture.ServerRoot.Transactions.MultiProperty;
-        var clientArea = Client!.Root!.Transactions.MultiProperty;
-
-        // First, set known values via committed transaction
-        using (var setupTransaction = await Client.Context.BeginTransactionAsync(TransactionFailureHandling.BestEffort))
-        {
-            clientArea.Name = "SetupName";
-            clientArea.Number = 100m;
-            await setupTransaction.CommitAsync(CancellationToken.None);
-        }
-
+        // Arrange
+        var serverArea = ServerFixture.ServerRoot.Transactions.MultiPropertyRollback;
+        var clientArea = Client!.Root!.Transactions.MultiPropertyRollback;
         await AsyncTestHelpers.WaitUntilAsync(
-            () => serverArea.Name == "SetupName" && serverArea.Number == 100m,
+            () => clientArea.Name == "SetupName" && clientArea.Number == 100m,
             timeout: TimeSpan.FromSeconds(90),
-            message: "Server should have initial values from setup transaction");
+            message: "Client should receive the rollback area's initial values");
+        var changes = new ConcurrentQueue<SubjectPropertyChange>();
+        using var subscription = Client.Context.GetPropertyChangeObservable(ImmediateScheduler.Instance)
+            .Where(change => ReferenceEquals(change.Property.Subject, clientArea))
+            .Subscribe(changes.Enqueue);
 
-        // Start transaction with multiple property changes, but dispose without commit
-        using (var transaction = await Client.Context.BeginTransactionAsync(TransactionFailureHandling.BestEffort))
+        // Act
+        SubjectTransaction transaction;
+        using (transaction = await Client.Context.BeginTransactionAsync(TransactionFailureHandling.BestEffort))
         {
             clientArea.Name = "UncommittedName";
             clientArea.Number = 999m;
-            // Intentionally NOT calling CommitAsync - dispose will rollback
+            Assert.Equal(2, transaction.GetPendingChanges().Count);
+            Assert.Equal("UncommittedName", clientArea.Name);
+            Assert.Equal(999m, clientArea.Number);
         }
 
-        // Wait to ensure no sync happens
-        await Task.Delay(TimeSpan.FromSeconds(2));
+        Client.Root.Transactions.SynchronizationMarker = "Multiple rollback completed";
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => ServerFixture.ServerRoot.Transactions.SynchronizationMarker == "Multiple rollback completed",
+            timeout: TimeSpan.FromSeconds(90),
+            message: "Server should receive the write following transaction disposal");
 
-        // Server should still have initial values
+        // Assert
+        Assert.Null(SubjectTransaction.Current);
+        Assert.Empty(transaction.GetPendingChanges());
+        Assert.DoesNotContain(changes, change =>
+            change.Property.Name == nameof(clientArea.Name) && change.GetNewValue<string>() == "UncommittedName" ||
+            change.Property.Name == nameof(clientArea.Number) && change.GetNewValue<decimal>() == 999m);
+        Assert.Equal("SetupName", clientArea.Name);
+        Assert.Equal(100m, clientArea.Number);
         Assert.Equal("SetupName", serverArea.Name);
         Assert.Equal(100m, serverArea.Number);
-        Logger.Log("Transaction rollback with multiple properties verified");
     }
 }
