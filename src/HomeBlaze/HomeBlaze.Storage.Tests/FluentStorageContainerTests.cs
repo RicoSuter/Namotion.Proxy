@@ -1,13 +1,40 @@
 using HomeBlaze.Services;
+using HomeBlaze.Services.Lifecycle;
 using HomeBlaze.Storage.Abstractions;
 using HomeBlaze.Storage.Internal;
 using Microsoft.Extensions.DependencyInjection;
 using Namotion.Interceptor;
+using Namotion.Interceptor.Registry;
+using Namotion.Interceptor.Tracking;
+using Namotion.Interceptor.Tracking.Lifecycle;
 
 namespace HomeBlaze.Storage.Tests;
 
 public class FluentStorageContainerTests
 {
+    [Fact]
+    public void WhenStorageIsDisconnected_ThenItsMethodsCanBeDiscovered()
+    {
+        // Arrange
+        var (_, typeRegistry, serializer, serviceProvider, _) = CreateDependencies();
+        using var storage = new FluentStorageContainer(typeRegistry, serializer, serviceProvider);
+        var context = InterceptorSubjectContext.Create().WithFullPropertyTracking().WithRegistry()
+            .WithService<ILifecycleHandler>(() => new MethodPropertyInitializer(), handler => handler is MethodPropertyInitializer);
+        storage.AttachToContext(context);
+        var registered = storage.TryGetRegisteredSubject()!;
+
+        // Act
+        var all = registered.GetAllMethods();
+        var operations = registered.GetOperationMethods();
+        var queries = registered.GetQueryMethods();
+
+        // Assert
+        Assert.Equal(StorageStatus.Disconnected, storage.Status);
+        Assert.Equal("Create", Assert.Single(all).Title);
+        Assert.Equal("Create", Assert.Single(operations).Title);
+        Assert.Empty(queries);
+    }
+
     private static (TypeProvider typeProvider, SubjectTypeRegistry typeRegistry, ConfigurableSubjectSerializer serializer, IServiceProvider serviceProvider, RootManager rootManager) CreateDependencies()
     {
         var typeProvider = new TypeProvider();

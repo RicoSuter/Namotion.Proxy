@@ -150,18 +150,40 @@ public sealed class PropertyChangeInterceptor : IObservable<SubjectPropertyChang
         }
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// A downstream failure after a truthful <see cref="PropertyWriteContext{TProperty}.IsWritten"/>
+    /// marker still publishes the committed change. Publication failure is aggregated after the
+    /// original failure. A failure before commit publishes nothing.
+    /// </remarks>
     public void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next)
     {
         // Pre-commit gate only selects the dispatch path; listener RESOLUTION is post-commit
         // (see ResolveListeners), so an install racing this write is never missed.
-        if (_dispatchState is null && PropertyChangeSubscriptions.ReadSubscriptionCount() == 0)
+        var useLateDispatch = _dispatchState is null && PropertyChangeSubscriptions.ReadSubscriptionCount() == 0;
+        try
         {
             next(ref context);
+        }
+        catch (Exception writeFailure) when (context.IsWritten)
+        {
+            try
+            {
+                DispatchLateConsumers(ref context);
+            }
+            catch (Exception publicationFailure)
+            {
+                throw new AggregateException(writeFailure, publicationFailure);
+            }
+
+            throw;
+        }
+
+        if (useLateDispatch)
+        {
             DispatchLateConsumers(ref context);
             return;
         }
-
-        next(ref context);
 
         if (!context.IsWritten)
         {
@@ -192,17 +214,28 @@ public sealed class PropertyChangeInterceptor : IObservable<SubjectPropertyChang
             context.GetFinalValue(),
             context.Revision);
 
-        for (var i = 0; i < subscriptions.Length; i++)
-        {
-            subscriptions[i].Enqueue(in change);
-        }
+        Publish(new Publication(change, subscriptions, syncSubject, listeners));
+    }
 
-        syncSubject?.OnNext(change);
-
-        if (listeners is not null)
+    internal readonly record struct Publication(
+        SubjectPropertyChange Change,
+        PropertyChangeQueueSubscription[] QueueSubscriptions,
+        ISubject<SubjectPropertyChange>? SyncSubject,
+        PropertyChangeSubscription[]? Listeners)
+    {
+        public void Dispatch()
         {
-            PropertyChangeSubscription.Dispatch(listeners, in change);
+            var change = Change;
+            foreach (var subscription in QueueSubscriptions) subscription.Enqueue(in change);
+            SyncSubject?.OnNext(change);
+            if (Listeners is not null) PropertyChangeSubscription.Dispatch(Listeners, in change);
         }
+    }
+
+    private static void Publish(Publication publication)
+    {
+        if (publication.Change.Property.Subject.TryGetContext()?.TryGetLifecycleInterceptor()?.TryQueuePropertyChange(publication) == true) return;
+        publication.Dispatch();
     }
 
     /// <summary>
@@ -237,21 +270,7 @@ public sealed class PropertyChangeInterceptor : IObservable<SubjectPropertyChang
             finalValue,
             context.Revision);
 
-        if (state is not null)
-        {
-            var subscriptions = state.QueueSubscriptions;
-            for (var i = 0; i < subscriptions.Length; i++)
-            {
-                subscriptions[i].Enqueue(in change);
-            }
-
-            state.SyncSubject?.OnNext(change);
-        }
-
-        if (listeners is not null)
-        {
-            PropertyChangeSubscription.Dispatch(listeners, in change);
-        }
+        Publish(new Publication(change, state?.QueueSubscriptions ?? [], state?.SyncSubject, listeners));
     }
 
     // Post-commit listener resolution, shared by the two mutually exclusive entry paths and

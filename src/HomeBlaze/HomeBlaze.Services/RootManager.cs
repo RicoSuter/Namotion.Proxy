@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Namotion.Interceptor;
+using Namotion.Interceptor.Hosting;
 
 namespace HomeBlaze.Services;
 
@@ -27,13 +28,13 @@ public class RootManager : BackgroundService, IConfigurationWriter
     /// <summary>
     /// The root subject loaded from configuration.
     /// </summary>
+    /// <remarks>Available during attachment for path resolution. Await <see cref="RootLoaded"/> before browsing the graph.</remarks>
     public IInterceptorSubject? Root { get; internal set; }
 
     /// <summary>
-    /// Whether the root has been loaded. This turns true before the root's context is wired, so it
-    /// is a state probe rather than a gate. Wait on <see cref="RootLoaded"/> to use the graph.
+    /// Whether root loading, attachment and service registration completed successfully.
     /// </summary>
-    public bool IsLoaded => Root != null;
+    public bool IsLoaded => RootLoaded.IsCompletedSuccessfully;
 
     public RootManager(
         SubjectTypeRegistry typeRegistry,
@@ -69,11 +70,26 @@ public class RootManager : BackgroundService, IConfigurationWriter
     }
 
     /// <summary>
-    /// Completes with the root subject once the background load has attached its context, and faults
-    /// with the load exception so waiters do not hang on a root that will never appear.
+    /// Completes with the root subject after loading, attachment, service registration and deferred startup release.
+    /// Reports the loading failure or cancellation.
     /// Assigning <see cref="Root"/> directly does not complete it.
     /// </summary>
     public Task<IInterceptorSubject> RootLoaded => _rootLoaded.Task;
+
+    /// <inheritdoc />
+    public override Task StartAsync(CancellationToken cancellationToken)
+    {
+        var startup = base.StartAsync(cancellationToken);
+
+        // BackgroundService can cancel its queued work before ExecuteAsync runs, bypassing its catch.
+        _ = ExecuteTask!.ContinueWith(
+            _ => _rootLoaded.TrySetCanceled(cancellationToken),
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnCanceled | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+        return startup;
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -111,21 +127,23 @@ public class RootManager : BackgroundService, IConfigurationWriter
         }
 
         var json = await File.ReadAllTextAsync(_configurationPath, cancellationToken);
+        using var startup = _context.DeferHostedServiceStartup();
         var root = _serializer.Deserialize(json);
 
         // All IConfigurable implementations are also IInterceptorSubject (via [InterceptorSubject] attribute).
         Root = root as IInterceptorSubject ?? throw new InvalidOperationException("Failed to deserialize root configuration");
 
-        // The deserializer builds subjects through dependency injection, but a type whose only
-        // constructor takes dependencies gets no generated context-taking constructor, so the root
-        // can arrive here detached. Attach explicitly either way: the application root must survive
-        // every reachability decision, and an explicit anchor also promotes a constructor-attached
-        // root without repeating its attach callbacks.
-        Root.AttachToContext(_context);
+        // The application root must survive every reachability decision. Promote a constructor's
+        // provisional anchor without repeating its attach callbacks, or attach a detached root.
+        Root.Executor.TryGetAttachment(out var attachedContext, out var anchor, out _);
+        if (!ReferenceEquals(attachedContext, _context) || anchor != SubjectAttachmentAnchorKind.Explicit)
+        {
+            Root.AttachToContext(_context);
+        }
 
         _logger?.LogInformation("Root loaded: {Type}", Root.GetType().FullName);
         _context.AddService(Root);
-
+        startup?.Complete();
         return Root;
     }
 

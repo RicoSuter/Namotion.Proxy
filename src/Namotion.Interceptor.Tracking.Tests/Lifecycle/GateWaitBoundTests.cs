@@ -53,7 +53,7 @@ public class GateWaitBoundTests
         // observe, and it says it could not tell which cause it was.
         var violation = Assert.IsType<LifecycleContractViolationException>(contended);
         Assert.Contains("Timed out after", violation.Message);
-        Assert.Contains("Nothing here can tell which it is", violation.Message);
+        Assert.Contains("cannot diagnose the cause of contention", violation.Message);
         Assert.Contains("Nothing was read and nothing was changed", violation.Message);
     }
 

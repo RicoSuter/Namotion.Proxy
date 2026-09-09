@@ -43,8 +43,9 @@ internal static class SubjectItemsUpdateApplier
                         break;
 
                     case SubjectCollectionOperationType.Insert:
-                        if (operation.Id is not null && context.Subjects.TryGetValue(operation.Id, out var itemProps))
+                        if (operation.Id is not null)
                         {
+                            var itemProps = context.GetSubjectProperties(operation.Id);
                             var newItem = CreateItem(property, index, operation.Id, itemProps, context, ref pendingItems);
                             if (index >= workingItems.Count)
                                 workingItems.Add(newItem);
@@ -93,9 +94,9 @@ internal static class SubjectItemsUpdateApplier
                         "The index in a sparse update must be less than the declared count.");
                 }
 
-                if (collectionUpdate.Id is not null &&
-                    context.Subjects.TryGetValue(collectionUpdate.Id, out var itemProps))
+                if (collectionUpdate.Id is not null)
                 {
+                    var itemProps = context.GetSubjectProperties(collectionUpdate.Id);
                     if (index >= 0 && index < workingItems.Count)
                     {
                         // Update existing item. Queued rather than applied here, because the item
@@ -136,7 +137,7 @@ internal static class SubjectItemsUpdateApplier
         SubjectPropertyUpdate propertyUpdate,
         SubjectUpdateApplyContext context)
     {
-        var targetKeyType = property.Type.GenericTypeArguments[0];
+        var targetKeyType = SubjectFactoryExtensions.GetCollectionTypes(property.Type, dictionary: true).Key!;
         var workingDictionary = new Dictionary<object, IInterceptorSubject>();
         var structureChanged = false;
         List<PendingItem>? pendingItems = null;
@@ -165,8 +166,9 @@ internal static class SubjectItemsUpdateApplier
                         break;
 
                     case SubjectCollectionOperationType.Insert:
-                        if (operation.Id is not null && context.Subjects.TryGetValue(operation.Id, out var itemProps))
+                        if (operation.Id is not null)
                         {
+                            var itemProps = context.GetSubjectProperties(operation.Id);
                             var newItem = CreateItem(property, key, operation.Id, itemProps, context, ref pendingItems);
                             workingDictionary[key] = newItem;
                             structureChanged = true;
@@ -183,9 +185,9 @@ internal static class SubjectItemsUpdateApplier
             {
                 var key = ConvertDictionaryKey(collUpdate.Index, targetKeyType);
 
-                if (collUpdate.Id is not null &&
-                    context.Subjects.TryGetValue(collUpdate.Id, out var itemProps))
+                if (collUpdate.Id is not null)
                 {
+                    var itemProps = context.GetSubjectProperties(collUpdate.Id);
                     if (workingDictionary.TryGetValue(key, out var existing))
                     {
                         // Queued for the same reason as the collection case: this key may have

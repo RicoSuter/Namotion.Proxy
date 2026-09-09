@@ -44,25 +44,9 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     // one-transaction-per-thread rule below sees every acquisition.
     private readonly Lock _gate = new();
 
-    // The one deadlock this design cannot prevent is a gate holder waiting for topology work it
-    // dispatched to another thread: it cannot release the gate until that work finishes and that
-    // work cannot start until the gate is released. Only a thread holding no gate at all ever waits
-    // here, because the rule above rejects a second transaction and a reentrant acquisition never
-    // blocks, so a wait that never ends is that deadlock rather than a lock-ordering one, and is
-    // turned into an exception instead of a hang.
-    //
-    // A waiter tells the deadlock from ordinary contention by looking at the holder rather than at
-    // the clock: a holder that is running is making progress, however long it takes, while a holder
-    // that never runs again can only be one that waits for work needing this gate. So a holder seen
-    // running resets the verdict and no amount of elapsed time alone convicts. Only continuous
-    // blocking does, over a threshold far above any lock a holder legitimately waits on and far
-    // below the point an operator calls the process hung.
-    //
-    // The runtime offers no way to ask what a thread waits on, and a dispatch through a task, a
-    // queue or a pool thread carries no link back to its origin, so sampling the holder's state is
-    // the only in-process signal that exists. It costs nothing on any normal path: a waiter reaches
-    // this only after failing to take the gate within HolderSampleIntervalMilliseconds, and it
-    // parks in the same wait it would have parked in anyway.
+    // The runtime cannot identify what a gate holder is waiting for. Continuous blocked-state
+    // observations are only a timeout heuristic; holder or transaction changes reset that window.
+    // Sampling occurs only on the contended path, after a timed gate acquisition fails.
     private const int HolderSampleIntervalMilliseconds = 20;
     private const int DefaultBlockedHolderThresholdMilliseconds = 30_000;
 
@@ -71,13 +55,8 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     // shorten each other's threshold. Read only by a thread already waiting on a contended gate.
     internal int BlockedHolderThresholdMilliseconds { get; set; } = DefaultBlockedHolderThresholdMilliseconds;
 
-    // The last resort for what the holder check cannot see at all: a holder looping forever, one
-    // spinning, one blocked inside unmanaged code, and one polling so it never blocks for the whole
-    // threshold above. None of those is distinguishable from work, so this cannot be a judgement
-    // about the holder and is only a bound past which a process is stuck by any reasonable measure.
-    // Sized far above the longest legitimate hold rather than near it: attaching a quarter of a
-    // million subjects measures in seconds, so this keeps two orders of magnitude of room and still
-    // reports before a test harness or an operator calls the process hung.
+    // A total bound also covers holders that keep running or whose blocking is not observable.
+    // Unlike the blocked window, it does not reset when the holder or transaction changes.
     private const int DefaultGateWaitTimeoutMilliseconds = 300_000;
 
     // Settable for the same reason as the threshold above, and more sharply: at its real size
@@ -89,6 +68,10 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     // deciding anything: a stale read costs one sample of a window that needs all of them.
     private Thread? _gateHolder;
 
+    // A waiter can miss both release and reacquisition by the same thread between samples.
+    // Published before the holder so separate transactions cannot share one blocked window.
+    private long _gateTransactionRevision;
+
     // How many topology gates the current thread holds, across every lifecycle. Gates have no
     // order among themselves, so a thread holding one and blocking on another deadlocks against a
     // thread taking them the other way round: a second transaction on a different lifecycle is
@@ -96,23 +79,10 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     [ThreadStatic]
     private static int _heldGateCount;
 
-    // How many threads are inside a topology transaction of this lifecycle. Counted once per
-    // thread, not once per acquisition, because the gate is reentrant. The window between a
-    // terminal store and its reconcile is user-visible and cannot be closed, so readers that would
-    // otherwise convict a subject caught in it ask this instead.
-    private int _transactionsInFlight;
-
-    // Work registered by a reader that withheld a verdict because this lifecycle was mid-transaction,
-    // to be re-run once it is not. A handshake rather than an inference: nothing else guarantees
-    // that the thread which opened the window will recalculate what read through it. Guarded by its
-    // own lock, which is a leaf: it is taken by a thread holding the reader's own lock, and
-    // released before anything registered here runs.
-    private readonly Lock _withheldLock = new();
-    private List<Action>? _withheldRecalculations;
-
     /// <summary>
-    /// Raised when a subject is attached to the object graph.
-    /// Handlers must be exception-free and fast (invoked inside lock). Never hand structural
+    /// Reports a subject entering the object graph. Queued delivery can observe a later graph state.
+    /// Handler failures propagate after pending notifications drain and do not roll back the attach.
+    /// Handlers must be fast (invoked inside lock). Never hand structural
     /// work to another thread and wait for it from here: the dispatched write needs the very
     /// gate this thread is holding. Dispatching a read, a scalar write or input and output is
     /// safe, and so is handing structural work off without waiting.
@@ -124,12 +94,11 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     }
 
     /// <summary>
-    /// Raised when a subject is about to be detached from the object graph.
-    /// Fires BEFORE ILifecycleHandler.HandleLifecycleChange (symmetric with SubjectAttached which fires AFTER).
-    /// The subject's ownership record and baselines are already gone by this point, so GetParents()
-    /// answers empty and GetReferenceCount() answers zero; the subject still resolves its context,
-    /// which is what the teardown callbacks need.
-    /// Handlers must be exception-free and fast (invoked inside lock). Never hand structural
+    /// Reports a subject leaving the object graph, before its ILifecycleHandler notifications.
+    /// The executor retains its context through queued teardown. Ownership queries can observe
+    /// a later reattachment rather than the historical detach described by this event.
+    /// Handler failures propagate after pending notifications drain and do not roll back the detach.
+    /// Handlers must be fast (invoked inside lock). Never hand structural
     /// work to another thread and wait for it from here: the dispatched write needs the very
     /// gate this thread is holding. Dispatching a read, a scalar write or input and output is
     /// safe, and so is handing structural work off without waiting.
@@ -147,13 +116,13 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     public LifecycleInterceptor(IInterceptorSubjectContext context)
     {
         _context = context;
-        _notifier = new LifecycleNotifier(context);
         _graph = new OwnershipGraph(context);
+        _notifier = new LifecycleNotifier(context, _graph, this);
         _reachability = new ReachabilityWalk(_graph);
         _attach = new AttachTraversal(_notifier, _graph, _reachability);
         _release = new ReleaseTraversal(_notifier, _graph, _reachability);
         _reconciler = new StructuralReconciler(_notifier, _graph, _attach, _release);
-        _admission = new PropertyAdmission(_graph, _reconciler, _attach);
+        _admission = new PropertyAdmission(_graph, _reconciler);
     }
 
     #region Structural writes
@@ -196,39 +165,50 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
 
         if (_heldGateCount++ == 0)
         {
-            _gateHolder = Thread.CurrentThread;
-            // Past the rejection above, a nonzero count means this thread already holds this very
-            // gate, so a reentrant acquisition is not a new transaction.
-            Interlocked.Increment(ref _transactionsInFlight);
+            Volatile.Write(ref _gateTransactionRevision, unchecked(_gateTransactionRevision + 1));
+            Volatile.Write(ref _gateHolder, Thread.CurrentThread);
         }
 
         return new GateScope(this);
     }
 
+    internal bool TryQueuePropertyCallback(PropertyReference property, bool attach)
+    {
+        if (!_gate.IsHeldByCurrentThread) return false;
+        _notifier.QueueProperty(property, attach);
+        return true;
+    }
+
+    internal bool TryQueuePropertyChange(Change.PropertyChangeInterceptor.Publication publication)
+    {
+        if (!_gate.IsHeldByCurrentThread) return false;
+        _notifier.QueuePropertyChange(publication);
+        return true;
+    }
+
     private void ExitGate()
+    {
+        try
+        {
+            if (_heldGateCount == 1) _notifier.Drain();
+        }
+        finally
+        {
+            ReleaseGate();
+        }
+    }
+
+    private void ReleaseGate()
     {
         // Decrement first, so an unbalanced exit leaves the count too low rather than too high: a
         // count stranded above zero on a pooled thread would reject that thread's next unrelated
         // transaction, while one below zero only stops the rule firing.
-        var leftTheTransaction = --_heldGateCount == 0;
-        if (leftTheTransaction)
+        if (--_heldGateCount == 0)
         {
-            // Before the gate is released and before the drain below takes the registration lock,
-            // so a reader that registers after this point reads a settled count and is told to
-            // decide for itself rather than to wait for a transaction that has ended.
-            Interlocked.Decrement(ref _transactionsInFlight);
-            _gateHolder = null;
+            Volatile.Write(ref _gateHolder, null);
         }
 
         _gate.Exit();
-
-        if (leftTheTransaction)
-        {
-            // Unconditionally, without first peeking at the list: a peek outside the registration
-            // lock creates a third outcome for a registration that has passed the count check and
-            // not yet published its entry, which is then neither drained nor refused.
-            RunWithheldRecalculations();
-        }
     }
 
     // Its own method, and never inlined, so EnterGate keeps its stack frame: inlined, this method's
@@ -237,33 +217,20 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     private void WaitForGate()
     {
         var deadline = Environment.TickCount64 + GateWaitTimeoutMilliseconds;
-        Thread? blockedHolder = null;
-        var blockedSince = 0L;
+        var blockedWindow = new BlockedGateHolderWindow();
 
         while (true)
         {
             // Sampled before the wait rather than after it, so the window is the wait itself and a
             // holder that releases the gate during it is seen as gone on the next pass.
+            var transactionRevision = Volatile.Read(ref _gateTransactionRevision);
             var holder = Volatile.Read(ref _gateHolder);
-            if (holder is not null && (holder.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0)
+            var isBlocked = holder is not null &&
+                (holder.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0;
+            if (blockedWindow.Observe(holder, transactionRevision, isBlocked, Environment.TickCount64, BlockedHolderThresholdMilliseconds) &&
+                transactionRevision == Volatile.Read(ref _gateTransactionRevision))
             {
-                // Per holder, not per wait: a gate handed from one thread to the next is a queue
-                // draining, and each new holder starts its own window. Measured as elapsed time
-                // rather than as a sample count, so load stretches the sampling rate without
-                // stretching what the threshold means.
-                if (!ReferenceEquals(holder, blockedHolder))
-                {
-                    blockedHolder = holder;
-                    blockedSince = Environment.TickCount64;
-                }
-                else if (Environment.TickCount64 - blockedSince >= BlockedHolderThresholdMilliseconds)
-                {
-                    ThrowHolderBlocked(BlockedHolderThresholdMilliseconds);
-                }
-            }
-            else
-            {
-                blockedHolder = null;
+                ThrowHolderBlocked(BlockedHolderThresholdMilliseconds);
             }
 
             if (_gate.TryEnter(HolderSampleIntervalMilliseconds))
@@ -271,11 +238,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 return;
             }
 
-            // The holder check above sees only a thread the runtime reports as blocked, so it
-            // cannot see a holder looping forever, spinning, blocked inside unmanaged code, or
-            // polling in a way that never blocks for the whole threshold. Those hang without this,
-            // so the last resort is a plain bound: nothing legitimate comes near it, and a process
-            // that reaches it is already stuck.
+            // End this wait even if no single holder met the blocked-state threshold.
             if (Environment.TickCount64 >= deadline)
             {
                 ThrowGateWaitTimedOut(GateWaitTimeoutMilliseconds);
@@ -289,20 +252,13 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         throw new LifecycleContractViolationException(
             "The thread holding the topology gate of this context has been blocked, never once seen " +
             $"running, for {TimeSpan.FromMilliseconds(thresholdMilliseconds).TotalSeconds:0.##} seconds. " +
-            "A holder that makes progress is never reported here however long it takes, so this is " +
-            "one of two things, " +
-            "and both break the contract that a gate holder is fast and waits on nothing. The first " +
-            "is the deadlock this framework cannot prevent: the thread inside the topology " +
-            "transaction dispatched structural work to another thread and waits for it, so it cannot " +
-            "release the gate until that work finishes and that work cannot start until the gate is " +
-            "released. A dispatch through Task.Run, the thread pool or a queue carries no link back " +
-            "to its origin, so watching the holder is the only way this can be seen at all. Never " +
-            "wait for structural work on another thread from inside a structural write, a lifecycle " +
-            "callback or an interceptor: complete the enclosing operation first and run the work " +
-            "after it returns, or hand it off without waiting. Dispatching a read, a scalar write or " +
-            "input and output and waiting for it is safe and is not this. The second is a holder " +
-            "blocked that long on a sleep, on input or output, or on a lock of its own. Nothing was " +
-            "read and nothing was changed.");
+            "This observation does not identify what the holder is waiting for. It may have " +
+            "dispatched structural work to another thread and be waiting for that work, which " +
+            "cannot acquire this gate until the enclosing operation returns. Never wait for " +
+            "structural work on another thread from inside a structural write, lifecycle callback " +
+            "or interceptor. Complete the enclosing operation first or hand off without waiting. " +
+            "The holder may also be blocked on unrelated work. Nothing was read and nothing was changed " +
+            "by this waiting operation; the holder was not aborted.");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -310,13 +266,9 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     {
         throw new LifecycleContractViolationException(
             $"Timed out after {TimeSpan.FromMilliseconds(timeoutMilliseconds).TotalSeconds:0.##} seconds waiting for the topology " +
-            "gate of this context, which another thread has held for that whole time without ever " +
-            "being seen blocked. Nothing here can tell which it is, because none of the causes is " +
-            "distinguishable from work: a lifecycle callback or an interceptor genuinely running that " +
-            "long, a loop spinning or polling instead of blocking, or a holder waiting inside " +
-            "unmanaged code for topology work it dispatched to another thread. All of them break the " +
-            "contract that a gate holder is fast and waits on nothing. Nothing was read and nothing " +
-            "was changed.");
+            "gate of this context. This total wait bound applies regardless of holder activity " +
+            "or changes of holder and cannot diagnose the cause of contention. Nothing was read " +
+            "and nothing was changed by this waiting operation; the holder was not aborted.");
     }
 
     /// <summary>Releases what <see cref="EnterGate"/> took. A struct, so the using costs nothing.</summary>
@@ -325,6 +277,11 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         public void Dispose()
         {
             lifecycle.ExitGate();
+        }
+
+        public void DrainOnFailure(Exception operationFailure)
+        {
+            if (_heldGateCount == 1) lifecycle._notifier.Drain(operationFailure);
         }
     }
 
@@ -336,25 +293,18 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     /// terminal actually stored is claimed as well, because a normalizing or hand-written terminal
     /// can store a graph the caller never proposed.
     ///
-    /// A terminal that stores a subject the write never proposed is a contract violation, and the
-    /// guarantee has one boundary there: the graph is left untouched, but the backing field holds
-    /// whatever that terminal stored. The framework can only invoke the terminal it was given, and a
-    /// terminal that is not a function of its argument cannot be replayed to restore the prior
-    /// value: replaying it with the pre-write value re-stores the same subject and fails again, and
-    /// going through <c>SetValue</c> is worse, being full chain re-entry with the same substitution
-    /// and therefore unbounded recursion. A terminal that stores what it was given, which is every
-    /// terminal the source generator emits, never reaches the boundary and skips the second claim.
+    /// A terminal may normalize its input or create a new subject. If the stored component cannot
+    /// be claimed, such as a subject owned by another context, reconciliation fails without
+    /// committing new graph edges. The framework cannot restore arbitrary terminal storage, so
+    /// the backing field retains the rejected value. Terminals emitted by the source generator
+    /// store the proposed value and skip this second claim.
     /// </remarks>
     public void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next)
     {
         var property = context.Property;
         var metadata = property.Metadata;
-        if (!metadata.Type.CanContainSubjects<TProperty>() || !metadata.IsIntercepted ||
-            metadata is { IsDerived: true, IsDynamic: true, SetValue: null })
+        if (!metadata.IsStructural<TProperty>())
         {
-            // Scalar, non-intercepted or a derived projection: never a graph edge. Same rule as
-            // OwnershipGraph.IsStructural, which carries the reasoning, restated here because the
-            // generic overload of CanContainSubjects is the write path's type fast path.
             next(ref context);
             return;
         }
@@ -370,15 +320,11 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             return;
         }
 
-        using (EnterGate())
+        var gate = EnterGate();
+        try
         {
-            if (!_graph.IsOwned(subject))
+            if (_graph.IsReleasing(subject))
             {
-                // Claimed for this context but not published: a root whose own structural getter
-                // writes back while the explicit attach seeds it at callback depth zero, or a
-                // subject between losing its ownership record and having its claim handed back. The
-                // reconcile would find no owner to publish edges for, and the seed that follows
-                // reads the committed value anyway.
                 next(ref context);
                 return;
             }
@@ -387,6 +333,13 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             try
             {
                 ClaimProposedComponent(metadata.Type, context.NewValue, claimed);
+                if (!_graph.IsOwned(subject) || _graph.IsEvaluatingSeedingGetter(property))
+                {
+                    // The enclosing seed getter supplies the stored value after this setter returns.
+                    // Rereading it here recursively invokes a getter that writes its own property.
+                    next(ref context);
+                    return;
+                }
 
                 try
                 {
@@ -417,6 +370,15 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 _graph.ReleaseUnusedClaims(claimed);
                 LifecycleScratch.Return(claimed);
             }
+        }
+        catch (Exception operationFailure)
+        {
+            gate.DrainOnFailure(operationFailure);
+            throw;
+        }
+        finally
+        {
+            gate.Dispose();
         }
     }
 
@@ -513,7 +475,8 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         // EnterGate rejects an admission that would open a second transaction, before the input is
         // enumerated and before anything blocks. A same-lifecycle callback re-enters this gate and
         // is the supported dynamic-property-initializer case.
-        using (EnterGate())
+        var gate = EnterGate();
+        try
         {
             var subject = registration.Subject;
             if (!ReferenceEquals(subject.Executor.AttachedContext, _context))
@@ -523,19 +486,33 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 return false;
             }
 
+            registration.GetProperties();
+            if (!ReferenceEquals(subject.Executor.AttachedContext, _context))
+            {
+                return false;
+            }
+
             if (_graph.IsOwned(subject))
             {
                 _admission.Admit(registration);
             }
             else
             {
-                // Claimed for this context but not owned by the graph: this thread's own attach
-                // descent before it publishes, or a detach callback after the release dropped the
-                // record; see AdmitUnowned for the shapes.
-                _admission.AdmitUnowned(registration);
+                // A claimed subject may never be published, and a releasing subject has no
+                // descent left. Only a future ownership entry may seed these new properties.
+                registration.Publish();
             }
 
             return true;
+        }
+        catch (Exception operationFailure)
+        {
+            gate.DrainOnFailure(operationFailure);
+            throw;
+        }
+        finally
+        {
+            gate.Dispose();
         }
     }
 
@@ -553,7 +530,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     /// </summary>
     public void HandleLifecycleChange(SubjectLifecycleChange change)
     {
-        if (change is { IsContextAttach: true, Property: not null })
+        if (change.IsContextAttach)
         {
             _attach.SeedChildrenIfNeeded(change.Subject);
         }
@@ -578,22 +555,28 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             throw new InvalidOperationException("An attach without a root anchor would be released by the next reachability decision.");
         }
 
-        using (EnterGate())
+        var gate = EnterGate();
+        try
         {
             var executor = subject.Executor;
-            executor.TryGetAttachment(out var attachedContext, out var currentAnchor, out _);
+            executor.TryGetAttachment(out var attachedContext, out var currentAnchor, out var rootAttachmentRevision);
             InterceptorSubjectExtensions.ValidateRootAnchor(attachedContext, currentAnchor, context, anchor);
 
             if (attachedContext is not null)
             {
-                // Already in this context: promote the anchor without repeating attach callbacks. A
-                // provisional request never promotes, it is only a construction-time default.
-                if (anchor != SubjectAttachmentAnchorKind.Provisional)
+                if (anchor == SubjectAttachmentAnchorKind.Provisional)
                 {
-                    _graph.SetAnchor(subject, anchor);
+                    return;
                 }
 
-                return;
+                _graph.SetAnchor(subject, anchor);
+                if (!_graph.IsReleasing(subject))
+                {
+                    return;
+                }
+
+                // A retained teardown claim needs the same seeding rollback and consumed-anchor
+                // tracking as a fresh attach, because a resurrection getter can reject its graph.
             }
 
             var claimed = LifecycleScratch.RentSubjectList();
@@ -608,7 +591,8 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             try
             {
                 ClaimComponentForRoot(subject, anchor, claimed);
-                SeedAndAttachComponent(subject);
+                executor.TryGetAttachment(out _, out _, out rootAttachmentRevision);
+                _attach.AttachRoot(subject);
                 published = true;
             }
             finally
@@ -625,81 +609,71 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 }
                 else
                 {
-                    RollbackRejectedAttach(subject, anchor, claimed, consumedAnchors);
+                    RollbackRejectedAttach(subject, anchor, rootAttachmentRevision, claimed, consumedAnchors);
                 }
 
                 LifecycleScratch.Return(claimed);
                 LifecycleScratch.Return(consumedAnchors);
             }
         }
+        catch (Exception operationFailure)
+        {
+            gate.DrainOnFailure(operationFailure);
+            throw;
+        }
+        finally
+        {
+            gate.Dispose();
+        }
     }
 
-    /// <summary>
-    /// Hands back everything a rejected attach had already written. Discovery reads user values
-    /// before the claim publishes anything, so a concurrent write can install a child that seeding
-    /// then refuses, and the anchor, the seeded baselines and the claims taken in between must not
-    /// outlive that refusal.
-    /// </summary>
+    /// <summary>Removes a rejected root anchor and releases the component that loses its support.</summary>
     /// <remarks>
-    /// Whatever the seed managed to publish hangs off the root's committed baselines, so removing
-    /// those edges releases it the ordinary way, cascade and detach callbacks included. That is also
-    /// the only handle on a subject a concurrent write installed after the scan: it is published but
-    /// was never in the claimed set, so a claim-only rollback would leave it attached.
-    ///
-    /// The order is deliberate: the root keeps its anchor, its baselines and its claim until the
-    /// drain has actually finished, so a rollback that cannot complete leaves the root attached and
-    /// detachable rather than stripped of the very state <c>DetachFromContext</c> needs.
-    ///
-    /// A provisional anchor the seed consumed goes back before the drain, because the edge that
-    /// consumed it is among the edges drained, and without the anchor that removal would release a
-    /// subject that was attached and held before the attach began, together with everything it
-    /// holds. The restore is a compare-and-swap against the revision the consumption produced, so
-    /// a subject whose attachment moved since (promoted, detached, released) keeps what it has.
+    /// Restore consumed provisional anchors before release so pre-existing roots keep their support.
+    /// A root retained by an independently committed edge keeps its installed children and failed-seed
+    /// state for retry; draining those children would invalidate that surviving ownership lifetime.
     /// </remarks>
     private void RollbackRejectedAttach(
         IInterceptorSubject subject,
         SubjectAttachmentAnchorKind anchor,
+        long rootAttachmentRevision,
         List<IInterceptorSubject> claimed,
         List<(IInterceptorSubject Subject, long Revision)> consumedAnchors)
     {
-        var children = LifecycleScratch.RentChildList();
         try
         {
+            // A getter can detach and explicitly reattach this root, even while outside support
+            // retains its ownership record. That newer anchor does not belong to this rollback.
+            subject.Executor.TryGetAttachment(out _, out _, out var currentRootRevision);
+            var ownsRootAnchor = currentRootRevision == rootAttachmentRevision;
             foreach (var (consumedSubject, revision) in consumedAnchors)
             {
                 consumedSubject.Executor.TryUpdateAttachment(revision, _context, SubjectAttachmentAnchorKind.Provisional, out _);
             }
 
-            _graph.CollectStructuralChildren(subject, children, seed: false);
-            foreach (var (property, occurrence) in children)
+            if (ownsRootAnchor)
             {
-                _release.RemoveEdge(occurrence.Subject, property, occurrence.Index);
-            }
+                _graph.SetAnchor(subject, SubjectAttachmentAnchorKind.None);
 
-            _graph.SetAnchor(subject, SubjectAttachmentAnchorKind.None);
-
-            // The drain above ran while the anchor was still set, so a back edge inside the
-            // component kept the root anchor-reachable and nothing released it. Re-evaluate now
-            // that the anchor is gone, or the root stays owned with no anchor and no way to
-            // detach it.
-            var ownership = _graph.TryGetOwnership(subject);
-            if (ownership is null)
-            {
-                _graph.ReleaseClaim(subject);
-            }
-            else if (ownership.IncomingCount == 0 || !_reachability.IsAnchorReachable(subject, null))
-            {
-                try
+                var ownership = _graph.TryGetOwnership(subject);
+                if (ownership is null)
                 {
-                    _release.ReleaseRoot(subject);
+                    _graph.ReleaseClaim(subject);
                 }
-                catch
+                else if (ownership.IncomingCount == 0 || !_reachability.IsAnchorReachable(subject, null))
                 {
-                    // The release runs detach callbacks, so it can fail partway. Put the anchor
-                    // back: the trace below tells the caller to detach the root explicitly, and
-                    // without an anchor that is exactly what DetachFromContext refuses to do.
-                    _graph.SetAnchor(subject, anchor);
-                    throw;
+                    try
+                    {
+                        _release.ReleaseRoot(subject);
+                    }
+                    catch
+                    {
+                        // The release runs detach callbacks, so it can fail partway. Put the anchor
+                        // back: the trace below tells the caller to detach the root explicitly, and
+                        // without an anchor that is exactly what DetachFromContext refuses to do.
+                        _graph.SetAnchor(subject, anchor);
+                        throw;
+                    }
                 }
             }
 
@@ -738,10 +712,6 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 "exception is propagating and this one is not, so part of the attach is still " +
                 "published and the root is still attached; detach it explicitly to clean up.");
         }
-        finally
-        {
-            LifecycleScratch.Return(children);
-        }
     }
 
     /// <inheritdoc />
@@ -754,7 +724,8 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             throw new InvalidOperationException("The subject cannot be detached through the lifecycle of another context.");
         }
 
-        using (EnterGate())
+        var gate = EnterGate();
+        try
         {
             var executor = subject.Executor;
             executor.TryGetAttachment(out var attachedContext, out var anchor, out _);
@@ -774,20 +745,14 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 _release.ReleaseRoot(subject);
             }
         }
-    }
-
-    /// <summary>
-    /// Seeds and publishes a freshly claimed root's component. Runs under <see cref="_gate"/>.
-    /// </summary>
-    private void SeedAndAttachComponent(IInterceptorSubject subject)
-    {
-        _attach.SeedAndAttachChildren(subject);
-
-        // A back edge inside the seeded component can attach the subject before this point, in
-        // which case it already published its context attach through that edge.
-        if (!_graph.IsOwned(subject))
+        catch (Exception operationFailure)
         {
-            _attach.AttachRoot(subject);
+            gate.DrainOnFailure(operationFailure);
+            throw;
+        }
+        finally
+        {
+            gate.Dispose();
         }
     }
 
@@ -822,80 +787,6 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     // Internal for tests only: committed baselines have no public observer, and the
     // released-parent regression tests must assert that none survives a subject's release.
     internal OwnershipGraph Graph => _graph;
-
-    /// <summary>
-    /// Asks whether there is an in-flight transaction to wait for, and registers work to run once it
-    /// ends. Returns false when there is nothing in flight, in which case nothing was registered and
-    /// the caller decides on the value it is holding. A null <paramref name="recalculation"/> asks
-    /// the question without registering, for a caller whose earlier booking is still outstanding.
-    /// </summary>
-    /// <remarks>
-    /// The question and the registration share one lock, and the transaction count is decremented
-    /// before the drain takes that lock, so the two cannot both miss: a registration that lands
-    /// before the drain's swap is drained, and one that lands after it reads a count of zero and is
-    /// refused. That is also why every caller has to ask here rather than answering from state of
-    /// its own. Nothing registered here runs under this lock, and the caller may hold its own lock
-    /// while registering, so this stays a leaf.
-    /// </remarks>
-    internal bool TryRunWhenTransactionEnds(Action? recalculation)
-    {
-        lock (_withheldLock)
-        {
-            if (Volatile.Read(ref _transactionsInFlight) <= (_gate.IsHeldByCurrentThread ? 1 : 0))
-            {
-                return false;
-            }
-
-            if (recalculation is not null)
-            {
-                (_withheldRecalculations ??= []).Add(recalculation);
-            }
-
-            return true;
-        }
-    }
-
-    /// <summary>
-    /// Runs everything a reader deferred until this transaction ended. The gate is already released,
-    /// so the work is free to take it again, and this lifecycle holds no lock while it runs.
-    /// </summary>
-    /// <remarks>
-    /// Exceptions do not escape: this is reached from a <c>finally</c>, so a conviction that
-    /// surfaces here would replace the exception of a transaction that is already failing, and the
-    /// reader that produced the value has long returned. It is traced instead, and raised against a
-    /// caller on the next evaluation with nothing in flight. Nothing schedules that evaluation, so
-    /// this is best effort and not a guarantee: a derived property whose dependencies are written
-    /// once at startup, or one orphaned by the last write of a batch, is reported only into the
-    /// trace, which is silent unless a listener is configured.
-    /// </remarks>
-    private void RunWithheldRecalculations()
-    {
-        List<Action>? withheld;
-        lock (_withheldLock)
-        {
-            withheld = _withheldRecalculations;
-            _withheldRecalculations = null;
-        }
-
-        if (withheld is null)
-        {
-            return;
-        }
-
-        foreach (var recalculation in withheld)
-        {
-            try
-            {
-                recalculation();
-            }
-            catch (Exception exception)
-            {
-                Trace.TraceError(
-                    "LifecycleInterceptor: a recalculation deferred until this topology transaction " +
-                    $"ended failed with {exception.GetType().Name}: {exception.Message}");
-            }
-        }
-    }
 
     /// <summary>
     /// Gets the number of committed incoming edge occurrences, which is the subject's reference

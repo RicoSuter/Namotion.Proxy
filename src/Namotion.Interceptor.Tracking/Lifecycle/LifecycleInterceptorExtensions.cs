@@ -34,6 +34,7 @@ public static class LifecycleInterceptorExtensions
     /// </summary>
     public static void AttachSubjectProperty(this IInterceptorSubject subject, PropertyReference property)
     {
+        if (subject.TryGetContext()?.TryGetLifecycleInterceptor()?.TryQueuePropertyCallback(property, attach: true) == true) return;
         using var scope = CallbackReentrancyGuard.EnterPropertyCallbackScope();
         var change = new SubjectPropertyLifecycleChange(subject, property);
 
@@ -54,6 +55,7 @@ public static class LifecycleInterceptorExtensions
     /// </summary>
     public static void DetachSubjectProperty(this IInterceptorSubject subject, PropertyReference property)
     {
+        if (subject.TryGetContext()?.TryGetLifecycleInterceptor()?.TryQueuePropertyCallback(property, attach: false) == true) return;
         using var scope = CallbackReentrancyGuard.EnterPropertyCallbackScope();
         var change = new SubjectPropertyLifecycleChange(subject, property);
 

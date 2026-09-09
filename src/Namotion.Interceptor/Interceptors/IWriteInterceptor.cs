@@ -10,8 +10,8 @@ namespace Namotion.Interceptor.Interceptors;
 /// to another thread and wait for it while holding that gate: a dispatched structural write,
 /// attach or detach needs the same gate, so the two wait on each other. Dispatching a read, a scalar
 /// write or input and output and waiting for it is safe, and so is handing structural work off
-/// without waiting. Same-context topology reentry is permitted outside lifecycle callbacks;
-/// cross-context topology nesting and structural writes from lifecycle callbacks are rejected.
+/// without waiting. Same-context topology reentry is supported, including queued lifecycle
+/// callbacks. Nested topology work in another context is rejected.
 /// </remarks>
 public interface IWriteInterceptor
 {

@@ -247,8 +247,12 @@ public class StructuralWriteTests
         var gate = new GatingWriteInterceptor();
         var context = InterceptorSubjectContext.Create();
         context.AddService(gate);
-        var subject = new StructuralHolder(context);
+        var subject = new StructuralHolder();
         var executor = GetExecutor(subject);
+        // Model the window after a lifecycle-free attach publishes its raw attachment and before
+        // it marks the context. A completed high-level attach now rejects the registration below.
+        Assert.True(executor.TryUpdateAttachment(executor.AttachmentRevision, context,
+            SubjectAttachmentAnchorKind.Explicit, out _));
         var probe = new CountingLifecycleInterceptor();
 
         var monitorHolderCommitted = false;

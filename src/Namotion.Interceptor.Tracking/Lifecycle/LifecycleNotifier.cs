@@ -1,3 +1,6 @@
+using Namotion.Interceptor.Tracking.Change;
+using System.Runtime.ExceptionServices;
+
 namespace Namotion.Interceptor.Tracking.Lifecycle;
 
 /// <summary>
@@ -5,82 +8,165 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 /// fan-out, for one context.
 /// </summary>
 /// <remarks>
-/// Separate from <see cref="LifecycleInterceptor"/> so that what the publishing classes are allowed
-/// to do is a property of a constructor signature: handing them the interceptor would put the write
-/// protocol and both attach entry points within reach of code running under the topology lock.
-///
-/// Every publication marks the thread through <see cref="CallbackReentrancyGuard.EnterScope"/>,
-/// which is what lets the structural write protocol reject a callback that writes a structural
-/// property.
+/// Graph descent runs inline. Other handlers and events are queued in their declared order and
+/// delivered at the outer gate boundary. Nested writes update ownership before returning, while
+/// their notifications join the queue. Callback failures do not roll back committed ownership.
 /// </remarks>
-internal sealed class LifecycleNotifier(IInterceptorSubjectContext context)
+internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, OwnershipGraph graph, ILifecycleHandler descentHandler)
 {
-    public event Action<SubjectLifecycleChange>? SubjectAttached;
+    private enum NotificationKind { Attached, Detaching, LifecycleHandler, Refresh, AttachProperty, DetachProperty, ReleaseClaim }
+    private readonly record struct Notification(NotificationKind Kind, SubjectLifecycleChange Change, object? Value = null);
+    private readonly List<PropertyChangeInterceptor.Publication> _propertyChanges = [];
+    private readonly List<Notification> _notifications = [];
+    private bool _draining;
 
+    public event Action<SubjectLifecycleChange>? SubjectAttached;
     public event Action<SubjectLifecycleChange>? SubjectDetaching;
 
-    public void RaiseSubjectAttached(SubjectLifecycleChange change)
-    {
-        using var scope = CallbackReentrancyGuard.EnterScope();
-        SubjectAttached?.Invoke(change);
-    }
-
-    public void RaiseSubjectDetaching(SubjectLifecycleChange change)
-    {
-        using var scope = CallbackReentrancyGuard.EnterScope();
-        SubjectDetaching?.Invoke(change);
-    }
-
-    /// <summary>Publishes an edge removal that did not release the subject.</summary>
-    public void PublishEdgeRemoved(IInterceptorSubject subject, PropertyReference property, object? index, int referenceCount)
-    {
-        InvokeRemovedLifecycleHandlers(subject, new SubjectLifecycleChange
-        {
-            Subject = subject,
-            Property = property,
-            Index = index,
-            ReferenceCount = referenceCount,
-            IsPropertyReferenceRemoved = true
-        });
-    }
-
+    public void RaiseSubjectAttached(SubjectLifecycleChange change) => _notifications.Add(new(NotificationKind.Attached, change));
+    public void RaiseSubjectDetaching(SubjectLifecycleChange change) => _notifications.Add(new(NotificationKind.Detaching, change));
     public void InvokeAddedLifecycleHandlers(IInterceptorSubject subject, SubjectLifecycleChange change)
     {
-        using var scope = CallbackReentrancyGuard.EnterScope();
-        var handlers = context.GetServices<ILifecycleHandler>();
-        for (var index = 0; index < handlers.Length; index++)
+        try
         {
-            handlers[index].HandleLifecycleChange(change);
+            QueueLifecycleHandlers(change);
         }
-
-        if (subject is ILifecycleHandler subjectHandler)
+        finally
         {
-            subjectHandler.HandleLifecycleChange(change);
+            if (subject is ILifecycleHandler handler) _notifications.Add(new(NotificationKind.LifecycleHandler, change, Value: handler));
         }
     }
 
     public void InvokeRemovedLifecycleHandlers(IInterceptorSubject subject, SubjectLifecycleChange change)
     {
-        using var scope = CallbackReentrancyGuard.EnterScope();
-        if (subject is ILifecycleHandler subjectHandler)
+        if (subject is ILifecycleHandler handler) _notifications.Add(new(NotificationKind.LifecycleHandler, change, Value: handler));
+        QueueLifecycleHandlers(change);
+    }
+
+    private void QueueLifecycleHandlers(SubjectLifecycleChange change)
+    {
+        ExceptionDispatchInfo? failure = null;
+        foreach (var handler in context.GetServices<ILifecycleHandler>())
         {
-            subjectHandler.HandleLifecycleChange(change);
+            if (ReferenceEquals(handler, descentHandler))
+            {
+                try { handler.HandleLifecycleChange(change); }
+                catch (Exception exception) { failure = ExceptionDispatchInfo.Capture(exception); }
+            }
+            else _notifications.Add(new(NotificationKind.LifecycleHandler, change, Value: handler));
         }
 
-        var handlers = context.GetServices<ILifecycleHandler>();
-        for (var index = 0; index < handlers.Length; index++)
+        failure?.Throw();
+    }
+
+    public void QueuePropertyChange(PropertyChangeInterceptor.Publication publication)
+    {
+        _propertyChanges.Add(publication);
+    }
+    public void RefreshCollectionProperty(PropertyReference property, object? value) => _notifications.Add(new(NotificationKind.Refresh, new SubjectLifecycleChange { Subject = property.Subject, Property = property, ReferenceCount = 0 }, value));
+    public void QueueProperty(PropertyReference property, bool attach) => _notifications.Add(new(attach ? NotificationKind.AttachProperty : NotificationKind.DetachProperty, new SubjectLifecycleChange { Subject = property.Subject, Property = property, ReferenceCount = 0 }));
+    public void QueueRelease(IInterceptorSubject subject, SubjectOwnership ownership) => _notifications.Add(new(NotificationKind.ReleaseClaim, new SubjectLifecycleChange { Subject = subject, ReferenceCount = 0 }, Value: ownership));
+
+    public void PublishEdgeRemoved(IInterceptorSubject subject, PropertyReference property, object? index, int referenceCount)
+    {
+        InvokeRemovedLifecycleHandlers(subject, new SubjectLifecycleChange
         {
-            handlers[index].HandleLifecycleChange(change);
+            Subject = subject, Property = property, Index = index,
+            ReferenceCount = referenceCount, IsPropertyReferenceRemoved = true
+        });
+    }
+
+    public void Drain(Exception? operationFailure = null)
+    {
+        if (_draining || (_notifications.Count == 0 && _propertyChanges.Count == 0)) return;
+        _draining = true;
+        List<Exception>? failures = null;
+        try
+        {
+            using var scope = CallbackReentrancyGuard.EnterDeliveryScope();
+            var notificationIndex = 0;
+            var propertyChangeIndex = 0;
+            while (notificationIndex < _notifications.Count || propertyChangeIndex < _propertyChanges.Count)
+            {
+                // A self-writing seed queues its property change before discovering that value's
+                // lifecycle transitions. Drain all pending maintenance before each observer group.
+                if (notificationIndex == _notifications.Count)
+                {
+                    try { _propertyChanges[propertyChangeIndex++].Dispatch(); }
+                    catch (Exception exception) { (failures ??= []).Add(exception); }
+                    continue;
+                }
+
+                var notification = _notifications[notificationIndex++];
+                switch (notification.Kind)
+                {
+                    case NotificationKind.Attached:
+                    case NotificationKind.Detaching:
+                        var callbacks = notification.Kind == NotificationKind.Attached ? SubjectAttached : SubjectDetaching;
+                        if (callbacks is not null)
+                        {
+                            foreach (var callback in Delegate.EnumerateInvocationList(callbacks))
+                            {
+                                try { callback(notification.Change); }
+                                catch (Exception exception) { (failures ??= []).Add(exception); }
+                            }
+                        }
+                        break;
+                    case NotificationKind.LifecycleHandler:
+                        try { ((ILifecycleHandler)notification.Value!).HandleLifecycleChange(notification.Change); }
+                        catch (Exception exception) { (failures ??= []).Add(exception); }
+                        break;
+                    case NotificationKind.Refresh:
+                    case NotificationKind.AttachProperty:
+                    case NotificationKind.DetachProperty:
+                        foreach (var handler in context.GetServices<IPropertyLifecycleHandler>())
+                        {
+                            InvokePropertyHandler(handler, notification, ref failures);
+                        }
+                        if (notification.Kind != NotificationKind.Refresh && notification.Change.Subject is IPropertyLifecycleHandler subjectHandler)
+                        {
+                            InvokePropertyHandler(subjectHandler, notification, ref failures);
+                        }
+                        break;
+                    case NotificationKind.ReleaseClaim:
+                        var subject = notification.Change.Subject;
+                        var ownership = (SubjectOwnership)notification.Value!;
+                        if (graph.IsCurrentRelease(subject, ownership))
+                        {
+                            graph.ReleaseClaim(subject);
+                            graph.ClearReleasing(subject, ownership);
+                        }
+                        break;
+                }
+            }
+        }
+        finally
+        {
+            _notifications.Clear();
+            _propertyChanges.Clear();
+            _draining = false;
+        }
+        if (failures is not null)
+        {
+            if (operationFailure is not null) failures.Insert(0, operationFailure);
+            if (failures.Count == 1) ExceptionDispatchInfo.Capture(failures[0]).Throw();
+            throw new AggregateException(failures);
         }
     }
 
-    public void RefreshCollectionProperty(PropertyReference property, object? value)
+    private static void InvokePropertyHandler(IPropertyLifecycleHandler handler, Notification notification, ref List<Exception>? failures)
     {
-        using var scope = CallbackReentrancyGuard.EnterScope();
-        var handlers = context.GetServices<IPropertyLifecycleHandler>();
-        for (var index = 0; index < handlers.Length; index++)
+        try
         {
-            handlers[index].RefreshCollectionProperty(property, value);
+            var property = notification.Change.Property.GetValueOrDefault();
+            var change = new SubjectPropertyLifecycleChange(notification.Change.Subject, property);
+            switch (notification.Kind)
+            {
+                case NotificationKind.AttachProperty: handler.AttachProperty(change); break;
+                case NotificationKind.DetachProperty: handler.DetachProperty(change); break;
+                default: handler.RefreshCollectionProperty(property, notification.Value); break;
+            }
         }
+        catch (Exception exception) { (failures ??= []).Add(exception); }
     }
 }

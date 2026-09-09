@@ -47,7 +47,7 @@ var json = JsonSerializer.Serialize(update);
 
 ### Partial Update (Changes Only)
 
-Use for incremental synchronization based on tracked property changes:
+Use for incremental synchronization based on tracked property changes. Repeated changes to a property are merged before constructing the update, preserving the earliest old value and latest new value and timestamp. Committed changes are ordered by revision; if any change to that property has no revision, arrival order is used. Callers do not need to merge the batch first:
 
 ```csharp
 // Collect changes from the tracking system
@@ -372,7 +372,9 @@ Circular references are handled naturally by the flat structure. Each subject in
 }
 ```
 
-No special `reference` field is needed - the `id` field always points to a subject in the dictionary.
+No special `reference` field is needed - the `id` field always points to a subject in the dictionary. A non-null object, inserted item, or sparse item ID missing from `subjects` is an invalid update: applying it reports a property failure and preserves that property, while sibling property updates continue. A null object ID intentionally clears the reference. Remove operations need only the index or key, without subject payload.
+
+Every subject referenced by the final update must have Registry metadata, including subjects returned by derived properties. Intermediate references overwritten while building a batch do not require a payload. A detached local projection remains valid to read, but update creation rejects it instead of emitting a dangling ID. Register the projected subject or exclude the referencing property with an `ISubjectUpdateProcessor`. Projections of subjects registered in another context are supported.
 
 ## Null Collections and Dictionaries
 
@@ -392,7 +394,8 @@ Note: In partial updates, `Kind=Collection/Dictionary` entries with no operation
 - **No "clear collection" operation**: clearing N items emits N individual Remove operations.
 - **Non-subject collections** (`List<int>`, `Dictionary<string, string>`) use value-replacement semantics (full replacement, no granular diffing). Only `IInterceptorSubject` collections support structural diffs.
 - **Conflict resolution** is last-applied-wins by message arrival order with eventual consistency via reconnection.
-- **Dictionary keys** are normalized to strings during transport. Non-string keys (int, enum) must be convertible via `Convert.ChangeType` or `Enum.Parse`.
+- **Dictionary keys** are normalized to strings during transport. Non-string keys (int, enum) must be convertible via `Convert.ChangeType` or `Enum.Parse`. Dictionary-shaped values without a typed subject sequence view require a dictionary-declared property; attempting to encode those values through a positional collection declaration throws `NotSupportedException`. A dictionary-shaped value that explicitly provides the declared typed subject sequence is encoded positionally. Dictionary wrappers used through a dictionary declaration must expose subject values as key/value pairs through non-generic enumeration; value-only subject enumerators are rejected because their keys cannot be preserved.
+- **Collection factories** require a unique element type from the declared collection or dictionary interfaces. Untyped or ambiguous declarations throw `NotSupportedException`. The default factory creates arrays, `List<T>`, and `Dictionary<TKey, TValue>`; supply an `ISubjectFactory` for declarations requiring another concrete container type.
 
 ## Attributes
 

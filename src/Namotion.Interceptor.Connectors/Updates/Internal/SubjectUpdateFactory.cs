@@ -48,6 +48,7 @@ internal static class SubjectUpdateFactory
         try
         {
             builder.Initialize(rootSubject, processors);
+            propertyChanges = builder.MergeChanges(propertyChanges);
 
             for (var i = 0; i < propertyChanges.Length; i++)
             {
@@ -74,7 +75,10 @@ internal static class SubjectUpdateFactory
 
         var registeredSubject = subject.TryGetRegisteredSubject();
         if (registeredSubject is null)
+        {
+            builder.HasUnregisteredSubjects = true;
             return;
+        }
 
         var properties = builder.GetOrCreateProperties(subjectId);
 
@@ -237,6 +241,7 @@ internal static class SubjectUpdateFactory
         SubjectUpdateBuilder builder)
     {
         update.Kind = SubjectPropertyUpdateKind.Object;
+        update.Id = null;
 
         if (item is not null)
         {

@@ -21,57 +21,93 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 /// </remarks>
 internal sealed class StructuralReconciler(LifecycleNotifier notifier, OwnershipGraph graph, AttachTraversal attach, ReleaseTraversal release)
 {
-    public void Reconcile(PropertyReference property, SubjectPropertyMetadata metadata, object? newValue)
+    public void Reconcile(PropertyReference property, SubjectPropertyMetadata metadata, object? newValue, bool useCapturedBaseline = false)
     {
-        var oldValue = graph.GetBaseline(property);
-        if (ReferenceEquals(oldValue, newValue))
+        var ownership = graph.TryGetOwnership(property.Subject);
+        if (ownership is null) return;
+        var existingJournal = graph.GetPropertyJournal(property, ownership);
+        var baseline = graph.GetBaselineSnapshot(property);
+        var oldValue = baseline.Value;
+        if (useCapturedBaseline) newValue = baseline.Value;
+        if (existingJournal is null && ReferenceEquals(oldValue, newValue)) return;
+        if (existingJournal is null && !StructuralValueScanner.CanHoldSubjects(oldValue) && !StructuralValueScanner.CanHoldSubjects(newValue)) return;
+
+        if (existingJournal is null && (oldValue is null or IInterceptorSubject) && (newValue is null or IInterceptorSubject))
         {
+            ReconcileScalar(property, ownership, (IInterceptorSubject?)oldValue, (IInterceptorSubject?)newValue);
             return;
         }
 
-        if (!StructuralValueScanner.CanHoldSubjects(oldValue) && !StructuralValueScanner.CanHoldSubjects(newValue))
-        {
-            return;
-        }
-
+        var previousRevision = baseline.Revision;
         var oldOccurrences = LifecycleScratch.RentOccurrenceList();
         var newOccurrences = LifecycleScratch.RentOccurrenceList();
         try
         {
-            StructuralValueScanner.CollectOccurrences(metadata.Type, oldValue, oldOccurrences);
-            StructuralValueScanner.CollectOccurrences(metadata.Type, newValue, newOccurrences);
+            if (existingJournal is null) baseline.CopyTo(oldOccurrences);
+            else existingJournal.CopyTo(oldOccurrences);
+            if (useCapturedBaseline) baseline.CopyTo(newOccurrences);
+            else StructuralValueScanner.CollectOccurrences(metadata.Type, newValue, newOccurrences);
 
-            if (!graph.IsOwned(property.Subject))
+            if (!ReferenceEquals(graph.TryGetOwnership(property.Subject), ownership) ||
+                graph.GetBaselineRevision(property) != previousRevision) return;
+
+            var journal = graph.BeginPropertyJournal(property, ownership, oldOccurrences);
+            try
             {
-                // Code running downstream of the lifecycle at callback depth zero (a third-party
-                // write interceptor, a hand-written terminal, a dynamic getter reread, or a
-                // side-effecting user collection enumerated just above) holds the gate reentrantly
-                // and can release the writing parent before this point. That release already
-                // collected this property's children through the old baseline, so nothing may
-                // continue on the parent's behalf: committing the new baseline would recreate an
-                // entry that no later release ever removes, and the addition loop would attach
-                // occurrences to a released owner.
-                return;
+                var revision = graph.SetBaseline(property, newValue, newOccurrences);
+                journal.IsComplete = false;
+                ReconcileOccurrences(property, newValue, oldOccurrences, newOccurrences, ownership, revision);
+                if (ReferenceEquals(graph.TryGetOwnership(property.Subject), ownership) &&
+                    graph.GetBaselineRevision(property) == revision)
+                {
+                    journal.Complete(newOccurrences);
+                }
             }
-
-            if (!ReferenceEquals(graph.GetBaseline(property), oldValue))
+            finally
             {
-                // That same user code reentered the write protocol on this very property and
-                // committed a newer baseline while the scans above ran. Its value reached the
-                // backing field after this one did and the graph already agrees with it, so
-                // committing this one would publish edges the property no longer holds.
-                return;
+                graph.EndPropertyJournal(journal);
             }
-
-            // Commit the outgoing edges before the incoming records are touched.
-            graph.SetBaseline(property, newValue);
-
-            ReconcileOccurrences(property, newValue, oldOccurrences, newOccurrences);
         }
         finally
         {
             LifecycleScratch.Return(oldOccurrences);
             LifecycleScratch.Return(newOccurrences);
+        }
+    }
+
+    private void ReconcileScalar(
+        PropertyReference property,
+        SubjectOwnership ownership,
+        IInterceptorSubject? oldSubject,
+        IInterceptorSubject? newSubject)
+    {
+        var journal = graph.BeginPropertyJournal(property, ownership);
+        try
+        {
+            if (oldSubject is not null) journal.Add(oldSubject, null);
+            var revision = graph.SetBaseline(property, newSubject);
+            if (oldSubject is not null)
+            {
+                release.RemoveEdge(oldSubject, property, null);
+                if (!ReferenceEquals(graph.TryGetOwnership(property.Subject), ownership) || graph.GetBaselineRevision(property) != revision)
+                    return;
+            }
+
+            if (newSubject is not null)
+            {
+                attach.AttachEdge(newSubject, property, null);
+                attach.ResumeFailedSeed(newSubject, this);
+                if (!ReferenceEquals(graph.TryGetOwnership(property.Subject), ownership) || graph.GetBaselineRevision(property) != revision)
+                    return;
+            }
+
+            // No journal existed on entry; any nested write that shares this one changes the
+            // revision checked above, so completion has no enclosing snapshot to refresh.
+            journal.IsComplete = true;
+        }
+        finally
+        {
+            graph.EndPropertyJournal(journal);
         }
     }
 
@@ -84,7 +120,9 @@ internal sealed class StructuralReconciler(LifecycleNotifier notifier, Ownership
         PropertyReference property,
         object? newValue,
         List<SubjectOccurrence> oldOccurrences,
-        List<SubjectOccurrence> newOccurrences)
+        List<SubjectOccurrence> newOccurrences,
+        SubjectOwnership ownership,
+        long revision)
     {
         var parent = property.Subject;
         var oldCounts = LifecycleScratch.RentSubjectCounter();
@@ -115,12 +153,10 @@ internal sealed class StructuralReconciler(LifecycleNotifier notifier, Ownership
 
                 oldCounts[occurrence.Subject] = remaining - 1;
                 release.RemoveEdge(occurrence.Subject, property, occurrence.Index);
-                if (!graph.IsOwned(parent))
+                if (!ReferenceEquals(graph.TryGetOwnership(parent), ownership) || graph.GetBaselineRevision(property) != revision)
                 {
-                    // Side-effecting user code invoked by this loop at callback depth zero (a
-                    // dictionary-key Equals, a user collection implementation) can run the write
-                    // protocol reentrantly and release the writing parent mid-publication, and the
-                    // remaining edges would then be published on behalf of a released owner.
+                    // Reachability and child discovery can invoke user code. A nested write owns
+                    // the remaining publication once it replaces this baseline or ownership epoch.
                     return;
                 }
             }
@@ -133,17 +169,21 @@ internal sealed class StructuralReconciler(LifecycleNotifier notifier, Ownership
                 if (retained > 0)
                 {
                     oldCounts[occurrence.Subject] = retained - 1;
+                    if (attach.ResumeFailedSeed(occurrence.Subject, this) &&
+                        (!ReferenceEquals(graph.TryGetOwnership(parent), ownership) || graph.GetBaselineRevision(property) != revision))
+                        return;
                     continue;
                 }
 
                 attach.AttachEdge(occurrence.Subject, property, occurrence.Index);
-                if (!graph.IsOwned(parent))
+                attach.ResumeFailedSeed(occurrence.Subject, this);
+                if (!ReferenceEquals(graph.TryGetOwnership(parent), ownership) || graph.GetBaselineRevision(property) != revision)
                 {
                     return;
                 }
             }
 
-            if (!graph.IsOwned(parent))
+            if (!ReferenceEquals(graph.TryGetOwnership(parent), ownership) || graph.GetBaselineRevision(property) != revision)
             {
                 return;
             }

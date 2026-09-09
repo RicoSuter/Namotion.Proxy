@@ -1,8 +1,8 @@
 namespace Namotion.Interceptor.Tracking.Lifecycle;
 
 /// <summary>
-/// Thrown when caller code breaks a lifecycle contract: mutating topology from inside a lifecycle
-/// callback, or exposing a subject the lifecycle cannot track.
+/// Thrown for a lifecycle contract violation, such as nested topology work in another context,
+/// or when waiting for the topology gate exceeds a contention threshold.
 /// </summary>
 /// <remarks>
 /// Its own type matters. <see cref="Change.DerivedPropertyChangeHandler"/> absorbs exceptions from derived

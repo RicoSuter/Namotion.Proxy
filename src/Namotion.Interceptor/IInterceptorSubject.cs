@@ -31,9 +31,10 @@ public interface IInterceptorSubject
     /// attach discovers the then-current structural properties through their normal getters.
     /// </summary>
     /// <remarks>
-    /// The metadata sequence must be synchronous, stable, and free of topology and metadata side
-    /// effects. It is materialized exactly once, after callback admission; an iterator that
-    /// re-enters the subject or mutates state receives no replay and no rollback. A name that is
+    /// The metadata sequence must be synchronous and stable. It is materialized exactly once,
+    /// after callback admission, and ownership is checked again after enumeration. Same-context
+    /// topology changes and nested metadata additions from the iterator are supported; their side
+    /// effects are not rolled back if the outer batch fails. A name that is
     /// already defined on the subject, or appears twice in the batch, rejects the whole batch
     /// before anything is published.
     /// </remarks>

@@ -151,6 +151,7 @@ public class SubjectUpdateCycleTests
         child2.Father = person;
         child1.Mother = child2; // siblings point to each other
         child2.Mother = child1;
+        person.Children = [child1, child2];
 
         var changes = new[]
         {
@@ -170,6 +171,9 @@ public class SubjectUpdateCycleTests
         // Assert
         var json = JsonSerializer.Serialize(partialSubjectUpdate);
         Assert.NotNull(json);
+        var operations = partialSubjectUpdate.Subjects[partialSubjectUpdate.Root]["children"].Operations;
+        Assert.NotNull(operations);
+        Assert.All(operations, operation => Assert.True(partialSubjectUpdate.Subjects.ContainsKey(operation.Id!)));
     }
 
     [Fact]

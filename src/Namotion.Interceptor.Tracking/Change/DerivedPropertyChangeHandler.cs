@@ -1,6 +1,6 @@
 using System.Diagnostics;
-using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Namotion.Interceptor.Attributes;
 using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Tracking.Lifecycle;
@@ -29,8 +29,7 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
 
     // Safety limit for stabilization loops. Prevents infinite loops from getters
     // with side effects that mutate the tracked state (a user error but shouldn't hang).
-    // In correct code, the loop runs 1-2 iterations max. Internal so tests can prove the
-    // untracked-subject retry actually reaches this bound before it throws.
+    // In correct code, the loop runs 1-2 iterations max.
     internal const int MaxStabilizationIterations = 100;
 
     [ThreadStatic]
@@ -77,10 +76,7 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
                 Volatile.Write(ref data.IsDerived, true);
                 try
                 {
-                    // Checked before the commit, matching the recalculation path: a value
-                    // exposing an untracked subject must never become LastKnownValue.
                     var value = EvaluateAndStabilize(data, change.Property, callerHoldsLock: true);
-                    ThrowIfExposesUntrackedSubject(change.Property, value);
                     data.LastKnownValue = value;
                     change.Property.SetWriteTimestamp(SubjectChangeContext.Current.ResolveChangedTimestamp());
                 }
@@ -151,10 +147,37 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Committed writes recalculate their dependents even when downstream processing throws.
+    /// This requires a truthful <see cref="PropertyWriteContext{TProperty}.IsWritten"/> marker.
+    /// Remaining dependents are attempted after a recalculation failure; failures are reported
+    /// after completion, with any downstream write failure first.
+    /// </remarks>
     public void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next)
     {
-        next(ref context);
+        try
+        {
+            next(ref context);
+        }
+        catch (Exception writeFailure) when (context.IsWritten)
+        {
+            try
+            {
+                CompleteWrite(ref context);
+            }
+            catch (Exception completionFailure)
+            {
+                throw new AggregateException(writeFailure, completionFailure);
+            }
 
+            throw;
+        }
+
+        CompleteWrite(ref context);
+    }
+
+    private static void CompleteWrite<TProperty>(ref PropertyWriteContext<TProperty> context)
+    {
         if (!context.IsWritten)
         {
             return;
@@ -169,6 +192,8 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
             return;
         }
 
+        List<Exception>? failures = null;
+
         // Derived-with-setter: value comes from the getter, so setter changes require recalc
         // even when the getter recorded zero deps (e.g. short-circuited at attach).
         if (Volatile.Read(ref data.IsDerived) && context.Property.Metadata.SetValue is not null)
@@ -176,7 +201,14 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
             var rawTimestamp = context.WriteTimestampRaw;
             var storageTimestamp = rawTimestamp > 0 ? rawTimestamp : 0L;
             var property = context.Property;
-            RecalculateDerivedProperty(ref property, storageTimestamp, rawTimestamp);
+            try
+            {
+                RecalculateDerivedProperty(ref property, storageTimestamp, rawTimestamp);
+            }
+            catch (Exception exception)
+            {
+                (failures ??= []).Add(exception);
+            }
         }
 
         var usedByProperties = data.GetUsedByProperties();
@@ -186,12 +218,18 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
             // scope push. storageTimestamp=0 under a null scope preserves the never-written sentinel.
             var rawTimestamp = context.WriteTimestampRaw;
             var storageTimestamp = rawTimestamp > 0 ? rawTimestamp : 0L;
-            RecalculateDependents(usedByProperties, context.Property, storageTimestamp, rawTimestamp);
+            RecalculateDependents(usedByProperties, context.Property, storageTimestamp, rawTimestamp, ref failures);
+        }
+
+        if (failures is not null)
+        {
+            if (failures.Count == 1) ExceptionDispatchInfo.Capture(failures[0]).Throw();
+            throw new AggregateException(failures);
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void RecalculateDependents(ReadOnlySpan<PropertyReference> usedByProperties, PropertyReference triggerProperty, long storageTimestamp, long rawTimestamp)
+    private static void RecalculateDependents(ReadOnlySpan<PropertyReference> usedByProperties, PropertyReference triggerProperty, long storageTimestamp, long rawTimestamp, ref List<Exception>? failures)
     {
         for (var i = 0; i < usedByProperties.Length; i++)
         {
@@ -203,7 +241,14 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
                 continue;
             }
 
-            RecalculateDerivedProperty(ref dependent, storageTimestamp, rawTimestamp);
+            try
+            {
+                RecalculateDerivedProperty(ref dependent, storageTimestamp, rawTimestamp);
+            }
+            catch (Exception exception)
+            {
+                (failures ??= []).Add(exception);
+            }
         }
     }
 
@@ -245,7 +290,7 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
         // Crucially, IsRecalculating stays true during NotifyDerivedPropertyChanged. This
         // serializes notification delivery with recalculation, preventing a stale notification
         // from being delivered after a newer one (TOCTOU race between guard checks and delivery).
-        var untrackedValueRetries = 0;
+        Exception? recalculationFailure = null;
         try
         {
             for (var outerIteration = 0; outerIteration < MaxStabilizationIterations; outerIteration++)
@@ -286,34 +331,6 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
                             continue;
                         }
 
-                        // Behind the staleness gates and before the commit, so an exposing value
-                        // never becomes LastKnownValue and never produces a change notification.
-                        // The evaluation ran outside the lock, so a concurrent structural write can
-                        // detach a projected subject between the evaluation and the cascade that
-                        // marks this data stale: that is a stale read produced by correct code, so
-                        // it is re-evaluated rather than convicted. Only a value still exposing an
-                        // unattached subject at the retry bound is a genuine orphan, and it throws.
-                        if (ExposesUntrackedSubject(derivedProperty, newValue))
-                        {
-                            if (++untrackedValueRetries >= MaxStabilizationIterations)
-                            {
-                                if (TryWithholdUntilTransactionEnds(derivedProperty, data, storageTimestamp, rawTimestamp))
-                                {
-                                    // A topology transaction is in flight on another thread, so a
-                                    // subject it stored can be legally in a committed property
-                                    // while still attached to nothing. Retrying cannot converge
-                                    // that away, because the window closes only when that
-                                    // transaction ends, so this evaluation neither commits nor
-                                    // convicts and is re-run when it does end.
-                                    return;
-                                }
-
-                                ThrowUntrackedSubject(derivedProperty);
-                            }
-
-                            continue;
-                        }
-
                         data.LastKnownValue = newValue;
                         sequence = ++data.RecalculationSequence;
                         derivedProperty.SetWriteTimestamp(storageTimestamp);
@@ -343,6 +360,11 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
                 $"'{derivedProperty.Metadata.Name}' on {derivedProperty.Subject.GetType().Name}. " +
                 "This indicates a derived getter with circular side effects.");
         }
+        catch (Exception exception)
+        {
+            recalculationFailure = exception;
+            throw;
+        }
         finally
         {
             // Atomically clear IsRecalculating. If a write set RecalculationNeeded
@@ -366,7 +388,14 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
 
             if (needsRetrigger)
             {
-                RecalculateDerivedProperty(ref derivedProperty, storageTimestamp, rawTimestamp);
+                try
+                {
+                    RecalculateDerivedProperty(ref derivedProperty, storageTimestamp, rawTimestamp);
+                }
+                catch (Exception retriggerFailure) when (recalculationFailure is not null)
+                {
+                    throw new AggregateException(recalculationFailure, retriggerFailure);
+                }
             }
         }
     }
@@ -409,125 +438,6 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
         {
             raiser.RaisePropertyChanged(derivedProperty.Metadata.Name);
         }
-    }
-
-    /// <summary>
-    /// Rejects a derived value that exposes a subject the graph does not own. Derived properties
-    /// establish no ownership edges, so such a subject is never attached, never registered and
-    /// never released: silent before this check existed. Only the attach path throws on first
-    /// detection; it runs under the topology gate, where no concurrent detach can interleave.
-    /// </summary>
-    private static void ThrowIfExposesUntrackedSubject(PropertyReference property, object? value)
-    {
-        if (ExposesUntrackedSubject(property, value))
-        {
-            ThrowUntrackedSubject(property);
-        }
-    }
-
-    /// <summary>
-    /// Withholds the verdict on a value that a concurrent topology transaction may still be
-    /// publishing, and books this property to be recalculated once that transaction ends. Returns
-    /// false when there is nothing in flight, in which case the caller decides on the value it is
-    /// holding. Asked only once a value has failed the untracked-subject check for the whole retry
-    /// bound, so the registration is paid on the path that was about to throw.
-    /// </summary>
-    /// <remarks>
-    /// The booking is what makes withholding safe rather than lossy, and it is a handshake rather
-    /// than an inference: a getter can read a mid-publication value through an accessor that records
-    /// no dependency, a write can end without reaching its cascade at all, and a cascade that does
-    /// run reaches only the dependents of the property that was written. At most one booking per
-    /// property is outstanding, so a burst of withholding recalculations cannot grow the lifecycle's
-    /// list. Requires the caller to hold the data lock, which is what makes that flag exact.
-    ///
-    /// The booking replays the trigger's timestamps rather than resolving new ones, so a drained
-    /// re-run can publish a timestamp older than one a newer trigger already committed. Resolving at
-    /// drain time is no better: the only scope available there belongs to the transaction that
-    /// happened to end, not to the write that produced this value.
-    /// </remarks>
-    private static bool TryWithholdUntilTransactionEnds(
-        PropertyReference property, DerivedPropertyData data, long storageTimestamp, long rawTimestamp)
-    {
-        if (property.Subject.TryGetContext()?.TryGetService<ILifecycleInterceptor>() is not LifecycleInterceptor lifecycle)
-        {
-            return false;
-        }
-
-        // Whether to withhold is the lifecycle's question in every case, including when a booking is
-        // already outstanding: the flag records that one exists, not that a transaction is still
-        // running.
-        Action? recalculation = null;
-        if (!data.HasWithheldRecalculation)
-        {
-            var withheldProperty = property;
-            recalculation = () =>
-            {
-                lock (data)
-                {
-                    data.HasWithheldRecalculation = false;
-                }
-
-                RecalculateDerivedProperty(ref withheldProperty, storageTimestamp, rawTimestamp);
-            };
-        }
-
-        if (!lifecycle.TryRunWhenTransactionEnds(recalculation))
-        {
-            return false;
-        }
-
-        data.HasWithheldRecalculation = true;
-        return true;
-    }
-
-    private static bool ExposesUntrackedSubject(PropertyReference property, object? value)
-    {
-        if (value is null || !property.Metadata.Type.CanContainSubjects())
-        {
-            return false;
-        }
-
-        // An object-declared derived property cannot be excluded by its declared type, so decide
-        // on what actually came back: a string or a boxed scalar exits before renting anything.
-        if (!value.GetType().CanContainSubjects())
-        {
-            return false;
-        }
-
-        var context = property.Subject.TryGetContext();
-        if (context is null)
-        {
-            return false;
-        }
-
-        var occurrences = LifecycleScratch.RentOccurrenceList();
-        try
-        {
-            StructuralValueScanner.CollectOccurrences(property.Metadata.Type, value, occurrences);
-            foreach (var occurrence in occurrences)
-            {
-                if (!ReferenceEquals(occurrence.Subject.TryGetContext(), context))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-        finally
-        {
-            LifecycleScratch.Return(occurrences);
-        }
-    }
-
-    [DoesNotReturn]
-    private static void ThrowUntrackedSubject(PropertyReference property)
-    {
-        throw new LifecycleContractViolationException(
-            $"The derived property '{property.Name}' returned a subject that is not " +
-            "attached to this context. Derived properties establish no ownership edges, " +
-            "so that subject is never tracked, registered or released. Assign it to a " +
-            "stored (non-derived) property instead, or attach it explicitly.");
     }
 
     /// <summary>

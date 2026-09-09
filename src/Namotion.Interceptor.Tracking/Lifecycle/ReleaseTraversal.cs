@@ -11,9 +11,9 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 /// support, and reaches each of them exactly once in first-visit order. That makes detach callbacks
 /// arrive top-down, so a parent stops before the children it uses.
 ///
-/// A released subject's record and baselines are dropped before its callbacks run, which is what
-/// makes the descent safe to re-enter from a callback: the re-entry finds the subject already gone,
-/// and a reachability walk can no longer route through it.
+/// A released subject is hidden from ownership queries before its callbacks run, which makes the
+/// descent safe to re-enter: a reachability walk can no longer route through it. The ownership
+/// record remains as a tombstone until its queued final release has delivered.
 /// </remarks>
 internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGraph graph, ReachabilityWalk reachability)
 {
@@ -24,12 +24,13 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
     public void RemoveEdge(IInterceptorSubject subject, PropertyReference property, object? index)
     {
         var ownership = graph.TryGetOwnership(subject);
-        if (ownership is null || !ownership.RemoveIncoming(property, index))
+        if (ownership is null || !ownership.RemoveIncoming(property))
         {
             // Already released, or the edge was drained by a reentrant descent.
             return;
         }
 
+        graph.RecordIncomingRemoved(property, subject);
         var referenceCount = ownership.IncomingCount;
         ownership.RepublishParents();
 
@@ -76,7 +77,7 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
             ownership.CopyIncomingEdges(remaining);
             foreach (var edge in remaining)
             {
-                ownership.RemoveIncoming(edge.Property, edge.Index);
+                if (ownership.RemoveIncoming(edge.Property)) graph.RecordIncomingRemoved(edge.Property, subject);
                 ownership.RepublishParents();
                 notifier.PublishEdgeRemoved(subject, edge.Property, edge.Index, ownership.IncomingCount);
             }
@@ -102,24 +103,21 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
     private void Release(IInterceptorSubject subject, SubjectOwnership ownership, PropertyReference? property, object? index)
     {
         var children = LifecycleScratch.RentChildList();
+        var releaseQueued = false;
         try
         {
             graph.CollectStructuralChildren(subject, children, seed: false);
 
-            // Drop the ownership record and the baselines first: from here on the subject is
+            // Hide the ownership record and drop the baselines first: from here on the subject is
             // released as far as every other query is concerned, which is what makes the callbacks
             // below safe to re-enter this descent from, and what makes them see no parents at all
             // rather than only the edge being removed.
-            graph.RemoveOwnership(subject);
+            ownership.MarkReleasing();
             graph.RemoveBaselines(subject);
-
-            // Attached but unowned is also what a claimed, not yet published attach looks like, and
-            // property admission has to publish edges for that one and none for this one.
-            graph.MarkReleasing(subject);
 
             foreach (var entry in subject.Properties)
             {
-                subject.DetachSubjectProperty(new PropertyReference(subject, entry.Key));
+                notifier.QueueProperty(new PropertyReference(subject, entry.Key), attach: false);
             }
 
             DrainRemainingEdges(subject, ownership);
@@ -137,23 +135,19 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
             notifier.RaiseSubjectDetaching(change);
             notifier.InvokeRemovedLifecycleHandlers(subject, change);
 
-            // Only after the subject's own teardown callbacks completed, so they still resolve the
-            // context they are being torn down from.
-            graph.ReleaseClaim(subject);
+            // Final claim release stays behind this lifetime's teardown callbacks so they can
+            // still resolve the context they are being torn down from.
+            notifier.QueueRelease(subject, ownership);
+            releaseQueued = true;
 
-            // Handing the claim back ends the attached-but-unowned ambiguity the marker exists to
-            // resolve. Cleared here rather than only in the finally so it does not cover the
-            // children drain below, which is no longer this subject's window.
-            graph.ClearReleasing(subject);
-
-            foreach (var (childProperty, occurrence) in children)
+            foreach (var (childProperty, occurrence, _) in children)
             {
                 RemoveEdge(occurrence.Subject, childProperty, occurrence.Index);
             }
         }
         finally
         {
-            graph.ClearReleasing(subject);
+            if (!releaseQueued) graph.ClearReleasing(subject, ownership);
             LifecycleScratch.Return(children);
         }
     }
