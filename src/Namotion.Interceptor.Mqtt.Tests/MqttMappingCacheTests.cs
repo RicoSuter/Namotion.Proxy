@@ -224,6 +224,48 @@ public class MqttMappingCacheTests
         Assert.Null(after);
     }
 
+    [Fact]
+    public async Task WhenAMissingClientTopicBecomesReachable_ThenTheNextLookupResolvesIt()
+    {
+        // Arrange
+        var mapper = new CountingMapper(CreateMapper());
+        var subject = CreateRootSubject();
+        await using var client = CreateClient(subject, mapper);
+        Assert.Null(await client.TryGetPropertyForTopicAsync("child/value"));
+
+        // Act
+        subject.Child = new MqttCacheTestChild();
+        var resolved = await client.TryGetPropertyForTopicAsync("child/value");
+        var cached = await client.TryGetPropertyForTopicAsync("child/value");
+
+        // Assert
+        Assert.Same(subject.Child, resolved?.Subject);
+        Assert.Equal(nameof(MqttCacheTestChild.Value), resolved?.Name);
+        Assert.Equal(resolved, cached);
+        Assert.Equal(2, mapper.PropertyLookupCount);
+    }
+
+    [Fact]
+    public async Task WhenAMissingServerPathBecomesReachable_ThenTheNextLookupResolvesIt()
+    {
+        // Arrange
+        var mapper = new CountingMapper(CreateMapper());
+        var subject = CreateRootSubject();
+        await using var server = CreateServer(subject, mapper);
+        Assert.Null(await server.TryGetPropertyForTopicAsync("child/value", CancellationToken.None));
+
+        // Act
+        subject.Child = new MqttCacheTestChild();
+        var resolved = await server.TryGetPropertyForTopicAsync("child/value", CancellationToken.None);
+        var cached = await server.TryGetPropertyForTopicAsync("child/value", CancellationToken.None);
+
+        // Assert
+        Assert.Same(subject.Child, resolved?.Subject);
+        Assert.Equal(nameof(MqttCacheTestChild.Value), resolved?.Name);
+        Assert.Equal(resolved, cached);
+        Assert.Equal(2, mapper.PropertyLookupCount);
+    }
+
     private static MqttCacheTestRoot CreateRootSubject()
     {
         var context = InterceptorSubjectContext
