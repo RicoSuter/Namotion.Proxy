@@ -542,7 +542,7 @@ For custom type conversions (used by both client and server), see [Custom Value 
 
 Extend `OpcUaTypeResolver` to customize how the client infers C# types from OPC UA node metadata during dynamic property discovery. This is useful when you want specific OPC UA nodes to map to custom C# classes.
 
-The resolver works per level rather than per node: `ResolveObjectNodeType` classifies one Object node from the children the loader already browsed, and `ResolveVariableTypesAsync` infers the CLR type of a whole batch of Variable nodes from one batched attribute read, keyed by resolved `NodeId`.
+The resolver reads the address space in batches, so it has one seam per decision. `ResolveObjectNodeType` classifies one Object node from the children the loader already browsed. `ResolveVariableTypeAsync` types one Variable node from its already-read DataType and ValueRank attributes, which is where a rule based on the browse name belongs. `TryMapBuiltInType` maps one OPC UA built-in type for every node at once. Overriding `ResolveVariableTypesAsync` itself replaces the batched read, which is only worth doing when the types come from somewhere other than the server.
 
 ```csharp
 public class CustomTypeResolver : OpcUaTypeResolver
@@ -563,24 +563,15 @@ public class CustomTypeResolver : OpcUaTypeResolver
         return base.ResolveObjectNodeType(node, children);
     }
 
-    public override async Task<IReadOnlyDictionary<NodeId, Type?>> ResolveVariableTypesAsync(
-        ISession session,
-        IReadOnlyCollection<ReferenceDescription> variables,
-        CancellationToken cancellationToken)
+    protected override Task<Type?> ResolveVariableTypeAsync(
+        OpcUaVariableTypeContext node, CancellationToken cancellationToken)
     {
-        var types = new Dictionary<NodeId, Type?>(
-            await base.ResolveVariableTypesAsync(session, variables, cancellationToken));
-
-        foreach (var variable in variables)
+        if (node.Reference.BrowseName.Name == "Timestamp")
         {
-            var nodeId = ExpandedNodeId.ToNodeId(variable.NodeId, session.NamespaceUris);
-            if (nodeId is not null && variable.BrowseName.Name == "Timestamp")
-            {
-                types[nodeId] = typeof(DateTime);
-            }
+            return Task.FromResult<Type?>(typeof(DateTime));
         }
 
-        return types;
+        return base.ResolveVariableTypeAsync(node, cancellationToken);
     }
 
     protected override Type? TryMapBuiltInType(BuiltInType builtInType)
@@ -592,7 +583,7 @@ public class CustomTypeResolver : OpcUaTypeResolver
 }
 ```
 
-A key absent from the dictionary means the node's `ExpandedNodeId` could not be resolved against the session's namespace table, and a key with a null value means the type could not be inferred, so the loader skips that node. The base `ResolveVariableTypesAsync` throws `OpcUaTransientServiceException` when a DataType or ValueRank read returns a transient bad status, and an override must let that propagate so the load aborts and the source retries it.
+`ResolveVariableTypeAsync` returns null when the type cannot be inferred, and the loader then skips that node. Its two attribute values have already been classified, so a bad status reaching it is permanent and null is the right answer. A transient status never reaches it: `ResolveVariableTypesAsync` throws `OpcUaTransientServiceException` first, which aborts the load so the source retries it, and an override that replaces the batched read must do the same.
 
 ### Custom Subject Factory
 

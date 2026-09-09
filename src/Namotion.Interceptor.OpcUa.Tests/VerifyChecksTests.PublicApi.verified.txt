@@ -164,8 +164,18 @@ namespace Namotion.Interceptor.OpcUa.Client
         public OpcUaTypeResolver(Microsoft.Extensions.Logging.ILogger logger) { }
         public virtual System.Attribute[] GetDynamicPropertyAttributes(Opc.Ua.ReferenceDescription reference, Opc.Ua.Client.ISession session) { }
         public virtual System.Type ResolveObjectNodeType(Opc.Ua.ReferenceDescription node, System.Collections.Generic.IReadOnlyList<Opc.Ua.ReferenceDescription> children) { }
+        protected virtual System.Threading.Tasks.Task<System.Type?> ResolveVariableTypeAsync(Namotion.Interceptor.OpcUa.Client.OpcUaVariableTypeContext node, System.Threading.CancellationToken cancellationToken) { }
         public virtual System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyDictionary<Opc.Ua.NodeId, System.Type?>> ResolveVariableTypesAsync(Opc.Ua.Client.ISession session, System.Collections.Generic.IReadOnlyCollection<Opc.Ua.ReferenceDescription> variables, System.Threading.CancellationToken cancellationToken) { }
         protected virtual System.Type? TryMapBuiltInType(Opc.Ua.BuiltInType builtInType) { }
+    }
+    public readonly struct OpcUaVariableTypeContext : System.IEquatable<Namotion.Interceptor.OpcUa.Client.OpcUaVariableTypeContext>
+    {
+        public OpcUaVariableTypeContext(Opc.Ua.Client.ISession Session, Opc.Ua.ReferenceDescription Reference, Opc.Ua.NodeId NodeId, Opc.Ua.DataValue DataType, Opc.Ua.DataValue ValueRank) { }
+        public Opc.Ua.DataValue DataType { get; init; }
+        public Opc.Ua.NodeId NodeId { get; init; }
+        public Opc.Ua.ReferenceDescription Reference { get; init; }
+        public Opc.Ua.Client.ISession Session { get; init; }
+        public Opc.Ua.DataValue ValueRank { get; init; }
     }
     public sealed class OpcUaWriteException : System.InvalidOperationException
     {

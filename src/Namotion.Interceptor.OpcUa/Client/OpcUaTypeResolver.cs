@@ -60,6 +60,12 @@ public class OpcUaTypeResolver
     /// session's namespace table, and a key with a null value means the type could not be inferred, so
     /// the loader skips the node. A ValueRank of zero or more yields an array of the mapped element type.
     /// </summary>
+    /// <remarks>
+    /// Override this only to replace the batched read itself, for example when the types come from a
+    /// model file and no server read is needed. To decide the type of a single node, override
+    /// <see cref="ResolveVariableTypeAsync"/> instead and keep the batching, the positional alignment
+    /// of the two attributes per node and the transient status handling.
+    /// </remarks>
     /// <exception cref="OpcUaTransientServiceException">A DataType or ValueRank read returned a transient bad status.</exception>
     public virtual async Task<IReadOnlyDictionary<NodeId, Type?>> ResolveVariableTypesAsync(
         ISession session,
@@ -107,28 +113,22 @@ public class OpcUaTypeResolver
 
             // Abort on a transient attribute read: an unresolved type silently drops the
             // property from the model (does not self-heal). Permanent statuses fall through
-            // to the graceful skip below.
+            // to the graceful skip in ResolveVariableTypeAsync.
             OpcUaStatusCodeClassifier.ThrowIfLoadMustRetry(allResults[dataTypeIndex].StatusCode, "Read", nodeId);
             OpcUaStatusCodeClassifier.ThrowIfLoadMustRetry(allResults[valueRankIndex].StatusCode, "Read", nodeId);
 
             Type? type = null;
             try
             {
-                if (!StatusCode.IsGood(allResults[dataTypeIndex].StatusCode))
-                {
-                    _logger.LogWarning("Failed to read DataType for node {BrowseName} ({StatusCode}).",
-                        reference.BrowseName.Name, allResults[dataTypeIndex].StatusCode);
-                }
-                else if (allResults[dataTypeIndex].Value is NodeId dataTypeId)
-                {
-                    var builtIn = await TypeInfo.GetBuiltInTypeAsync(dataTypeId, session.TypeTree, cancellationToken).ConfigureAwait(false);
-                    var elementType = TryMapBuiltInType(builtIn);
-                    if (elementType is not null)
-                    {
-                        var valueRank = allResults[valueRankIndex].Value is int vr ? vr : -1;
-                        type = valueRank >= 0 ? elementType.MakeArrayType() : elementType;
-                    }
-                }
+                type = await ResolveVariableTypeAsync(
+                        new OpcUaVariableTypeContext(session, reference, nodeId, allResults[dataTypeIndex], allResults[valueRankIndex]),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OpcUaTransientServiceException)
+            {
+                // An override that reads from the server itself has to be able to abort the load.
+                throw;
             }
             catch (Exception ex)
             {
@@ -139,6 +139,45 @@ public class OpcUaTypeResolver
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Infers the CLR type of one Variable node from its already-read DataType and ValueRank attributes.
+    /// Returns null when the type cannot be inferred, which makes the loader skip the node. A ValueRank
+    /// of zero or more yields an array of the mapped element type.
+    /// </summary>
+    /// <remarks>
+    /// This is the extension point for typing a node by something other than its built-in type, such as
+    /// its browse name. Both attributes have already been classified, so a bad status here is permanent
+    /// and returning null is the right answer for it. Throwing
+    /// <see cref="OpcUaTransientServiceException"/> aborts the load so the source retries it; any other
+    /// exception is logged and treated as an uninferable type.
+    /// </remarks>
+    protected virtual async Task<Type?> ResolveVariableTypeAsync(
+        OpcUaVariableTypeContext node,
+        CancellationToken cancellationToken)
+    {
+        if (!StatusCode.IsGood(node.DataType.StatusCode))
+        {
+            _logger.LogWarning("Failed to read DataType for node {BrowseName} ({StatusCode}).",
+                node.Reference.BrowseName.Name, node.DataType.StatusCode);
+            return null;
+        }
+
+        if (node.DataType.Value is not NodeId dataTypeId)
+        {
+            return null;
+        }
+
+        var builtIn = await TypeInfo.GetBuiltInTypeAsync(dataTypeId, node.Session.TypeTree, cancellationToken).ConfigureAwait(false);
+        var elementType = TryMapBuiltInType(builtIn);
+        if (elementType is null)
+        {
+            return null;
+        }
+
+        var rank = node.ValueRank.Value is int parsedRank ? parsedRank : -1;
+        return rank >= 0 ? elementType.MakeArrayType() : elementType;
     }
 
     /// <summary>

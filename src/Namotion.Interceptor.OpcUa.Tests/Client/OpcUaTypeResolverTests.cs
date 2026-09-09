@@ -389,6 +389,93 @@ public class OpcUaTypeResolverTests
         Assert.Equal(3, readCallCount);
     }
 
+    [Fact]
+    public async Task WhenOnlyThePerNodeHookIsOverridden_ThenBatchingAndBaseMappingStillApply()
+    {
+        // Arrange: three variables the server types identically, one of which the subclass
+        // re-types by browse name. Overriding the per-node hook must not cost the batching.
+        var node1Id = new NodeId(7001, 2);
+        var node2Id = new NodeId(7002, 2);
+        var node3Id = new NodeId(7003, 2);
+
+        var variables = new List<ReferenceDescription>
+        {
+            new() { BrowseName = new QualifiedName("Temp"), NodeId = new ExpandedNodeId(node1Id), NodeClass = NodeClass.Variable },
+            new() { BrowseName = new QualifiedName("Timestamp"), NodeId = new ExpandedNodeId(node2Id), NodeClass = NodeClass.Variable },
+            new() { BrowseName = new QualifiedName("Count"), NodeId = new ExpandedNodeId(node3Id), NodeClass = NodeClass.Variable },
+        };
+
+        var readCallCount = 0;
+        var submittedNodeCounts = new List<int>();
+        var mockSession = CreateMockSession();
+        SetupReadAsync(mockSession, new Dictionary<NodeId, (NodeId, int)>
+        {
+            [node1Id] = (DataTypeIds.Float, -1),
+            [node2Id] = (DataTypeIds.Int64, -1),
+            [node3Id] = (DataTypeIds.Int32, -1)
+        });
+        mockSession
+            .Setup(s => s.ReadAsync(
+                It.IsAny<RequestHeader>(),
+                It.IsAny<double>(),
+                It.IsAny<TimestampsToReturn>(),
+                It.IsAny<ReadValueIdCollection>(),
+                It.IsAny<CancellationToken>()))
+            .Callback((RequestHeader _, double _, TimestampsToReturn _, ReadValueIdCollection nodesToRead, CancellationToken _) =>
+            {
+                readCallCount++;
+                submittedNodeCounts.Add(nodesToRead.Count);
+            })
+            .ReturnsAsync((RequestHeader _, double _, TimestampsToReturn _, ReadValueIdCollection nodesToRead, CancellationToken _) =>
+            {
+                var results = new DataValueCollection();
+                foreach (var read in nodesToRead)
+                {
+                    var isDataType = read.AttributeId == Opc.Ua.Attributes.DataType;
+                    var dataTypeId = read.NodeId == node1Id ? DataTypeIds.Float
+                        : read.NodeId == node2Id ? DataTypeIds.Int64
+                        : DataTypeIds.Int32;
+                    results.Add(isDataType
+                        ? new DataValue { Value = dataTypeId, StatusCode = StatusCodes.Good }
+                        : new DataValue { Value = -1, StatusCode = StatusCodes.Good });
+                }
+                return new ReadResponse { Results = results, DiagnosticInfos = [] };
+            });
+
+        var resolver = new BrowseNameTypeResolver();
+
+        // Act
+        var result = await resolver.ResolveVariableTypesAsync(mockSession.Object, variables, CancellationToken.None);
+
+        // Assert: the override decides its own node and the base mapping decides the rest.
+        Assert.Equal(typeof(DateTimeOffset), result[node2Id]);
+        Assert.Equal(typeof(float), result[node1Id]);
+        Assert.Equal(typeof(int), result[node3Id]);
+
+        // Assert: still one read of all six attributes, so the override did not fall back to
+        // per-node reads. The hook saw every node, not only the one it re-typed.
+        Assert.Equal(1, readCallCount);
+        Assert.Equal([6], submittedNodeCounts);
+        Assert.Equal(["Temp", "Timestamp", "Count"], resolver.SeenBrowseNames);
+    }
+
+    private sealed class BrowseNameTypeResolver() : OpcUaTypeResolver(NullLogger<OpcUaTypeResolver>.Instance)
+    {
+        private readonly List<string> _seenBrowseNames = [];
+
+        public IReadOnlyList<string> SeenBrowseNames => _seenBrowseNames;
+
+        protected override Task<Type?> ResolveVariableTypeAsync(
+            OpcUaVariableTypeContext node,
+            CancellationToken cancellationToken)
+        {
+            _seenBrowseNames.Add(node.Reference.BrowseName.Name);
+            return node.Reference.BrowseName.Name == "Timestamp"
+                ? Task.FromResult<Type?>(typeof(DateTimeOffset))
+                : base.ResolveVariableTypeAsync(node, cancellationToken);
+        }
+    }
+
     private static Mock<ISession> CreateMockSession()
     {
         var mockSession = new Mock<ISession>();
