@@ -49,6 +49,9 @@ public sealed class HostedServiceStartupScope : IDisposable
         _completion.TrySetResult(_completed);
     }
 
+    internal bool IsReady => _completion.Task.IsCompleted &&
+        (!_completion.Task.Result || _parent is null || _parent.IsReady);
+
     internal async Task WaitAsync(CancellationToken cancellationToken)
     {
         if (!await _completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false))
