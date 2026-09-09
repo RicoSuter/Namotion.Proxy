@@ -509,9 +509,9 @@ public class MqttSubjectServer : SubjectConnectorBase, IFaultInjectable, IAsyncD
             : await _configuration.Mapper.TryGetPropertyAsync(new MqttLookupKey(path), registered, cancellationToken).ConfigureAwait(false);
         var propertyReference = property?.Reference;
 
-        // Add first, then validate (guarantees no memory leak)
-        if (_pathToProperty.TryAdd(path, propertyReference) &&
-            propertyReference is { } resolvedProperty &&
+        // A missing path can become reachable after a structural change; only cache resolved properties.
+        if (propertyReference is { } resolvedProperty &&
+            _pathToProperty.TryAdd(path, propertyReference) &&
             !IsRetainable(resolvedProperty.Subject))
         {
             _pathToProperty.TryRemove(path, out _);
