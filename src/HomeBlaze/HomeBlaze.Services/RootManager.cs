@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Namotion.Interceptor;
+using Namotion.Interceptor.Hosting;
 
 namespace HomeBlaze.Services;
 
@@ -111,6 +112,7 @@ public class RootManager : BackgroundService, IConfigurationWriter
         }
 
         var json = await File.ReadAllTextAsync(_configurationPath, cancellationToken);
+        using var startup = _context.DeferHostedServiceStartup();
         var root = _serializer.Deserialize(json);
 
         // All IConfigurable implementations are also IInterceptorSubject (via [InterceptorSubject] attribute)
@@ -119,6 +121,7 @@ public class RootManager : BackgroundService, IConfigurationWriter
 
         _logger?.LogInformation("Root loaded: {Type}", Root.GetType().FullName);
         _context.AddService(Root);
+        startup?.Complete();
 
         return Root;
     }

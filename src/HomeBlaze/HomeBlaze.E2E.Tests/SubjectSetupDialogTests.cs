@@ -37,6 +37,11 @@ public class SubjectSetupDialogTests
         await page.GotoAsync($"{_fixture.ServerAddress}");
         await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
 
+        // The automatic timezone resolves through JS after interactive rendering. Prerendered
+        // links are already clickable, but navigating then can race the old page's hydration.
+        await Assertions.Expect(page.GetByTitle(new System.Text.RegularExpressions.Regex(@"^Automatic \(")))
+            .ToBeVisibleAsync(new() { Timeout = PageLoadTimeout });
+
         var browserLink = page.GetByRole(AriaRole.Link, new() { Name = "Browser" });
         await Assertions.Expect(browserLink).ToBeVisibleAsync(new() { Timeout = PageLoadTimeout });
         await browserLink.ClickAsync();
