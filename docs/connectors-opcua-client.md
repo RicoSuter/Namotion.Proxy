@@ -879,7 +879,7 @@ OpcUaSubjectClientSource (SubjectSourceBase: BackgroundService + ISubjectSource)
 | `PollingManager` | Polling fallback for nodes that don't support subscriptions. Includes a circuit breaker. |
 | `ReadAfterWriteManager` | Schedules read-backs after writes for nodes where exception-based monitoring was revised to sampling. |
 | `SubscriptionHealthMonitor` | Retries failed monitored items that may succeed later (transient server errors). |
-| `OpcUaSubjectLoader` | Discovers the address space breadth-first and maps nodes to C# properties. Every level is browsed as one batched call, so the number of round-trips grows with the depth of the address space rather than with the number of nodes. |
+| `OpcUaSubjectLoader` | Discovers the address space breadth-first and maps nodes to C# properties. Every level is browsed in a fixed number of batched calls, so the number of round-trips grows with the depth of the address space rather than with the number of nodes. |
 | `OpcUaAttributeLoader` | Loads the attribute nodes of variable properties round by round, so attributes of attributes are discovered until nothing new appears or `MaxAttributeTraversalDepth` is reached. |
 | `OpcUaLoadContext` | Per-load state: the browse cache, the staged subjects, and the queued ownership claims and property bindings that the commit at the end of the load applies. |
 | `OpcUaSessionExtensions` | Batched browse and read primitives over `ISession`, including continuation-point handling, batch splitting when the server rejects a size, and deduplication by resolved `NodeId`. |
