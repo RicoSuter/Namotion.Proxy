@@ -168,7 +168,7 @@ using var tx = await context.BeginTransactionAsync(
 
 ### Conflict Behavior
 
-Controls how optimistic transactions detect concurrent modifications.
+Controls value-based conflict detection in both locking modes; `BestEffort` write-failure handling does not disable it.
 
 | Value | Description |
 |-------|-------------|

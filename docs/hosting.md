@@ -140,9 +140,26 @@ await person.AttachHostedServiceAsync(
     cancellationToken);
 ```
 
+## Construction and Configuration
+
+A context-taking constructor can attach a hosted subject before its object initializer or deserializer has populated configuration. There is no timing delay that guarantees initialization completes first. Construct and populate a detached subject before attaching it, or use a startup scope. The scope keeps context-taking construction available while delaying captured service starts:
+
+```csharp
+using (var startup = context.DeferHostedServiceStartup())
+{
+    var person = new Person(context) { FirstName = "John", LastName = "Doe" };
+    person.AttachHostedService(new PersonBackgroundService(person));
+    startup?.Complete();
+}
+```
+
+The scope follows the current execution flow for that context. Starts wait until the scope and all enclosing scopes are completed and disposed. Disposal without `Complete()` cancels captured starts, including when initialization throws. Cancellation does not detach subjects; normal detach and host shutdown still stop their attached services. The extension returns null when hosted services are not configured. Do not await an attaching service's startup inside its open scope, since that startup is waiting for scope disposal.
+
+`AddHostedSubject<T>()` holds a scope through its configuration callback. HomeBlaze deserialization uses this scope while populating configuration. Root loading holds an enclosing scope until the root is published, attached and registered as a context service.
+
 ## Deferred Starts and Startup Completion
 
-Attaching a hosted service queues its `StartAsync` rather than running it inline, so the service is not running when the attach returns. Any subsystem that treats "the graph has finished starting" as a completion point would otherwise pass that point while a queued start is still on its way in.
+Attaching a hosted service queues its `StartAsync` without waiting for it. Any subsystem that treats "the graph has finished starting" as a completion point would otherwise pass that point while a queued start is still on its way in.
 
 A subsystem says so by implementing `IStartupCompletionDeferrer` and registering it on the context. Before queueing a start, the hosting layer takes a hold on every reachable deferrer and releases it once the start has actually run, including when the start throws. Both attach paths do this, awaiting and fire-and-forget alike: awaiting the start blocks the caller, but it does not block whatever else is deciding that startup is finished, so the gap still needs holding open.
 
