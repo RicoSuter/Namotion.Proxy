@@ -137,7 +137,7 @@ public class OpcUaTypeResolverTests
         });
 
         // Act
-        var result = await _resolver.ResolveVariableTypesAsync(mockSession.Object, variables, CancellationToken.None);
+        var result = await _resolver.ResolveVariableNodeTypesAsync(mockSession.Object, variables, CancellationToken.None);
 
         // Assert
         Assert.Equal(3, result.Count);
@@ -190,7 +190,7 @@ public class OpcUaTypeResolverTests
         };
 
         // Act
-        var result = await _resolver.ResolveVariableTypesAsync(mockSession.Object, variables, CancellationToken.None);
+        var result = await _resolver.ResolveVariableNodeTypesAsync(mockSession.Object, variables, CancellationToken.None);
 
         // Assert
         Assert.Equal(typeof(double), result[variableNodeId]);
@@ -237,7 +237,7 @@ public class OpcUaTypeResolverTests
         // Act & Assert: alignment is verified by the exception attributing the
         // padded transient slot to node2's NodeId (not node1's, not a phantom).
         var exception = await Assert.ThrowsAsync<OpcUaTransientServiceException>(() =>
-            _resolver.ResolveVariableTypesAsync(mockSession.Object, variables, CancellationToken.None));
+            _resolver.ResolveVariableNodeTypesAsync(mockSession.Object, variables, CancellationToken.None));
 
         Assert.Equal("Read", exception.Operation);
         Assert.Equal(node2Id, exception.NodeId);
@@ -275,7 +275,7 @@ public class OpcUaTypeResolverTests
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<OpcUaTransientServiceException>(() =>
-            _resolver.ResolveVariableTypesAsync(mockSession.Object, variables, CancellationToken.None));
+            _resolver.ResolveVariableNodeTypesAsync(mockSession.Object, variables, CancellationToken.None));
 
         Assert.Equal("Read", exception.Operation);
         Assert.Equal(variableNodeId, exception.NodeId);
@@ -312,7 +312,7 @@ public class OpcUaTypeResolverTests
             });
 
         // Act
-        var result = await _resolver.ResolveVariableTypesAsync(mockSession.Object, variables, CancellationToken.None);
+        var result = await _resolver.ResolveVariableNodeTypesAsync(mockSession.Object, variables, CancellationToken.None);
 
         // Assert: no throw; the node is present with an unresolved (null) type.
         Assert.True(result.ContainsKey(variableNodeId));
@@ -376,7 +376,7 @@ public class OpcUaTypeResolverTests
             });
 
         // Act
-        var result = await _resolver.ResolveVariableTypesAsync(mockSession.Object, variables, CancellationToken.None);
+        var result = await _resolver.ResolveVariableNodeTypesAsync(mockSession.Object, variables, CancellationToken.None);
 
         // Assert: both variables resolved despite batch rejection
         Assert.Equal(2, result.Count);
@@ -445,7 +445,7 @@ public class OpcUaTypeResolverTests
         var resolver = new BrowseNameTypeResolver();
 
         // Act
-        var result = await resolver.ResolveVariableTypesAsync(mockSession.Object, variables, CancellationToken.None);
+        var result = await resolver.ResolveVariableNodeTypesAsync(mockSession.Object, variables, CancellationToken.None);
 
         // Assert: the override decides its own node and the base mapping decides the rest.
         Assert.Equal(typeof(DateTimeOffset), result[node2Id]);
@@ -465,14 +465,14 @@ public class OpcUaTypeResolverTests
 
         public IReadOnlyList<string> SeenBrowseNames => _seenBrowseNames;
 
-        protected override Task<Type?> ResolveVariableTypeAsync(
-            OpcUaVariableTypeContext node,
+        protected override Task<Type?> ResolveVariableNodeTypeAsync(
+            OpcUaVariableNodeContext node,
             CancellationToken cancellationToken)
         {
             _seenBrowseNames.Add(node.Reference.BrowseName.Name);
             return node.Reference.BrowseName.Name == "Timestamp"
                 ? Task.FromResult<Type?>(typeof(DateTimeOffset))
-                : base.ResolveVariableTypeAsync(node, cancellationToken);
+                : base.ResolveVariableNodeTypeAsync(node, cancellationToken);
         }
     }
 

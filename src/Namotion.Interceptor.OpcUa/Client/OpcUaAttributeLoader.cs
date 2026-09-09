@@ -248,7 +248,7 @@ internal sealed class OpcUaAttributeLoader
         {
             variableReferences.Add(entry.ChildNode);
         }
-        var resolvedTypes = await _configuration.TypeResolver!.ResolveVariableTypesAsync(context.Session, variableReferences, context.CancellationToken).ConfigureAwait(false);
+        var resolvedTypes = await _configuration.TypeResolver!.ResolveVariableNodeTypesAsync(context.Session, variableReferences, context.CancellationToken).ConfigureAwait(false);
 
         foreach (var entry in dynamicAttributeNodes)
         {

@@ -63,11 +63,11 @@ public class OpcUaTypeResolver
     /// <remarks>
     /// Override this only to replace the batched read itself, for example when the types come from a
     /// model file and no server read is needed. To decide the type of a single node, override
-    /// <see cref="ResolveVariableTypeAsync"/> instead and keep the batching, the positional alignment
+    /// <see cref="ResolveVariableNodeTypeAsync"/> instead and keep the batching, the positional alignment
     /// of the two attributes per node and the transient status handling.
     /// </remarks>
     /// <exception cref="OpcUaTransientServiceException">A DataType or ValueRank read returned a transient bad status.</exception>
-    public virtual async Task<IReadOnlyDictionary<NodeId, Type?>> ResolveVariableTypesAsync(
+    public virtual async Task<IReadOnlyDictionary<NodeId, Type?>> ResolveVariableNodeTypesAsync(
         ISession session,
         IReadOnlyCollection<ReferenceDescription> variables,
         CancellationToken cancellationToken)
@@ -113,15 +113,15 @@ public class OpcUaTypeResolver
 
             // Abort on a transient attribute read: an unresolved type silently drops the
             // property from the model (does not self-heal). Permanent statuses fall through
-            // to the graceful skip in ResolveVariableTypeAsync.
+            // to the graceful skip in ResolveVariableNodeTypeAsync.
             OpcUaStatusCodeClassifier.ThrowIfLoadMustRetry(allResults[dataTypeIndex].StatusCode, "Read", nodeId);
             OpcUaStatusCodeClassifier.ThrowIfLoadMustRetry(allResults[valueRankIndex].StatusCode, "Read", nodeId);
 
             Type? type = null;
             try
             {
-                type = await ResolveVariableTypeAsync(
-                        new OpcUaVariableTypeContext(session, reference, nodeId, allResults[dataTypeIndex], allResults[valueRankIndex]),
+                type = await ResolveVariableNodeTypeAsync(
+                        new OpcUaVariableNodeContext(session, reference, nodeId, allResults[dataTypeIndex], allResults[valueRankIndex]),
                         cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -153,8 +153,8 @@ public class OpcUaTypeResolver
     /// <see cref="OpcUaTransientServiceException"/> aborts the load so the source retries it; any other
     /// exception is logged and treated as an uninferable type.
     /// </remarks>
-    protected virtual async Task<Type?> ResolveVariableTypeAsync(
-        OpcUaVariableTypeContext node,
+    protected virtual async Task<Type?> ResolveVariableNodeTypeAsync(
+        OpcUaVariableNodeContext node,
         CancellationToken cancellationToken)
     {
         if (!StatusCode.IsGood(node.DataType.StatusCode))

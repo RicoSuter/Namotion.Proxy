@@ -542,7 +542,7 @@ For custom type conversions (used by both client and server), see [Custom Value 
 
 Extend `OpcUaTypeResolver` to customize how the client infers C# types from OPC UA node metadata during dynamic property discovery. This is useful when you want specific OPC UA nodes to map to custom C# classes.
 
-The resolver reads the address space in batches, so it has one seam per decision. `ResolveObjectNodeType` classifies one Object node from the children the loader already browsed. `ResolveVariableTypeAsync` types one Variable node from its already-read DataType and ValueRank attributes, which is where a rule based on the browse name belongs. `TryMapBuiltInType` maps one OPC UA built-in type for every node at once. Overriding `ResolveVariableTypesAsync` itself replaces the batched read, which is only worth doing when the types come from somewhere other than the server.
+The resolver reads the address space in batches, so it has one seam per decision. `ResolveObjectNodeType` classifies one Object node from the children the loader already browsed. `ResolveVariableNodeTypeAsync` types one Variable node from its already-read DataType and ValueRank attributes, which is where a rule based on the browse name belongs. `TryMapBuiltInType` maps one OPC UA built-in type for every node at once. Overriding `ResolveVariableNodeTypesAsync` itself replaces the batched read, which is only worth doing when the types come from somewhere other than the server.
 
 ```csharp
 public class CustomTypeResolver : OpcUaTypeResolver
@@ -563,15 +563,15 @@ public class CustomTypeResolver : OpcUaTypeResolver
         return base.ResolveObjectNodeType(node, children);
     }
 
-    protected override Task<Type?> ResolveVariableTypeAsync(
-        OpcUaVariableTypeContext node, CancellationToken cancellationToken)
+    protected override Task<Type?> ResolveVariableNodeTypeAsync(
+        OpcUaVariableNodeContext node, CancellationToken cancellationToken)
     {
         if (node.Reference.BrowseName.Name == "Timestamp")
         {
             return Task.FromResult<Type?>(typeof(DateTime));
         }
 
-        return base.ResolveVariableTypeAsync(node, cancellationToken);
+        return base.ResolveVariableNodeTypeAsync(node, cancellationToken);
     }
 
     protected override Type? TryMapBuiltInType(BuiltInType builtInType)
@@ -583,7 +583,7 @@ public class CustomTypeResolver : OpcUaTypeResolver
 }
 ```
 
-`ResolveVariableTypeAsync` returns null when the type cannot be inferred, and the loader then skips that node. Its two attribute values have already been classified, so a bad status reaching it is permanent and null is the right answer. A transient status never reaches it: `ResolveVariableTypesAsync` throws `OpcUaTransientServiceException` first, which aborts the load so the source retries it, and an override that replaces the batched read must do the same.
+`ResolveVariableNodeTypeAsync` returns null when the type cannot be inferred, and the loader then skips that node. Its two attribute values have already been classified, so a bad status reaching it is permanent and null is the right answer. A transient status never reaches it: `ResolveVariableNodeTypesAsync` throws `OpcUaTransientServiceException` first, which aborts the load so the source retries it, and an override that replaces the batched read must do the same.
 
 ### Custom Subject Factory
 
@@ -669,7 +669,7 @@ The classification of an Object node reads its first browsed child, and only whe
 | XmlElement | string | |
 | Variant, Null | (skipped) | Type cannot be determined |
 
-Override `ResolveVariableTypesAsync` on `OpcUaTypeResolver` to customize the type of specific Variable nodes, or `TryMapBuiltInType` to change one built-in type's mapping for all of them. See [Custom Type Resolver](#custom-type-resolver).
+Override `ResolveVariableNodeTypeAsync` on `OpcUaTypeResolver` to customize the type of specific Variable nodes, or `TryMapBuiltInType` to change one built-in type's mapping for all of them. See [Custom Type Resolver](#custom-type-resolver).
 
 #### Subject Deduplication
 
