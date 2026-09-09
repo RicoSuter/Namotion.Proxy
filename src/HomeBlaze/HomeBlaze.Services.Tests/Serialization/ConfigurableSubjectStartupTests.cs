@@ -38,7 +38,8 @@ public class ConfigurableSubjectStartupTests
             new SubjectPathResolver(() => manager?.Root), configuration.Object);
         var published = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         probe.Starting = subject => published.TrySetResult(ReferenceEquals(rootManager.Root, subject) &&
-            ReferenceEquals(context.TryGetService<ConfigurableStartupSubject>(), subject));
+            ReferenceEquals(context.TryGetService<ConfigurableStartupSubject>(), subject) &&
+            rootManager.RootLoaded.IsCompletedSuccessfully);
         await handler.StartAsync(CancellationToken.None);
 
         try
@@ -97,7 +98,7 @@ public class ConfigurableSubjectStartupTests
         }
     }
     [Fact]
-    public async Task WhenConfigurationPopulationThrows_ThenThePartiallyConfiguredServiceNeverStarts()
+    public async Task WhenConfigurationPopulationThrows_ThenTheCapturedStartIsStillReleased()
     {
         // Arrange
         using var probe = new ConfigurableStartupProbe { FailPopulation = true };
@@ -119,12 +120,10 @@ public class ConfigurableSubjectStartupTests
             Assert.Throws<System.Reflection.TargetInvocationException>(() => serializer.Deserialize("""
                 {"$type":"HomeBlaze.Services.Tests.Serialization.ConfigurableStartupSubject","configuration":"configured"}
                 """));
-            using var next = new ConfigurableStartupProbe();
-            _ = new ConfigurableStartupSubject(next, context);
-            await next.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-            // Assert
-            Assert.False(probe.Started.Task.IsCompleted);
+            // Assert - the scope defers the start, it does not decide whether the subject is fit to
+            // run, so unwinding through its disposal releases the start like any other exit.
+            Assert.Equal(string.Empty, await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(10)));
         }
         finally
         {

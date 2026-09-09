@@ -121,7 +121,9 @@ public class RootManager : BackgroundService, IConfigurationWriter
 
         _logger?.LogInformation("Root loaded: {Type}", Root.GetType().FullName);
         _context.AddService(Root);
-        startup?.Complete();
+
+        // Publish readiness before scope disposal releases deferred starts.
+        _rootLoaded.TrySetResult(Root);
 
         return Root;
     }

@@ -43,13 +43,12 @@ public class HostedServiceStartupScopeTests
 
             // Assert
             Assert.False(scoped.Started.Task.IsCompleted);
-            scope!.Complete();
         }
         await scoped.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
     [Fact]
-    public async Task WhenNestedScopeCompletes_ThenStartWaitsForTheOuterScope()
+    public async Task WhenNestedScopeIsDisposed_ThenStartWaitsForTheOuterScope()
     {
         // Arrange
         await using var fixture = new Fixture();
@@ -63,45 +62,14 @@ public class HostedServiceStartupScopeTests
             using (var inner = fixture.Context.DeferHostedServiceStartup())
             {
                 subject.AttachHostedService(service);
-                inner!.Complete();
             }
             await fixture.Handler.StartAsync(CancellationToken.None);
             Assert.False(service.Started.Task.IsCompleted);
             configuration = "configured";
-            outer!.Complete();
         }
 
         // Assert
         Assert.Equal("configured", await service.Started.Task.WaitAsync(TimeSpan.FromSeconds(10)));
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task WhenAScopeFails_ThenItsQueuedStartIsCanceled(bool outerFails)
-    {
-        // Arrange
-        await using var fixture = new Fixture();
-        var service = new ProbeService(() => "started");
-        var subject = new Person(fixture.Context);
-        Task attachment;
-
-        // Act
-        using (var outer = fixture.Context.DeferHostedServiceStartup())
-        {
-            using (var inner = fixture.Context.DeferHostedServiceStartup())
-            {
-                attachment = subject.AttachHostedServiceAsync(service, CancellationToken.None);
-                if (outerFails) inner!.Complete();
-            }
-            if (!outerFails) outer!.Complete();
-        }
-
-        // Assert
-        await fixture.Handler.StartAsync(CancellationToken.None);
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => attachment.WaitAsync(TimeSpan.FromSeconds(10)));
-        Assert.False(service.Started.Task.IsCompleted);
-        await fixture.HoldsReleased.Task.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
     [Theory]
@@ -121,8 +89,6 @@ public class HostedServiceStartupScopeTests
         // Act
         await fixture.Handler.StartAsync(CancellationToken.None);
         await fixture.Handler.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
-        scope!.Complete();
-        scope.Dispose();
 
         // Assert
         foreach (var attachment in attachments)
@@ -251,7 +217,6 @@ public class HostedServiceStartupScopeTests
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => firstAttachment.WaitAsync(TimeSpan.FromSeconds(10)));
             await AsyncTestHelpers.WaitUntilAsync(() => Volatile.Read(ref fixture.HoldsDisposed) == 1);
             Assert.False(service.Started.Task.IsCompleted);
-            scope!.Complete();
         }
         if (secondAttachment is not null)
         {
@@ -285,12 +250,10 @@ public class HostedServiceStartupScopeTests
             using (var inner = nested ? fixture.Context.DeferHostedServiceStartup() : null)
             {
                 attachments.Add(subject.AttachHostedServiceAsync(new ProbeService(() => { events.Add("first"); return "first"; }), CancellationToken.None));
-                inner?.Complete();
             }
             attachments.Add(subject.AttachHostedServiceAsync(new ProbeService(() => { events.Add("second"); return "second"; }), CancellationToken.None));
             Assert.Equal(2, fixture.HoldsTaken);
             Assert.Equal(0, fixture.HoldsDisposed);
-            outer!.Complete();
         }
         await Task.WhenAll(attachments).WaitAsync(TimeSpan.FromSeconds(10));
         await fixture.HoldsReleased.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -301,14 +264,10 @@ public class HostedServiceStartupScopeTests
     }
 
     [Fact]
-    public async Task WhenHandlerStartsInsideAFailedScope_ThenLaterServicesCanStartTheirChildren()
+    public async Task WhenHandlerStartsInsideAnOpenScope_ThenTheActionLoopDoesNotInheritIt()
     {
         // Arrange
         await using var fixture = new Fixture();
-        using (fixture.Context.DeferHostedServiceStartup())
-        {
-            await fixture.Handler.StartAsync(CancellationToken.None);
-        }
         var subject = new Person(fixture.Context);
         var child = new ProbeService(() => "child");
         var parent = new ProbeService(() =>
@@ -317,11 +276,110 @@ public class HostedServiceStartupScopeTests
             return "parent";
         });
 
+        // Attached from a flow created before the scope below, so the scope never captures this
+        // attach and the loop's own flow is the only thing that can defer the child.
+        var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var independentFlow = Task.Run(async () =>
+        {
+            await proceed.Task;
+            await subject.AttachHostedServiceAsync(parent, CancellationToken.None);
+        });
+
+        // Act - the scope stays open across the start, so a loop that inherited the flow it was
+        // started in would capture the child that parent attaches inside its own StartAsync and
+        // hold it until this scope is disposed.
+        using (fixture.Context.DeferHostedServiceStartup())
+        {
+            await fixture.Handler.StartAsync(CancellationToken.None);
+            proceed.SetResult();
+            await independentFlow.WaitAsync(TimeSpan.FromSeconds(10));
+
+            // Assert
+            Assert.Equal("child", await child.Started.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+        }
+    }
+
+    [Theory]
+    [InlineData("OutOfOrder")]
+    [InlineData("OtherFlow")]
+    [InlineData("Twice")]
+    public async Task WhenAScopeIsDisposedIrregularly_ThenCapturedAndLaterServicesCanStart(string disposal)
+    {
+        // Arrange
+        await using var fixture = new Fixture();
+        await fixture.Handler.StartAsync(CancellationToken.None);
+        var subject = new Person(fixture.Context);
+        var captured = new ProbeService(() => "captured");
+        var outer = fixture.Context.DeferHostedServiceStartup();
+        var inner = fixture.Context.DeferHostedServiceStartup();
+        subject.AttachHostedService(captured);
+
         // Act
-        await subject.AttachHostedServiceAsync(parent, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        var irregular = Record.Exception(() =>
+        {
+            switch (disposal)
+            {
+                case "OutOfOrder": outer!.Dispose(); inner!.Dispose(); break;
+                case "OtherFlow": Task.Run(() => inner!.Dispose()).GetAwaiter().GetResult(); inner!.Dispose(); outer!.Dispose(); break;
+                default: inner!.Dispose(); inner.Dispose(); outer!.Dispose(); outer.Dispose(); break;
+            }
+        });
 
         // Assert
-        Assert.Equal("child", await child.Started.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Null(irregular);
+        Assert.Equal("captured", await captured.Started.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+
+        var later = new ProbeService(() => "later");
+        await subject.AttachHostedServiceAsync(later, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task WhenAStopIsStillQueuedAtShutdown_ThenTheDetachedServiceIsStillStopped()
+    {
+        // Arrange
+        await using var fixture = new Fixture();
+        await fixture.Handler.StartAsync(CancellationToken.None);
+        var subject = new Person(fixture.Context);
+        var releaseStart = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var detached = new ProbeService(() => "detached", () => stopped.TrySetResult());
+        await subject.AttachHostedServiceAsync(detached, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Occupies the loop, so the stop queued below is still waiting when shutdown begins.
+        var blocking = new ProbeService(() => "blocking", startup: releaseStart.Task);
+        subject.AttachHostedService(blocking);
+        await blocking.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        subject.DetachHostedService(detached);
+
+        // Act
+        var stopping = fixture.Handler.StopAsync(CancellationToken.None);
+        releaseStart.SetResult();
+
+        // Assert
+        await stopped.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await stopping.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task WhenAnAwaitedAttachResumes_ThenItDoesNotOccupyTheActionLoop()
+    {
+        // Arrange
+        await using var fixture = new Fixture();
+        await fixture.Handler.StartAsync(CancellationToken.None);
+        var subject = new Person(fixture.Context);
+        var next = new ProbeService(() => "next");
+
+        // Act - the continuation attaches another service and waits for it, so it can only finish
+        // if the loop is free to run that start rather than being inside this continuation.
+        var attaching = Task.Run(async () =>
+        {
+            await subject.AttachHostedServiceAsync(new ProbeService(() => "first"), CancellationToken.None);
+            subject.AttachHostedService(next);
+            return next.Started.Task.Wait(TimeSpan.FromSeconds(5));
+        });
+
+        // Assert
+        Assert.True(await attaching.WaitAsync(TimeSpan.FromSeconds(10)));
     }
 
     private sealed class Fixture : IAsyncDisposable, IStartupCompletionDeferrer
