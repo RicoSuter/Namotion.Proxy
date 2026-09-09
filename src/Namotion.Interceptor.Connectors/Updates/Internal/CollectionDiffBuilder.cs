@@ -9,9 +9,9 @@ namespace Namotion.Interceptor.Connectors.Updates.Internal;
 internal sealed class CollectionDiffBuilder
 {
     // Reusable containers
-    private readonly Dictionary<IInterceptorSubject, int> _oldIndexMap = new();
-    private readonly Dictionary<IInterceptorSubject, int> _newIndexMap = new();
-    private readonly Dictionary<IInterceptorSubject, int> _oldRetainedIndexMap = new();
+    private readonly Dictionary<IInterceptorSubject, int> _oldIndexMap = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<IInterceptorSubject, int> _newIndexMap = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<IInterceptorSubject, int> _oldRetainedIndexMap = new(ReferenceEqualityComparer.Instance);
     private readonly List<IInterceptorSubject> _oldRetainedOrder = [];
     private readonly List<IInterceptorSubject> _newRetainedOrder = [];
     private readonly List<(object key, IInterceptorSubject item)> _retainedDictionaryItems = [];
@@ -87,7 +87,7 @@ internal sealed class CollectionDiffBuilder
         }
 
         // Detect reordering and compute intermediate indices for moves
-        if (_oldRetainedOrder.Count > 0 && !_oldRetainedOrder.SequenceEqual(_newRetainedOrder))
+        if (_oldRetainedOrder.Count > 0 && !_oldRetainedOrder.SequenceEqual<IInterceptorSubject>(_newRetainedOrder, ReferenceEqualityComparer.Instance))
         {
             _oldRetainedIndexMap.Clear();
             for (var i = 0; i < _oldRetainedOrder.Count; i++)

@@ -447,7 +447,7 @@ public class RegisteredSubjectProperty
             {
                 if (list[index] is IInterceptorSubject subject)
                 {
-                    collectionPositions ??= _reusableCollectionPositions = new Dictionary<IInterceptorSubject, int>(capacityHint);
+                    collectionPositions ??= _reusableCollectionPositions = new Dictionary<IInterceptorSubject, int>(capacityHint, ReferenceEqualityComparer.Instance);
                     collectionPositions[subject] = index;
                 }
             }
@@ -459,7 +459,7 @@ public class RegisteredSubjectProperty
             {
                 if (item is IInterceptorSubject subject)
                 {
-                    collectionPositions ??= _reusableCollectionPositions = new Dictionary<IInterceptorSubject, int>(capacityHint);
+                    collectionPositions ??= _reusableCollectionPositions = new Dictionary<IInterceptorSubject, int>(capacityHint, ReferenceEqualityComparer.Instance);
                     collectionPositions[subject] = index;
                 }
                 index++;
@@ -472,7 +472,7 @@ public class RegisteredSubjectProperty
             {
                 if (item is IInterceptorSubject subject)
                 {
-                    collectionPositions ??= _reusableCollectionPositions = new Dictionary<IInterceptorSubject, int>(capacityHint);
+                    collectionPositions ??= _reusableCollectionPositions = new Dictionary<IInterceptorSubject, int>(capacityHint, ReferenceEqualityComparer.Instance);
                     collectionPositions[subject] = index;
                 }
                 index++;
