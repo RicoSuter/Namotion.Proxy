@@ -1,9 +1,6 @@
-using Microsoft.Extensions.Logging.Abstractions;
-using Namotion.Interceptor.Connectors;
-using Namotion.Interceptor.OpcUa.Client;
 using Namotion.Interceptor.OpcUa.Client.Connection;
-using Namotion.Interceptor.OpcUa.Tests.Integration.Testing;
-using Namotion.Interceptor.Tracking;
+using Opc.Ua;
+using Opc.Ua.Client;
 
 namespace Namotion.Interceptor.OpcUa.Tests.Client;
 
@@ -19,33 +16,20 @@ public class SubscriptionManagerShutdownTests
     public async Task WhenDisposedManagerRunsSubscriptionSetup_ThenCallbacksStaySuppressed()
     {
         // Arrange
-        var configuration = new OpcUaClientConfiguration
-        {
-            ServerUrl = "opc.tcp://localhost:4840",
-            TypeResolver = new OpcUaTypeResolver(NullLogger<OpcUaTypeResolver>.Instance),
-            ValueConverter = new OpcUaValueConverter(),
-            SubjectFactory = new OpcUaSubjectFactory(DefaultSubjectFactory.Instance)
-        };
+        var harness = SubscriptionManagerTestHarness.Create();
+        await harness.Manager.DisposeAsync();
 
-        var subject = new TestPerson(InterceptorSubjectContext.Create().WithLifecycle());
-        var source = new OpcUaSubjectClientSource(subject, configuration, NullLogger.Instance);
-        var manager = new SubscriptionManager(
-            source,
-            new SubjectPropertyWriter(source, NullLogger.Instance),
-            pollingManager: null,
-            readAfterWriteManager: null,
-            configuration,
-            source.ReportBackgroundError,
-            NullLogger.Instance);
-
-        await manager.DisposeAsync();
-
-        // Act - a reconnect that starts after disposal runs subscription setup again. Passing no
+        // Act: a reconnect that starts after disposal runs subscription setup again. Passing no
         // monitored items makes the null session safe: the batching loop that dereferences the
         // session never executes for an empty item list.
-        await manager.CreateBatchedSubscriptionsAsync([], null!, CancellationToken.None);
+        await harness.Manager.CreateBatchedSubscriptionsAsync([], null!, CancellationToken.None);
+        harness.RegisterMonitoredItem(clientHandle: 7, propertyName: "Value");
+        harness.Manager.OnFastDataChange(
+            new Subscription(NullTelemetryContext.Instance, new SubscriptionOptions()),
+            SubscriptionManagerTestHarness.CreateNotification(clientHandle: 7, value: 42d),
+            []);
 
         // Assert
-        Assert.True(manager.AreCallbacksSuppressedForTesting);
+        Assert.NotEqual(42d, harness.GetValue("Value"));
     }
 }

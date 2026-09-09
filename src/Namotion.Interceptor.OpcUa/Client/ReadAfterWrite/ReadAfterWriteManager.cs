@@ -12,7 +12,7 @@ namespace Namotion.Interceptor.OpcUa.Client.ReadAfterWrite;
 /// Maintains a NodeId-to-property index for O(1) lookups and handles automatic cleanup.
 /// Thread-safe. All state is protected by a single lock for simplicity.
 /// </summary>
-internal sealed class ReadAfterWriteManager : IReadAfterWriteRegistrar, IAsyncDisposable
+internal sealed class ReadAfterWriteManager : IAsyncDisposable
 {
     private readonly Func<ISession?> _sessionProvider;
     private readonly ISubjectSource _source;
@@ -41,6 +41,20 @@ internal sealed class ReadAfterWriteManager : IReadAfterWriteRegistrar, IAsyncDi
     private int _isProcessing; // 0 = not processing, 1 = processing (for timer callback serialization)
 
     internal int PendingReadCount => Volatile.Read(ref _pendingReadCount);
+
+    /// <summary>
+    /// Gets how many properties are registered for read-after-writes.
+    /// </summary>
+    internal int TrackedPropertyCount
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _trackedProperties.Count;
+            }
+        }
+    }
 
     /// <summary>
     /// Creates a new read-after-write manager.

@@ -37,7 +37,7 @@ internal class SubscriptionManager : IAsyncDisposable
     private readonly OpcUaSubjectClientSource _source;
     private readonly SubjectPropertyWriter _propertyWriter;
     private readonly PollingManager? _pollingManager;
-    private readonly IReadAfterWriteRegistrar? _readAfterWriteManager;
+    private readonly ReadAfterWriteManager? _readAfterWriteManager;
     private readonly OpcUaClientConfiguration _configuration;
     private readonly Action<Exception> _reportError;
     private readonly ILogger _logger;
@@ -51,14 +51,11 @@ internal class SubscriptionManager : IAsyncDisposable
     private int _subscriptionCount;
     private int _monitoredItemCount;
 
-    // Subjects that detached mid-setup, so their monitored items may have been added after the
-    // detach callback had already run. Drained by CompleteSetup's sweep. Used as a set; the value
-    // is ignored.
+    // Subjects whose detach ran while setup was still tracking items; drained by the sweep in
+    // CompleteSetup. Used as a set; the value is ignored.
     private readonly ConcurrentDictionary<IInterceptorSubject, byte> _detachedDuringSetup = new();
 
-    // True only between clearing the collections and finishing CompleteSetup, which is exactly the
-    // span where a detach can be missed. Bounds _detachedDuringSetup: outside that span nothing
-    // would ever drain it.
+    // True from BeginSetup until CompleteSetup starts; see RemoveItemsForSubject.
     private volatile bool _setupInProgress;
 
     // Consecutive failed heal ticks a retryable item tolerates before it is escalated to polling
@@ -75,11 +72,6 @@ internal class SubscriptionManager : IAsyncDisposable
     // !_shuttingDown guard in CompleteSetup dead.
     private volatile bool _shuttingDown;
     private volatile bool _callbacksEnabled; // Gated to false until subscription setup completes
-
-    /// <summary>
-    /// Exposes the shutdown flag so tests can assert that it stays set once disposal has run.
-    /// </summary>
-    internal bool AreCallbacksSuppressedForTesting => _shuttingDown;
 
     /// <summary>
     /// Gets the current list of subscriptions (thread-safe collection).
@@ -125,7 +117,7 @@ internal class SubscriptionManager : IAsyncDisposable
         OpcUaSubjectClientSource source,
         SubjectPropertyWriter propertyWriter,
         PollingManager? pollingManager,
-        IReadAfterWriteRegistrar? readAfterWriteManager,
+        ReadAfterWriteManager? readAfterWriteManager,
         OpcUaClientConfiguration configuration,
         Action<Exception> reportError,
         ILogger logger,
@@ -147,27 +139,7 @@ internal class SubscriptionManager : IAsyncDisposable
         Session session,
         CancellationToken cancellationToken)
     {
-        // Close the callback gate first so a reconnection re-setup cannot let an in-flight or
-        // newly-entering notification pass on the previous setup's stale-true flag. The gate
-        // reopens only as the final statement, after the detached-subject sweep.
-        _callbacksEnabled = false;
-
-        // Clear any existing subscriptions and monitored items from previous session (reconnection scenario).
-        // Old subscriptions are orphaned (belong to dead session), so we just need to remove our references.
-        foreach (var oldSubscription in _subscriptions.Keys)
-        {
-            oldSubscription.FastDataChangeCallback -= OnFastDataChange;
-        }
-        ClearTrackedCollections();
-        _healAttempts.Clear();
-        // Scoped to one setup cycle. A setup that throws before CompleteSetup would otherwise leave
-        // entries behind, and the next cycle's sweep would drop items for a subject that has since
-        // re-attached.
-        _detachedDuringSetup.Clear();
-        _setupInProgress = true;
-        // On reconnect, re-attempt every owned property as a real subscription; failed nodes are
-        // re-added to polling. Prevents double delivery of an escalated item that later recovers.
-        _pollingManager?.Clear();
+        BeginSetup();
 
         try
         {
@@ -216,10 +188,37 @@ internal class SubscriptionManager : IAsyncDisposable
         }
         finally
         {
-            // Also on the throw path. A setup that fails part way must not leave recording enabled,
-            // or every later detach accumulates in _detachedDuringSetup with no sweep to drain it.
+            // A setup that throws before CompleteSetup must still stop recording, or every later
+            // detach accumulates in _detachedDuringSetup with nothing to drain it.
             _setupInProgress = false;
         }
+    }
+
+    /// <summary>
+    /// Enters the state subscription setup runs in: closes the callback gate, forgets the previous
+    /// session's subscriptions and monitored items, and records detaches until
+    /// <see cref="CompleteSetup"/> sweeps them.
+    /// </summary>
+    internal void BeginSetup()
+    {
+        // Closed first so a reconnection re-setup cannot let an in-flight or newly-entering
+        // notification pass on the previous setup's stale-true flag.
+        _callbacksEnabled = false;
+
+        // Old subscriptions belong to the dead session, so only the references are dropped.
+        foreach (var oldSubscription in _subscriptions.Keys)
+        {
+            oldSubscription.FastDataChangeCallback -= OnFastDataChange;
+        }
+        ClearTrackedCollections();
+        _healAttempts.Clear();
+        // Entries a setup that threw left behind would make this cycle's sweep drop items for a
+        // subject that has since re-attached.
+        _detachedDuringSetup.Clear();
+        _setupInProgress = true;
+        // On reconnect, re-attempt every owned property as a real subscription; failed nodes are
+        // re-added to polling. Prevents double delivery of an escalated item that later recovers.
+        _pollingManager?.Clear();
     }
 
     internal void TrackMonitoredItem(MonitoredItem item)
@@ -231,9 +230,9 @@ internal class SubscriptionManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Finishes subscription setup: drops monitored items whose subject detached while the
-    /// subscriptions were being created, registers what survived for read-after-write tracking,
-    /// then opens the callback gate.
+    /// Finishes subscription setup: stops recording detaches, drops monitored items whose subject
+    /// detached while the subscriptions were being created, registers what survived for
+    /// read-after-write tracking, then opens the callback gate.
     /// </summary>
     /// <remarks>
     /// The order is the point of this method, which is why it is one unit rather than three
@@ -243,8 +242,12 @@ internal class SubscriptionManager : IAsyncDisposable
     /// initial state load are not lost: the caller starts the property writer's buffering before
     /// setup and replays it afterwards.
     /// </remarks>
-    private void CompleteSetup(IEnumerable<MonitoredItem> monitoredItems)
+    internal void CompleteSetup(IEnumerable<MonitoredItem> monitoredItems)
     {
+        // Every TrackMonitoredItem call precedes this method, so from here a detach finds its own
+        // items and needs no recording, and the sweep can remove through the same entry point.
+        _setupInProgress = false;
+
         SweepDetachedSubjects();
         RegisterSurvivors(monitoredItems);
 
@@ -603,32 +606,15 @@ internal class SubscriptionManager : IAsyncDisposable
     /// </summary>
     public void RemoveItemsForSubject(IInterceptorSubject subject)
     {
-        // A detach arriving mid-setup finds nothing to remove, because setup cleared the dictionary
-        // and has not repopulated it yet. Recording it lets CompleteSetup's sweep drop the items
-        // once they exist. The sweep cannot detect this case on its own: it tests registry
-        // membership, but the lifecycle interceptor raises SubjectDetaching before the registry
-        // handler runs, so a subject detaching right now still looks registered.
-        //
-        // Conditioned on an explicit setup flag rather than on the callback gate. The gate is also
-        // closed before the first setup, after a setup that never runs (a load yielding no
-        // monitored items never calls this method at all), and after disposal, and in all of those
-        // states nothing would ever drain what was recorded.
+        // A detach that lands while items are still being tracked is recorded for the sweep in
+        // CompleteSetup, whose registry check cannot see it: the lifecycle interceptor raises
+        // SubjectDetaching before the registry handler runs. Recording stops once CompleteSetup
+        // starts because nothing drains the set outside a setup cycle.
         if (_setupInProgress)
         {
             _detachedDuringSetup[subject] = 0;
         }
 
-        RemoveItemsForSubjectCore(subject);
-    }
-
-    /// <summary>
-    /// The removal itself, without the mid-setup recording. The sweep calls this rather than
-    /// <see cref="RemoveItemsForSubject"/> because it runs with the callback gate still closed, so
-    /// recording there would re-add every subject it just swept and hold those graphs alive until
-    /// a reconnect that may never come.
-    /// </summary>
-    private void RemoveItemsForSubjectCore(IInterceptorSubject subject)
-    {
         foreach (var kvp in _monitoredItems)
         {
             if (kvp.Value.Reference.Subject == subject)
@@ -650,7 +636,7 @@ internal class SubscriptionManager : IAsyncDisposable
         {
             foreach (var entry in _detachedDuringSetup)
             {
-                RemoveItemsForSubjectCore(entry.Key);
+                RemoveItemsForSubject(entry.Key);
                 _pollingManager?.RemoveItemsForSubject(entry.Key);
             }
 
@@ -671,7 +657,7 @@ internal class SubscriptionManager : IAsyncDisposable
             var subject = entry.Value.Reference.Subject;
             if (seen.Add(subject) && subject.TryGetRegisteredSubject() is null)
             {
-                RemoveItemsForSubjectCore(subject);
+                RemoveItemsForSubject(subject);
                 _pollingManager?.RemoveItemsForSubject(subject);
             }
         }
@@ -717,34 +703,11 @@ internal class SubscriptionManager : IAsyncDisposable
         return _configuration.DefaultSamplingInterval;
     }
 
-    internal IDictionary<uint, RegisteredSubjectProperty> MonitoredItemsForTesting => _monitoredItems;
-
-    /// <summary>
-    /// Enters the same state <see cref="CreateBatchedSubscriptionsAsync"/> establishes before it
-    /// starts creating subscriptions. Tests that drive <see cref="CompleteSetupForTesting"/>
-    /// directly need this, because a freshly constructed manager is deliberately NOT mid-setup:
-    /// recording detaches outside a real setup cycle would accumulate with nothing to drain it.
-    /// </summary>
-    internal void BeginSetupForTesting()
-    {
-        _detachedDuringSetup.Clear();
-        _setupInProgress = true;
-    }
-
-    internal void CompleteSetupForTesting(IEnumerable<MonitoredItem> monitoredItems) => CompleteSetup(monitoredItems);
-
     /// <summary>
     /// Number of subjects recorded as having detached during the current setup cycle. Lets tests
     /// assert the set is drained rather than growing without bound.
     /// </summary>
     internal int DetachedDuringSetupCountForTesting => _detachedDuringSetup.Count;
-
-    /// <summary>
-    /// Drives the live data-change callback without an SDK <see cref="Subscription"/>. The callback
-    /// reads neither the subscription nor the string table, so this exercises the production path
-    /// including its gate check rather than a parallel copy of it.
-    /// </summary>
-    internal void OnFastDataChangeForTesting(DataChangeNotification notification) => OnFastDataChange(null!, notification, []);
 
     private bool TryAddSubscription(Subscription subscription)
     {

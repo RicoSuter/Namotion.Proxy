@@ -426,7 +426,7 @@ public class SubscriptionManagerDiagnosticsTests
         manager.TrackMonitoredItem(monitoredItem);
 
         // Notifications are dropped until subscription setup completes; open the gate as a real setup would.
-        manager.CompleteSetupForTesting([monitoredItem]);
+        manager.CompleteSetup([monitoredItem]);
         return monitoredItem.ClientHandle;
     }
 
