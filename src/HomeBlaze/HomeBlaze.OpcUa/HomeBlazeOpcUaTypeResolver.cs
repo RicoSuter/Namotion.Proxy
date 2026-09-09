@@ -1,4 +1,4 @@
-using HomeBlaze.Abstractions.Attributes;
+﻿using HomeBlaze.Abstractions.Attributes;
 using Microsoft.Extensions.Logging;
 using Namotion.Interceptor.OpcUa.Client;
 using Opc.Ua;
@@ -12,8 +12,8 @@ public class HomeBlazeOpcUaTypeResolver : OpcUaTypeResolver
     {
     }
 
-    public override Attribute[] GetDynamicPropertyAttributes(ReferenceDescription reference, ISession session)
+    public override Attribute[] GetDynamicPropertyAttributes(ISession session, ReferenceDescription node)
     {
-        return [..base.GetDynamicPropertyAttributes(reference, session), new StateAttribute()];
+        return [..base.GetDynamicPropertyAttributes(session, node), new StateAttribute()];
     }
 }

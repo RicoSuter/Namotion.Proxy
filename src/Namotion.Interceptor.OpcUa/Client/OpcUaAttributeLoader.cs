@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using Namotion.Interceptor.Connectors;
 using Namotion.Interceptor.Registry.Abstractions;
 using Opc.Ua;
@@ -284,7 +284,7 @@ internal sealed class OpcUaAttributeLoader
                 inferredType,
                 _ => value,
                 (_, o) => value = o,
-                _configuration.TypeResolver!.GetDynamicPropertyAttributes(entry.ChildNode, context.Session));
+                _configuration.TypeResolver!.GetDynamicPropertyAttributes(context.Session, entry.ChildNode));
 
             _loader.MonitorValueNode(entry.ChildNodeId, dynamicAttribute, context);
             nextRound.Add(new TraversalEntry(dynamicAttribute, entry.ChildNodeId, entry.RootProperty));

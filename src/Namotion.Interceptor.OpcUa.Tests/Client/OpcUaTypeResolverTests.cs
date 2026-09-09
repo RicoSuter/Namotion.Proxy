@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging.Abstractions;
+﻿using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Namotion.Interceptor.Dynamic;
 using Namotion.Interceptor.OpcUa.Client;
@@ -23,7 +23,7 @@ public class OpcUaTypeResolverTests
     }
 
     [Fact]
-    public void WhenObjectChildrenHaveBracketIntNames_ThenClassifiesAsCollection()
+    public async Task WhenObjectChildrenHaveBracketIntNames_ThenClassifiesAsCollection()
     {
         // Arrange
         var children = new ReferenceDescriptionCollection
@@ -36,14 +36,14 @@ public class OpcUaTypeResolverTests
         };
 
         // Act
-        var result = _resolver.ResolveObjectNodeType(ObjectNode, children);
+        var result = await ResolveObjectTypeAsync(children);
 
         // Assert
         Assert.Equal(typeof(DynamicSubject[]), result);
     }
 
     [Fact]
-    public void WhenObjectChildrenHaveBracketStringNames_ThenClassifiesAsDictionary()
+    public async Task WhenObjectChildrenHaveBracketStringNames_ThenClassifiesAsDictionary()
     {
         // Arrange
         var children = new ReferenceDescriptionCollection
@@ -56,14 +56,14 @@ public class OpcUaTypeResolverTests
         };
 
         // Act
-        var result = _resolver.ResolveObjectNodeType(ObjectNode, children);
+        var result = await ResolveObjectTypeAsync(children);
 
         // Assert
         Assert.Equal(typeof(IReadOnlyDictionary<string, DynamicSubject>), result);
     }
 
     [Fact]
-    public void WhenObjectChildrenHaveRegularNames_ThenClassifiesAsSubject()
+    public async Task WhenObjectChildrenHaveRegularNames_ThenClassifiesAsSubject()
     {
         // Arrange
         var children = new ReferenceDescriptionCollection
@@ -76,24 +76,24 @@ public class OpcUaTypeResolverTests
         };
 
         // Act
-        var result = _resolver.ResolveObjectNodeType(ObjectNode, children);
+        var result = await ResolveObjectTypeAsync(children);
 
         // Assert
         Assert.Equal(typeof(DynamicSubject), result);
     }
 
     [Fact]
-    public void WhenObjectHasNoChildren_ThenClassifiesAsSubject()
+    public async Task WhenObjectHasNoChildren_ThenClassifiesAsSubject()
     {
         // Act
-        var result = _resolver.ResolveObjectNodeType(ObjectNode, new ReferenceDescriptionCollection());
+        var result = await ResolveObjectTypeAsync(new ReferenceDescriptionCollection());
 
         // Assert
         Assert.Equal(typeof(DynamicSubject), result);
     }
 
     [Fact]
-    public void WhenObjectChildHasEmptyBrackets_ThenClassifiesAsSubject()
+    public async Task WhenObjectChildHasEmptyBrackets_ThenClassifiesAsSubject()
     {
         // Arrange: a `Name[]` browse name carries no key or index information; without
         // this branch the empty content would fall through to the dictionary classification.
@@ -107,7 +107,7 @@ public class OpcUaTypeResolverTests
         };
 
         // Act
-        var result = _resolver.ResolveObjectNodeType(ObjectNode, children);
+        var result = await ResolveObjectTypeAsync(children);
 
         // Assert
         Assert.Equal(typeof(DynamicSubject), result);
@@ -469,12 +469,17 @@ public class OpcUaTypeResolverTests
             OpcUaVariableNodeContext node,
             CancellationToken cancellationToken)
         {
-            _seenBrowseNames.Add(node.Reference.BrowseName.Name);
-            return node.Reference.BrowseName.Name == "Timestamp"
+            _seenBrowseNames.Add(node.Node.BrowseName.Name);
+            return node.Node.BrowseName.Name == "Timestamp"
                 ? Task.FromResult<Type?>(typeof(DateTimeOffset))
                 : base.ResolveVariableNodeTypeAsync(node, cancellationToken);
         }
     }
+
+    private Task<Type> ResolveObjectTypeAsync(IReadOnlyList<ReferenceDescription> children) =>
+        _resolver.ResolveObjectNodeTypeAsync(
+            new OpcUaObjectNodeContext(CreateMockSession().Object, ObjectNode, new NodeId(1, 2), children),
+            CancellationToken.None);
 
     private static Mock<ISession> CreateMockSession()
     {

@@ -542,7 +542,7 @@ For custom type conversions (used by both client and server), see [Custom Value 
 
 Extend `OpcUaTypeResolver` to customize how the client infers C# types from OPC UA node metadata during dynamic property discovery. This is useful when you want specific OPC UA nodes to map to custom C# classes.
 
-The resolver reads the address space in batches, so it has one seam per decision. `ResolveObjectNodeType` classifies one Object node from the children the loader already browsed. `ResolveVariableNodeTypeAsync` types one Variable node from its already-read DataType and ValueRank attributes, which is where a rule based on the browse name belongs. `TryMapBuiltInType` maps one OPC UA built-in type for every node at once. Overriding `ResolveVariableNodeTypesAsync` itself replaces the batched read, which is only worth doing when the types come from somewhere other than the server.
+The resolver reads the address space in batches, so it has one seam per decision, and each takes a context carrying the session, the node and its resolved `NodeId`. `ResolveObjectNodeTypeAsync` classifies one Object node from the children the loader already browsed. `ResolveVariableNodeTypeAsync` types one Variable node from its already-read DataType and ValueRank attributes. Both are where a rule based on the browse name belongs. `TryMapBuiltInType` maps one OPC UA built-in type for every node at once. Overriding `ResolveVariableNodeTypesAsync` itself replaces the batched read, which is only worth doing when the types come from somewhere other than the server.
 
 ```csharp
 public class CustomTypeResolver : OpcUaTypeResolver
@@ -552,21 +552,21 @@ public class CustomTypeResolver : OpcUaTypeResolver
     {
     }
 
-    public override Type ResolveObjectNodeType(
-        ReferenceDescription node, IReadOnlyList<ReferenceDescription> children)
+    public override Task<Type> ResolveObjectNodeTypeAsync(
+        OpcUaObjectNodeContext node, CancellationToken cancellationToken)
     {
-        if (node.BrowseName.Name.StartsWith("CustomDevice"))
+        if (node.Node.BrowseName.Name.StartsWith("CustomDevice"))
         {
-            return typeof(MyCustomDevice);
+            return Task.FromResult(typeof(MyCustomDevice));
         }
 
-        return base.ResolveObjectNodeType(node, children);
+        return base.ResolveObjectNodeTypeAsync(node, cancellationToken);
     }
 
     protected override Task<Type?> ResolveVariableNodeTypeAsync(
         OpcUaVariableNodeContext node, CancellationToken cancellationToken)
     {
-        if (node.Reference.BrowseName.Name == "Timestamp")
+        if (node.Node.BrowseName.Name == "Timestamp")
         {
             return Task.FromResult<Type?>(typeof(DateTime));
         }
@@ -583,7 +583,7 @@ public class CustomTypeResolver : OpcUaTypeResolver
 }
 ```
 
-`ResolveVariableNodeTypeAsync` returns null when the type cannot be inferred, and the loader then skips that node. Its two attribute values have already been classified, so a bad status reaching it is permanent and null is the right answer. A transient status never reaches it: `ResolveVariableNodeTypesAsync` throws `OpcUaTransientServiceException` first, which aborts the load so the source retries it, and an override that replaces the batched read must do the same.
+Both per-node seams are asynchronous so an override can read the server to classify a node, but the base implementations never do, and every such read costs one round-trip per node. `ResolveVariableNodeTypeAsync` returns null when the type cannot be inferred, and the loader then skips that node. Its two attribute values have already been classified, so a bad status reaching it is permanent and null is the right answer. A transient status never reaches it: `ResolveVariableNodeTypesAsync` throws `OpcUaTransientServiceException` first, which aborts the load so the source retries it, and an override that replaces the batched read must do the same.
 
 ### Custom Subject Factory
 

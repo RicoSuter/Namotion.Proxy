@@ -8,6 +8,12 @@ namespace Namotion.Interceptor.OpcUa.Client;
 
 public class OpcUaTypeResolver
 {
+    // The base classification completes synchronously and yields one of exactly three types, so the
+    // tasks are cached rather than allocated once per Object node of every load.
+    private static readonly Task<Type> CollectionType = Task.FromResult(typeof(DynamicSubject[]));
+    private static readonly Task<Type> DictionaryType = Task.FromResult(typeof(IReadOnlyDictionary<string, DynamicSubject>));
+    private static readonly Task<Type> SubjectType = Task.FromResult(typeof(DynamicSubject));
+
     private readonly ILogger _logger;
 
     public OpcUaTypeResolver(ILogger logger)
@@ -15,14 +21,14 @@ public class OpcUaTypeResolver
         _logger = logger;
     }
 
-    public virtual Attribute[] GetDynamicPropertyAttributes(ReferenceDescription reference, ISession session)
+    public virtual Attribute[] GetDynamicPropertyAttributes(ISession session, ReferenceDescription node)
     {
-        var namespaceUri = reference.NodeId.NamespaceUri ?? session.NamespaceUris.GetString(reference.NodeId.NamespaceIndex);
+        var namespaceUri = node.NodeId.NamespaceUri ?? session.NamespaceUris.GetString(node.NodeId.NamespaceIndex);
         return
         [
-            new OpcUaNodeAttribute(reference.BrowseName.Name, namespaceUri)
+            new OpcUaNodeAttribute(node.BrowseName.Name, namespaceUri)
             {
-                NodeIdentifier = reference.NodeId.Identifier.ToString(),
+                NodeIdentifier = node.NodeId.Identifier.ToString(),
                 NodeNamespaceUri = namespaceUri
             }
         ];
@@ -35,22 +41,23 @@ public class OpcUaTypeResolver
     /// (<c>Items[Key]</c>) yields <c>IReadOnlyDictionary&lt;string, DynamicSubject&gt;</c>, and anything
     /// else, including an empty child list, yields <see cref="DynamicSubject"/>.
     /// </summary>
-    /// <param name="node">The Object node being classified. Not inspected here; available to overrides.</param>
-    /// <param name="children">The node's browsed children in browse order.</param>
-    public virtual Type ResolveObjectNodeType(ReferenceDescription node, IReadOnlyList<ReferenceDescription> children)
+    /// <remarks>
+    /// The children are already browsed, so the base implementation completes without any call to the
+    /// server. It is asynchronous for overrides that have to read the server to classify a node; every
+    /// such read costs one round-trip per Object node, which is what the batched loader otherwise avoids.
+    /// </remarks>
+    public virtual Task<Type> ResolveObjectNodeTypeAsync(OpcUaObjectNodeContext node, CancellationToken cancellationToken)
     {
-        if (children.Count > 0 && children[0].NodeClass == NodeClass.Object)
+        if (node.Children.Count > 0 && node.Children[0].NodeClass == NodeClass.Object)
         {
-            var name = children[0].BrowseName?.Name;
+            var name = node.Children[0].BrowseName?.Name;
             if (name is not null && OpcUaBrowseName.TryGetBracketContent(name, out var content))
             {
-                return int.TryParse(content, out _)
-                    ? typeof(DynamicSubject[])
-                    : typeof(IReadOnlyDictionary<string, DynamicSubject>);
+                return int.TryParse(content, out _) ? CollectionType : DictionaryType;
             }
         }
 
-        return typeof(DynamicSubject);
+        return SubjectType;
     }
 
     /// <summary>
@@ -160,7 +167,7 @@ public class OpcUaTypeResolver
         if (!StatusCode.IsGood(node.DataType.StatusCode))
         {
             _logger.LogWarning("Failed to read DataType for node {BrowseName} ({StatusCode}).",
-                node.Reference.BrowseName.Name, node.DataType.StatusCode);
+                node.Node.BrowseName.Name, node.DataType.StatusCode);
             return null;
         }
 

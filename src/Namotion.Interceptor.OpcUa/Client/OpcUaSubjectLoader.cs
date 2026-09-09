@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Namotion.Interceptor.Connectors;
 using Namotion.Interceptor.OpcUa.Mapping;
@@ -263,7 +263,9 @@ internal sealed class OpcUaSubjectLoader
             // logs "Could not infer type" and skips, and the next load gets to retry.
             if (objectBrowseResults.TryGetValue(nodeId, out var children))
             {
-                objectTypeMap[nodeId] = _configuration.TypeResolver!.ResolveObjectNodeType(node, children);
+                objectTypeMap[nodeId] = await _configuration.TypeResolver!
+                    .ResolveObjectNodeTypeAsync(new OpcUaObjectNodeContext(context.Session, node, nodeId, children), context.CancellationToken)
+                    .ConfigureAwait(false);
             }
         }
 
@@ -405,7 +407,7 @@ internal sealed class OpcUaSubjectLoader
             inferredType,
             _ => value,
             (_, o) => value = o,
-            _configuration.TypeResolver!.GetDynamicPropertyAttributes(nodeReference, context.Session));
+            _configuration.TypeResolver!.GetDynamicPropertyAttributes(context.Session, nodeReference));
     }
 
     /// <returns>
