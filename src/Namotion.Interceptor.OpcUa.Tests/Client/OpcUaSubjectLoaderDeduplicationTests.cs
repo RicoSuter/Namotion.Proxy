@@ -260,9 +260,9 @@ public class OpcUaSubjectLoaderDeduplicationTests : OpcUaSubjectLoaderTestsBase
         // Arrange: two collection items (Items[0], Items[1]) each have a dynamic
         // variable "SharedSensor" that points to the SAME OPC UA NodeId.
         // SharedSensor has a child attribute "Quality".
-        // Both items' SharedSensor properties must get the Quality attribute loaded,
-        // not just the first one (regression: FilterUnvisitedNodes used to drop the
-        // second entry when it shared a NodeId with the first).
+        // Both items' SharedSensor properties must get the Quality attribute loaded, not just the
+        // first one: a traversal keyed on NodeIds alone would drop the second entry when it shared
+        // a NodeId with the first.
         var collectionId = new NodeId(200, 2);
         var item0Id = new NodeId(201, 2);
         var item1Id = new NodeId(202, 2);

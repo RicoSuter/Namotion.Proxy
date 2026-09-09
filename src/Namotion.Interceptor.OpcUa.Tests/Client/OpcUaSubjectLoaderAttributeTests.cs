@@ -293,7 +293,8 @@ public class OpcUaSubjectLoaderAttributeTests : OpcUaSubjectLoaderTestsBase
         Assert.Empty(attributeB.Attributes);
         Assert.Equal(2, registeredSubject.Properties.Count(property => property.IsAttribute));
 
+        // Root, then one attribute round each for Value, A and B; B's child A is skipped as visited.
         var browseCallCount = mockSession.Invocations.Count(invocation => invocation.Method.Name == nameof(ISession.BrowseAsync));
-        Assert.InRange(browseCallCount, 1, 9);
+        Assert.Equal(4, browseCallCount);
     }
 }

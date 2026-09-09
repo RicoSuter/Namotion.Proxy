@@ -499,8 +499,8 @@ internal static class OpcUaSessionExtensions
                     operation, nodeId, browseResult.StatusCode);
 
                 // Drops the pages collected so far, which would leave the child list truncated. A
-                // no-op on a first page: the result dictionary is per call and its inputs are
-                // deduplicated, so the node has no bucket yet.
+                // no-op on a first page: the result dictionary is per BrowseNodesAsync call and its
+                // inputs are deduplicated, so the node has no bucket yet.
                 result.Remove(nodeId);
                 continue;
             }

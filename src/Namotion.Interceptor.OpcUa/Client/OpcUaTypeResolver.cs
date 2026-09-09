@@ -31,9 +31,9 @@ public class OpcUaTypeResolver
     /// <summary>
     /// Classifies an OPC UA Object node as a collection, a dictionary or a single subject reference
     /// from the browse name of its first child, and only when that child is an Object: numeric bracket
-    /// content (<c>Items[0]</c>) yields <c>DynamicSubject[]</c>, other bracket content (<c>Items[Key]</c>)
-    /// yields <c>IReadOnlyDictionary&lt;string, DynamicSubject&gt;</c>, and anything else, including an
-    /// empty child list, yields <see cref="DynamicSubject"/>.
+    /// content (<c>Items[0]</c>) yields <c>DynamicSubject[]</c>, other non-empty bracket content
+    /// (<c>Items[Key]</c>) yields <c>IReadOnlyDictionary&lt;string, DynamicSubject&gt;</c>, and anything
+    /// else, including an empty child list, yields <see cref="DynamicSubject"/>.
     /// </summary>
     /// <param name="node">The Object node being classified. Not inspected here; available to overrides.</param>
     /// <param name="children">The node's browsed children in browse order.</param>

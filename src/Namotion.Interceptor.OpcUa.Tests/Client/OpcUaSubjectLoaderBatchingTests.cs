@@ -15,7 +15,7 @@ public class OpcUaSubjectLoaderBatchingTests : OpcUaSubjectLoaderTestsBase
     {
         // Arrange: set MaxNodesPerBrowse = 2, tree has 4 leaf variables as dynamic properties.
         // Phase 5 (LoadAttributesAsync) batch-browses all 4 variable nodes at once
-        // via BrowseManyNodesAsync, which must chunk into multiple BrowseAsync calls.
+        // via BrowseNodesAsync, which must chunk into multiple BrowseAsync calls.
         var rootId = new NodeId(1, 0);
         var var1Id = new NodeId(2001, 2);
         var var2Id = new NodeId(2002, 2);
@@ -155,7 +155,7 @@ public class OpcUaSubjectLoaderBatchingTests : OpcUaSubjectLoaderTestsBase
         var mockSession = CreateMockSession();
 
         // Mock BrowseAsync: return children for known nodes, empty for others (leaf Variables).
-        // Handles multi-node BrowseDescriptionCollections from BrowseManyNodesAsync.
+        // Handles multi-node BrowseDescriptionCollections from BrowseNodesAsync.
         SetupBrowseAsync(mockSession, browseTree);
 
         // Mock ReadAsync: return DataType + ValueRank for Variable nodes

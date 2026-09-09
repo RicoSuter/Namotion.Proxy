@@ -30,6 +30,6 @@ public class SubscriptionManagerShutdownTests
             []);
 
         // Assert
-        Assert.NotEqual(42d, harness.GetValue("Value"));
+        Assert.Equal(0d, harness.GetValue("Value"));
     }
 }

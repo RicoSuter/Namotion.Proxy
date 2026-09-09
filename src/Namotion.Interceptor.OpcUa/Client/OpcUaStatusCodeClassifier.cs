@@ -3,28 +3,16 @@ using Opc.Ua;
 namespace Namotion.Interceptor.OpcUa.Client;
 
 /// <summary>
-/// Classifies OPC UA <see cref="StatusCode"/>s for retry decisions. Two questions are asked at
-/// different callsites, and the access-scoped codes answer them oppositely, so there are two
-/// predicates rather than one shared list.
+/// Classifies OPC UA <see cref="StatusCode"/>s for retry decisions. The two predicates cannot share
+/// one list: the access-scoped codes are recoverable for the first and a skip for the second.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="IsRecoverableWithinSession"/> answers <em>can this status recover without a new
-/// session?</em> It backs the subscribe and write paths. Access-scoped codes
-/// (<c>BadUserAccessDenied</c>, <c>BadNotReadable</c>, <c>BadNotImplemented</c>) are recoverable
-/// here: role permissions and the <c>AccessLevel</c> attribute are mutable server-side, so a
-/// monitored item can start succeeding mid-session and must be kept for retry rather than dropped.
-/// <c>BadSecurityModeInsufficient</c> is permanent because it is bound to the SecureChannel's
-/// <c>MessageSecurityMode</c>, which can only change by opening a new channel, and reconnect
-/// re-attempts everything anyway.
-/// </para>
-/// <para>
-/// <see cref="ThrowIfLoadMustRetry"/> answers <em>must the load abort and retry on this status?</em>
-/// It backs the browse and read paths, where a status that a fresh load could clear aborts the load
-/// so reconnect retries it, and one that would repeat is logged and the node skipped. Here the
-/// access-scoped codes repeat: the session's identity and permissions have not changed, so throwing
-/// would crash-loop the whole load instead of skipping the one unreachable node. That makes the
-/// load-skip set a superset of the session-permanent set by exactly those three codes.
+/// <see cref="IsRecoverableWithinSession"/> answers whether a status can recover without a new
+/// session and backs the subscribe and write paths. <see cref="ThrowIfLoadMustRetry"/> answers
+/// whether the load must abort and retry and backs the browse and read paths; its load-skip set is
+/// the session-permanent set plus <c>BadUserAccessDenied</c>, <c>BadNotReadable</c> and
+/// <c>BadNotImplemented</c>. The reasoning is in docs/design/opcua-client-loader.md.
 /// </para>
 /// <para>
 /// The write path uses <see cref="IsRecoverableWithinSession"/> for diagnostics only:

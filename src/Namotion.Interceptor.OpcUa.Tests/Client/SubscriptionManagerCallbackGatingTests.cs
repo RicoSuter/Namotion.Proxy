@@ -18,7 +18,7 @@ public class SubscriptionManagerCallbackGatingTests
         harness.Manager.OnFastDataChange(new Subscription(NullTelemetryContext.Instance, new SubscriptionOptions()), notification, []);
 
         // Assert
-        Assert.NotEqual(42d, harness.GetValue("Value"));
+        Assert.Equal(0d, harness.GetValue("Value"));
 
         // Act: complete setup (which opens the gate) and deliver the same notification
         harness.Manager.CompleteSetup([]);

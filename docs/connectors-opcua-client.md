@@ -840,7 +840,7 @@ See also [Lifecycle Limitations](connectors-opcua.md#lifecycle-limitations) that
 
 ## Internal Design
 
-> **Internal design:** For the reasoning behind the address space loader, its staging and commit model, and the browse primitives, see [OPC UA Client Loader Design](design/opcua-client-loader.md).
+> For the reasoning behind the address space loader, its staging and commit model, and the browse primitives, see [OPC UA Client Loader Design](design/opcua-client-loader.md).
 
 ### Class Dependency Graph
 
@@ -855,7 +855,7 @@ OpcUaSubjectClientSource (SubjectSourceBase: BackgroundService + ISubjectSource)
  ├── owns SubscriptionHealthMonitor        (standalone)
  ├── owns OpcUaSubjectLoader               (back-ref to source)
  │    ├── owns OpcUaAttributeLoader        (back-ref to the loader)
- │    └── creates OpcUaLoadContext         (one per load, disposed with it)
+ │    └── creates OpcUaLoadContext         (one per load, disposed when the load ends)
  ├── owns OpcUaClientDiagnostics           (back-ref to source, read-only facade over SourceMetrics)
  ├── creates SessionManager                (back-ref to source)
  │    ├── creates SubscriptionManager      (back-ref to source)
@@ -906,6 +906,4 @@ A subject whose browse did not complete this load is skipped rather than loaded 
 
 ### Known Limitations
 
-**The staging link can survive a successful load in a graph-shaped address space.** While a subject is being discovered it must be reachable by the registry, so the loader adds the discovering parent's context as a fallback context on the new subject. In a tree that link is exactly the one the core removes later: `ContextInheritanceHandler` adds an inherited fallback context when a subject gains its first property reference, keyed to the parent holding that reference, and removes it when the last reference goes away, keyed to the parent holding that last one. When a subject is reachable under two parents, the parent it was keyed to on the way in is not the one it is keyed to on the way out, so a link to the first parent's context remains. The consequence is a retained context reference rather than a wrong model: the subject stays registered, monitored and correct.
-
-This is the same mismatch the core has for any subject reachable under two parents, so the fix belongs there: record the inherited context per subject and remove the recorded one instead of re-deriving it from the last parent. That is a follow-up, not part of this connector.
+**The staging link can survive a successful load in a graph-shaped address space.** A subject reached under two parents can keep delegating to its discovering parent's context after a successful load. The consequence is a retained context reference rather than a wrong model: the subject stays registered, monitored and correct. The cause and the fix, which belongs in the core, are described in [OPC UA Client Loader Design](design/opcua-client-loader.md#the-remaining-leak-is-in-the-core).

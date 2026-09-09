@@ -81,17 +81,22 @@ public class OpcUaSubjectLoaderFailureTests : OpcUaSubjectLoaderTestsBase
     {
         // Arrange: simulate a reload. "PreOwned" is already owned by this source from a previous
         // successful load; "NewlyClaimed" is claimed for the first time by this Commit; "Bound" is
-        // written before "Throwing" aborts the Commit. The rollback must release only the claim
-        // this Commit established, because releasing pre-existing ownership would leave
-        // application writes unrouted until the next successful retry, and restore only what it
-        // wrote.
+        // written before "Throwing" aborts the Commit, so "Throwing" is queued first because Commit
+        // applies bindings in reverse queue order. The rollback must release only the claim this
+        // Commit established, because releasing pre-existing ownership would leave application
+        // writes unrouted until the next successful retry, and restore only what it wrote.
         var (_, source, subject) = CreateFixture();
         var registeredSubject = subject.TryGetRegisteredSubject()!;
 
         var preOwned = registeredSubject.AddProperty("PreOwned", typeof(int), _ => 0, (_, _) => { });
         var newlyClaimed = registeredSubject.AddProperty("NewlyClaimed", typeof(int), _ => 0, (_, _) => { });
         object? boundValue = "before";
-        var bound = registeredSubject.AddProperty("Bound", typeof(string), _ => boundValue, (_, value) => boundValue = value);
+        var boundWrites = new List<object?>();
+        var bound = registeredSubject.AddProperty("Bound", typeof(string), _ => boundValue, (_, value) =>
+        {
+            boundValue = value;
+            boundWrites.Add(value);
+        });
         var throwing = registeredSubject.AddProperty("Throwing", typeof(int), _ => 0,
             (_, _) => throw new InvalidOperationException("Setter failure aborts Commit."));
 
@@ -109,8 +114,8 @@ public class OpcUaSubjectLoaderFailureTests : OpcUaSubjectLoaderTestsBase
 
         context.QueueClaim(preOwned.Reference, new NodeId(9001, 2), new MonitoredItem(NullTelemetryContext.Instance));
         context.QueueClaim(newlyClaimed.Reference, new NodeId(9002, 2), new MonitoredItem(NullTelemetryContext.Instance));
-        context.QueueBinding(bound, "after");
         context.QueueBinding(throwing, 42);
+        context.QueueBinding(bound, "after");
 
         // Act & Assert
         Assert.Throws<InvalidOperationException>(() => context.Commit());
@@ -120,7 +125,7 @@ public class OpcUaSubjectLoaderFailureTests : OpcUaSubjectLoaderTestsBase
         Assert.False(newlyClaimed.Reference.TryGetSource(out _));
         Assert.False(source.TryGetNodeId(newlyClaimed.Reference, out _));
         Assert.Empty(context.MonitoredItems);
-        Assert.Equal("before", bound.GetValue());
+        Assert.Equal(["after", "before"], boundWrites);
     }
 
     [Fact]
@@ -141,6 +146,7 @@ public class OpcUaSubjectLoaderFailureTests : OpcUaSubjectLoaderTestsBase
         await Assert.ThrowsAsync<OpcUaTransientServiceException>(
             () => loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None));
 
+        // Act: the second load browses Status cleanly.
         failStatusBrowse = false;
         var monitoredItems = await loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None);
 
@@ -315,13 +321,14 @@ public class OpcUaSubjectLoaderFailureTests : OpcUaSubjectLoaderTestsBase
         // then, and Commit has claimed Temperature and bound sensor.Status, so the failure exercises
         // the Commit rollback rather than the discovery one, and the load must surface the setter's
         // exception unchanged.
-        var (loader, source, subject) = CreateFixture();
+        var subjectFactory = new RecordingOpcUaSubjectFactory();
+        var (loader, source, subject) = CreateFixture(subjectFactory);
         var registry = subject.Context.TryGetService<ISubjectRegistry>()!;
         var preLoadKeys = registry.KnownSubjects.Keys.ToHashSet();
 
         object? sensorValue = null;
         var sensorSetterThrows = true;
-        var sensorProperty = subject.TryGetRegisteredSubject()!.AddProperty(
+        subject.TryGetRegisteredSubject()!.AddProperty(
             "Sensor",
             typeof(DynamicSubject),
             _ => sensorValue,
@@ -345,8 +352,11 @@ public class OpcUaSubjectLoaderFailureTests : OpcUaSubjectLoaderTestsBase
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => loader.LoadSubjectAsync(subject, rootNode, mockSession.Object, CancellationToken.None));
 
-        // Assert
-        Assert.Null(sensorProperty.GetValue());
+        // Assert: both staging links are released, Sensor's to the root and Status's to Sensor.
+        var sensor = subjectFactory.GetCreatedSubject("Sensor");
+        var status = subjectFactory.GetCreatedSubject("Status");
+        Assert.False(sensor.Context.RemoveFallbackContext(subject.Context));
+        Assert.False(status.Context.RemoveFallbackContext(sensor.Context));
         Assert.Equal(preLoadKeys, registry.KnownSubjects.Keys.ToHashSet());
         Assert.Empty(source.Ownership.Properties);
 
@@ -1024,9 +1034,8 @@ public class OpcUaSubjectLoaderFailureTests : OpcUaSubjectLoaderTestsBase
     }
 
     /// <summary>
-    /// A dynamic root with dynamic properties enabled, on a context that also publishes property
-    /// changes, and the source built over it. Hands back the source itself because the assertions
-    /// here need <c>TryGetNodeId</c> and the structure lock as well as its ownership manager.
+    /// A dynamic root with dynamic properties enabled on a context that publishes property changes,
+    /// with the source built over it.
     /// </summary>
     private (OpcUaSubjectLoader Loader, OpcUaSubjectClientSource Source, IInterceptorSubject Subject) CreateFixture(
         OpcUaSubjectFactory? subjectFactory = null)

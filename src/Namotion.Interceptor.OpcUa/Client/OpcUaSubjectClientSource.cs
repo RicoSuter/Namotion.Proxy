@@ -793,20 +793,9 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
 
     private void RemoveItemsForSubject(IInterceptorSubject subject)
     {
-        // Lock-free by design. This runs from the synchronous subject-detach callback, which the
-        // lifecycle interceptor raises while holding its attached-subject lock. Taking
-        // _structureLock here deadlocks two different ways. Same-thread: the initial load holds it
-        // across the whole load and a failed load's rollback detaches its staged subjects inline,
-        // re-entering a non-reentrant SemaphoreSlim. Cross-thread: an external detach holds the
-        // lifecycle lock while waiting on _structureLock, inverting against the load thread, which
-        // holds _structureLock and needs the lifecycle lock to write properties. Either way the
-        // block happens while holding the lifecycle lock, so it stalls every attach and detach in
-        // the process, not just this connector.
-        //
-        // The removals themselves are safe unsynchronised: both dictionaries are concurrent,
-        // TryRemove is idempotent, and nothing requires the two removals to be atomic together.
-        // Ordering against a concurrent subscription setup is not this method's job either: it is
-        // covered by the sweep in CompleteSetup and by reconnect rebuilding from owned properties.
+        // Lock-free by design: this runs from the synchronous subject-detach callback under the
+        // lifecycle interceptor's lock, so taking _structureLock here deadlocks. The reasoning is
+        // in docs/design/opcua-client-loader.md.
         _sessionManager?.SubscriptionManager.RemoveItemsForSubject(subject);
         _sessionManager?.PollingManager?.RemoveItemsForSubject(subject);
     }

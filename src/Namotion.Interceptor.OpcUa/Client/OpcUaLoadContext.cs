@@ -153,14 +153,14 @@ internal sealed class OpcUaLoadContext : IDisposable
     }
 
     /// <summary>
-    /// Registers a newly constructed subject and adds the parent context as fallback so the
-    /// subject can resolve services (registry, interceptors) during discovery. Uses the immediate
-    /// parent context rather than the root context, so that in the ordinary tree case the link
-    /// matches the one <c>ContextInheritanceHandler</c> removes when the subject's last property
-    /// reference goes away. The handler adds no link of its own for a staged subject, because its
-    /// add is gated on the subject not already being context-attached, so this link is the only
-    /// one. <see cref="Dispose"/> undoes it for every staged subject that nothing references.
+    /// Registers a newly constructed subject and adds the discovering parent's context as fallback
+    /// so the subject can resolve services (registry, interceptors) during discovery.
+    /// <see cref="Dispose"/> undoes it for every staged subject that nothing references.
     /// </summary>
+    /// <remarks>
+    /// The link is keyed to the discovering parent and must not be re-keyed to the binding parent,
+    /// which creates a delegation cycle. The reasoning is in docs/design/opcua-client-loader.md.
+    /// </remarks>
     public void RegisterStagedSubject(IInterceptorSubject subject, IInterceptorSubjectContext parentContext)
     {
         // Record the rollback entry BEFORE the side effect. If AddFallbackContext throws
@@ -281,13 +281,10 @@ internal sealed class OpcUaLoadContext : IDisposable
     {
         if (_committed) return;
 
-        // Only a staged subject that nothing references is shed: one that gained a property
-        // reference belongs to the model now, and detaching it would evict it from the registry
-        // while that property still points at it. Deepest first, because a nested staged subject
-        // reaches the lifecycle interceptor through its parent's fallback chain. The loop repeats
-        // because detaching one subject releases its own references and can drop another staged
-        // subject to zero. Each detach is guarded so one failure neither strands the rest nor
-        // masks the load's own exception.
+        // Only a staged subject that nothing references is shed, deepest first, and the sweep
+        // repeats because one removal can drop another staged subject to zero. Each detach is
+        // guarded so one failure neither strands the rest nor masks the load's own exception.
+        // The reasoning is in docs/design/opcua-client-loader.md.
         bool removedAny;
         do
         {

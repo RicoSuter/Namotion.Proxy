@@ -235,12 +235,10 @@ internal class SubscriptionManager : IAsyncDisposable
     /// read-after-write tracking, then opens the callback gate.
     /// </summary>
     /// <remarks>
-    /// The order is the point of this method, which is why it is one unit rather than three
-    /// statements at the call site. Sweeping first is what keeps a detached subject out of the
-    /// read-after-write index, and the gate stays closed across both steps so no notification can
-    /// reach a subject mid-setup. Notifications arriving after the gate opens but before the
-    /// initial state load are not lost: the caller starts the property writer's buffering before
-    /// setup and replays it afterwards.
+    /// Sweeping first is what keeps a detached subject out of the read-after-write index, and the
+    /// gate stays closed across both steps so no notification can reach a subject mid-setup.
+    /// Notifications arriving after the gate opens but before the initial state load are not lost:
+    /// the caller starts the property writer's buffering before setup and replays it afterwards.
     /// </remarks>
     internal void CompleteSetup(IEnumerable<MonitoredItem> monitoredItems)
     {
