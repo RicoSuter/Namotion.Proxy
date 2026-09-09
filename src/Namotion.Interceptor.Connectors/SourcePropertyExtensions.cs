@@ -31,15 +31,24 @@ public static class SourcePropertyExtensions
     /// </returns>
     public static bool SetSource(this PropertyReference property, ISubjectSource source)
     {
-        // Add-if-absent, not GetOrSet: only this distinguishes a fresh claim from a re-claim.
-        if (property.TryAddPropertyData(SourceKey, source))
+        bool claimed;
+        var reconciler = (source as SubjectSourceBase)?.PropertyWriter.Reconciler;
+        if (reconciler is not null)
         {
-            PublishOwnershipChange(property, source, SourceEventKind.PropertyClaimed);
-            return true;
+            lock (property.Subject.SyncRoot)
+            {
+                claimed = property.TryAddPropertyData(SourceKey, source);
+                if (!claimed && (!property.TryGetPropertyData(SourceKey, out var existing) || !ReferenceEquals(existing, source))) return false;
+                reconciler.Register(property);
+            }
         }
-
-        // Check-then-act: the result reflects ownership at this read, not a lasting guarantee.
-        return property.TryGetPropertyData(SourceKey, out var existing) && ReferenceEquals(existing, source);
+        else
+        {
+            claimed = property.TryAddPropertyData(SourceKey, source);
+            if (!claimed && (!property.TryGetPropertyData(SourceKey, out var existing) || !ReferenceEquals(existing, source))) return false;
+        }
+        if (claimed) PublishOwnershipChange(property, source, SourceEventKind.PropertyClaimed);
+        return true;
     }
 
     /// <summary>
@@ -72,10 +81,15 @@ public static class SourcePropertyExtensions
     /// <returns><c>true</c> if the source was removed; <c>false</c> if the property had no source or a different source.</returns>
     public static bool RemoveSource(this PropertyReference property, ISubjectSource expectedSource)
     {
-        if (!property.TryRemovePropertyData(SourceKey, expectedSource))
+        if ((expectedSource as SubjectSourceBase)?.PropertyWriter.Reconciler is not null)
         {
-            return false;
+            lock (property.Subject.SyncRoot)
+            {
+                if (!property.TryRemovePropertyData(SourceKey, expectedSource)) return false;
+                ((SubjectSourceBase)expectedSource).PropertyWriter.Reconciler!.Unregister(property);
+            }
         }
+        else if (!property.TryRemovePropertyData(SourceKey, expectedSource)) return false;
 
         PublishOwnershipChange(property, expectedSource, SourceEventKind.PropertyReleased);
         return true;

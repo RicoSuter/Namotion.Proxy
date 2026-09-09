@@ -9,8 +9,10 @@ namespace Namotion.Interceptor.Connectors.Transactions;
 /// Only writes changes that have an associated source; local (no-source) changes are
 /// skipped and left for the transaction to apply.
 /// </summary>
-internal sealed class SourceTransactionWriter : ITransactionWriter
+internal sealed class SourceTransactionWriter : ITransactionWriter, ITransactionWriteCoordinator
 {
+    public IDisposable BeginCoordination() => new Reconciliation.SourceWriteCoordinationScope();
+
     /// <summary>
     /// One source's changes with their snapshot indices in lockstep, so accepted slots can be marked.
     /// Also serves as the multi-source revert state.

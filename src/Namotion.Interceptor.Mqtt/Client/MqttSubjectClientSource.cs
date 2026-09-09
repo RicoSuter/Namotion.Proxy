@@ -107,6 +107,7 @@ internal sealed class MqttSubjectClientSource : SubjectSourceBase, IFaultInjecta
     protected override async Task<IAsyncDisposable?> StartListeningAsync(SubjectPropertyWriter propertyWriter, CancellationToken cancellationToken)
     {
         _propertyWriter = propertyWriter;
+        if (_configuration.ExperimentalReconciliationReader is { } reader) propertyWriter.EnableReconciliation(reader);
 
         IMqttClient? client = null;
         MqttConnectionMonitor? connectionMonitor = null;
@@ -712,11 +713,10 @@ internal sealed class MqttSubjectClientSource : SubjectSourceBase, IFaultInjecta
                     {
                         if (ReferenceEquals(state.source._client, state.client))
                         {
-                            state.propertyReference.SetValueFromSource(
-                                state.source,
-                                state.sourceTimestamp,
-                                state.receivedTimestamp,
-                                state.value);
+                            if (state.source._configuration.ExperimentalReconciliationReader is not null)
+                                state.source._propertyWriter!.WriteValue(state.propertyReference, state.value, state.sourceTimestamp, state.receivedTimestamp);
+                            else
+                                state.propertyReference.SetValueFromSource(state.source, state.sourceTimestamp, state.receivedTimestamp, state.value);
                         }
                     }
                     finally

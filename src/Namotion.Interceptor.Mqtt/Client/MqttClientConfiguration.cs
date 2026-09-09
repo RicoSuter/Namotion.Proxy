@@ -152,6 +152,9 @@ public class MqttClientConfiguration
     /// </summary>
     public string? SourceTimestampPropertyName { get; init; } = "ts";
 
+    /// <summary>Provides an application-specific authoritative reader for experimental scalar reconciliation.</summary>
+    public Namotion.Interceptor.Connectors.Reconciliation.ISourcePropertyReader? ExperimentalReconciliationReader { get; init; }
+
     /// <summary>
     /// Gets or sets the function for serializing timestamps to bytes for MQTT user properties.
     /// Default converts to Unix milliseconds as UTF8. Must be paired with a matching <see cref="SourceTimestampDeserializer"/>.

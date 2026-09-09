@@ -1,3 +1,4 @@
+using Namotion.Interceptor.Connectors.Reconciliation;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
@@ -14,7 +15,7 @@ using Opc.Ua.Client;
 
 namespace Namotion.Interceptor.OpcUa.Client;
 
-internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjectClientSource, IFaultInjectable, IAsyncDisposable
+internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjectClientSource, IFaultInjectable, IAsyncDisposable, ISourcePropertyReader
 {
     private const int DefaultChunkSize = 512;
 
@@ -172,6 +173,7 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
         Metrics.MarkNotOperational();
 
         _propertyWriter = propertyWriter;
+        if (_configuration.EnableExperimentalSourceReconciliation) propertyWriter.EnableReconciliation(this);
         _logger.LogInformation("Connecting to OPC UA server at {ServerUrl}.", _configuration.ServerUrl);
 
         _sessionManager = new SessionManager(
@@ -310,11 +312,43 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
             foreach (var (property, dataValue) in result)
             {
                 var value = _configuration.ValueConverter.ConvertToPropertyValue(dataValue.Value, property);
-                property.SetValueFromSource(this, dataValue.SourceTimestamp, null, value);
+                if (_configuration.EnableExperimentalSourceReconciliation)
+                    _propertyWriter!.WriteValue(property.Reference, value, dataValue.SourceTimestamp);
+                else
+                    property.SetValueFromSource(this, dataValue.SourceTimestamp, null, value);
             }
 
             _logger.LogInformation("Updated {Count} properties with OPC UA node values.", itemCount);
         };
+    }
+
+    public async ValueTask<IReadOnlyList<SourcePropertyValue>> ReadPropertiesAsync(
+        ReadOnlyMemory<PropertyReference> properties, CancellationToken cancellationToken)
+    {
+        var session = _sessionManager?.CurrentSession ?? throw new InvalidOperationException("No active OPC UA session.");
+        var requested = properties.ToArray();
+        var output = new List<SourcePropertyValue>(requested.Length);
+        var batchSize = (int)(session.OperationLimits?.MaxNodesPerRead ?? DefaultChunkSize);
+        if (batchSize <= 0) batchSize = DefaultChunkSize;
+        for (var offset = 0; offset < requested.Length; offset += batchSize)
+        {
+            var batch = requested.Skip(offset).Take(batchSize).ToArray();
+            var nodes = new ReadValueIdCollection(batch.Select(property => new ReadValueId
+            {
+                NodeId = TryGetNodeId(property, out var nodeId) ? nodeId : throw new InvalidOperationException("Property has no OPC UA node."),
+                AttributeId = Opc.Ua.Attributes.Value
+            }));
+            var response = await session.ReadAsync(null, 0, TimestampsToReturn.Source, nodes, cancellationToken).ConfigureAwait(false);
+            if (!ReferenceEquals(session, _sessionManager?.CurrentSession)) throw new InvalidOperationException("OPC UA session changed during verification.");
+            for (var index = 0; index < Math.Min(batch.Length, response.Results.Count); index++)
+            {
+                var value = response.Results[index];
+                if (!StatusCode.IsGood(value.StatusCode)) continue;
+                var property = batch[index].TryGetRegisteredProperty()!;
+                output.Add(new SourcePropertyValue(batch[index], _configuration.ValueConverter.ConvertToPropertyValue(value.Value, property), value.SourceTimestamp, DateTimeOffset.UtcNow));
+            }
+        }
+        return output;
     }
 
     /// <inheritdoc />

@@ -223,6 +223,9 @@ public class OpcUaClientConfiguration
     /// </summary>
     public bool EnableReadAfterWrite { get; set; } = true;
 
+    /// <summary>Enables the experimental scalar source reconciliation strategy with authoritative reads.</summary>
+    public bool EnableExperimentalSourceReconciliation { get; set; }
+
     /// <summary>
     /// Gets or sets the base path for certificate stores.
     /// Default is "pki". Change this to isolate certificate stores for parallel test execution.

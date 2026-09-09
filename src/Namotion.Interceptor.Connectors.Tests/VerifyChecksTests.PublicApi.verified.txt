@@ -130,9 +130,14 @@ namespace Namotion.Interceptor.Connectors
     }
     public sealed class SubjectPropertyWriter
     {
+        public bool HasPendingReconciliation { get; }
+        public long VerificationReadCount { get; }
+        public void EnableReconciliation(Namotion.Interceptor.Connectors.Reconciliation.ISourcePropertyReader reader) { }
         public System.Threading.Tasks.Task LoadInitialStateAndResumeAsync(System.Threading.CancellationToken cancellationToken) { }
+        public void RequestReconciliation(Namotion.Interceptor.PropertyReference property) { }
         public void StartBuffering() { }
         public void Write<TState>(TState state, System.Action<TState> update) { }
+        public void WriteValue(Namotion.Interceptor.PropertyReference property, object? value, System.DateTimeOffset? timestamp = default, System.DateTimeOffset? receivedTimestamp = default) { }
     }
     public abstract class SubjectSourceBase : Namotion.Interceptor.Connectors.SubjectConnectorBase, Namotion.Interceptor.Connectors.ISubjectConnector, Namotion.Interceptor.Connectors.ISubjectSource
     {
@@ -374,6 +379,21 @@ namespace Namotion.Interceptor.Connectors.Paths
         public static System.Collections.Generic.IEnumerable<string> UpdatePropertyValuesFromPaths(this Namotion.Interceptor.IInterceptorSubject subject, System.Collections.Generic.IReadOnlyDictionary<string, object?> pathsAndValues, System.DateTimeOffset timestamp, Namotion.Interceptor.Registry.Paths.PathProviderBase pathProvider, object? source) { }
         public static System.Collections.Generic.IEnumerable<string> UpdatePropertyValuesFromPaths(this Namotion.Interceptor.IInterceptorSubject subject, System.Collections.Generic.IEnumerable<string> paths, System.DateTimeOffset timestamp, System.Func<Namotion.Interceptor.Registry.Abstractions.RegisteredSubjectProperty, string, object?> getPropertyValue, Namotion.Interceptor.Registry.Paths.PathProviderBase pathProvider, object? source) { }
         public static System.Collections.Generic.IReadOnlyCollection<string> VisitPropertiesFromPaths(this Namotion.Interceptor.IInterceptorSubject subject, System.Collections.Generic.IEnumerable<string> paths, System.Action<Namotion.Interceptor.Registry.Abstractions.RegisteredSubjectProperty, string, object?> visitProperty, Namotion.Interceptor.Registry.Paths.PathProviderBase pathProvider, Namotion.Interceptor.Connectors.ISubjectFactory? subjectFactory = null) { }
+    }
+}
+namespace Namotion.Interceptor.Connectors.Reconciliation
+{
+    public interface ISourcePropertyReader
+    {
+        System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<Namotion.Interceptor.Connectors.Reconciliation.SourcePropertyValue>> ReadPropertiesAsync(System.ReadOnlyMemory<Namotion.Interceptor.PropertyReference> properties, System.Threading.CancellationToken cancellationToken);
+    }
+    public readonly struct SourcePropertyValue : System.IEquatable<Namotion.Interceptor.Connectors.Reconciliation.SourcePropertyValue>
+    {
+        public SourcePropertyValue(Namotion.Interceptor.PropertyReference Property, object? Value, System.DateTimeOffset? Timestamp = default, System.DateTimeOffset? ReceivedTimestamp = default) { }
+        public Namotion.Interceptor.PropertyReference Property { get; init; }
+        public System.DateTimeOffset? ReceivedTimestamp { get; init; }
+        public System.DateTimeOffset? Timestamp { get; init; }
+        public object? Value { get; init; }
     }
 }
 namespace Namotion.Interceptor.Connectors.Resilience

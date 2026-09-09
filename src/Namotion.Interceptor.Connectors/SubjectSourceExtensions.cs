@@ -1,3 +1,4 @@
+using Namotion.Interceptor.Connectors.Reconciliation;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Namotion.Interceptor.Tracking.Change;
@@ -33,6 +34,9 @@ public static class SubjectSourceExtensions
         {
             return WriteResult.Success;
         }
+
+        using var reconciliation = SourceWriteCoordinationScope.RetainOrReturn(
+            (source as SubjectSourceBase)?.PropertyWriter.Reconciler?.BeginOperation(changes));
 
         // Skip synchronization for sources that handle their own concurrency
         if (source is ISupportsConcurrentWrites)

@@ -413,7 +413,8 @@ public partial class MqttClientLivenessTests
         int brokerPort,
         TimeSpan? reconnectDelay = null,
         IMqttValueConverter? valueConverter = null,
-        IWriteInterceptor? writeInterceptor = null)
+        IWriteInterceptor? writeInterceptor = null,
+        Namotion.Interceptor.Connectors.Reconciliation.ISourcePropertyReader? reconciliationReader = null)
     {
         var context = InterceptorSubjectContext
             .Create()
@@ -434,6 +435,7 @@ public partial class MqttClientLivenessTests
             {
                 // The broker binds IPv4 only, so dialling it by name would let the client spend its
                 // connect timeout on the IPv6 loopback first.
+                ExperimentalReconciliationReader = reconciliationReader,
                 BrokerHost = "127.0.0.1",
                 BrokerPort = brokerPort,
                 Mapper = CreateMapper(),

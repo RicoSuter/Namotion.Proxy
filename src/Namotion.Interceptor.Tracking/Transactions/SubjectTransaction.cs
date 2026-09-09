@@ -452,6 +452,8 @@ public sealed class SubjectTransaction : IDisposable
         Memory<SubjectPropertyChange> changes,
         CancellationToken cancellationToken)
     {
+        using var coordination = (writer as ITransactionWriteCoordinator)?.BeginCoordination();
+
         // The writer marks accepted snapshot slots with the confirming source so the local apply and
         // revert notifications are echo-suppressed by the outbound connector queue (#343).
         var capturedProperties = ValidateWriterContract ? CaptureSnapshotProperties(changes.Span) : null;
