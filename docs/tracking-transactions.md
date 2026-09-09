@@ -168,7 +168,7 @@ using var tx = await context.BeginTransactionAsync(
 
 ### Conflict Behavior
 
-Controls how transactions detect concurrent modifications in both locking modes. Exclusive locking serializes transactions, but does not block non-transactional writes or source callbacks.
+Controls value-based conflict detection in both locking modes; `BestEffort` write-failure handling does not disable it.
 
 | Value | Description |
 |-------|-------------|
@@ -176,8 +176,6 @@ Controls how transactions detect concurrent modifications in both locking modes.
 | `Ignore` | Overwrite any concurrent changes without checking. |
 
 Conflict detection is best-effort and not atomic with respect to non-transactional writes that happen between detection and apply. Transactions are serialized against each other, but a raw property write or an external source callback can still interleave during that window.
-
-Conflict detection compares values, not source timestamps. A delayed source notification can therefore cause a conflict even when it represents older state; see [OPC UA update ordering](connectors-opcua-client.md#thread-safety). `TransactionFailureHandling.BestEffort` controls write-failure handling and does not override `FailOnConflict`.
 
 ### Requirements
 
