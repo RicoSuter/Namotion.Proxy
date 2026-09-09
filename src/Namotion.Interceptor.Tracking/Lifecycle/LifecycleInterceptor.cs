@@ -592,7 +592,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
             {
                 ClaimComponentForRoot(subject, anchor, claimed);
                 executor.TryGetAttachment(out _, out _, out rootAttachmentRevision);
-                SeedAndAttachComponent(subject);
+                _attach.AttachRoot(subject);
                 published = true;
             }
             finally
@@ -754,14 +754,6 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         {
             gate.Dispose();
         }
-    }
-
-    /// <summary>
-    /// Seeds and publishes a freshly claimed root's component. Runs under <see cref="_gate"/>.
-    /// </summary>
-    private void SeedAndAttachComponent(IInterceptorSubject subject)
-    {
-        _attach.AttachRoot(subject);
     }
 
     /// <summary>

@@ -24,12 +24,13 @@ public class AdversarialRollbackTests
         root.Father = childA;
         childA.Father = root;
         root.Mother = childB;
+        var failure = new InvalidOperationException("callback refuses childB");
 
         context.TryGetLifecycleInterceptor()!.SubjectAttached += change =>
         {
             if (ReferenceEquals(change.Subject, childB))
             {
-                throw new InvalidOperationException("callback refuses childB");
+                throw failure;
             }
         };
 
@@ -37,8 +38,7 @@ public class AdversarialRollbackTests
         var exception = Record.Exception(() => ((IInterceptorSubject)root).AttachToContext(context));
 
         // Assert
-        Assert.IsType<InvalidOperationException>(exception);
-        Assert.Equal("callback refuses childB", exception.Message);
+        Assert.Same(failure, exception);
         Assert.Equal(SubjectAttachmentAnchorKind.Explicit, ((IInterceptorSubject)root).Executor.AttachmentAnchor);
         SupportContractAssertions.Settled(context, [root], root, childA, childB);
         root.DetachFromContext(context);

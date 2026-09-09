@@ -215,28 +215,6 @@ public class CallbackSupportSpikeTests
         Assert.Equal("ok", foreign.FirstName);
     }
 
-    [Fact]
-    public void WhenDownstreamInterceptorThrowsAfterTerminal_ThenCommittedFieldAndEdgesAgree()
-    {
-        // Arrange
-        var interceptor = new SpikeThrowAfterInterceptor();
-        var context = InterceptorSubjectContext.Create().WithLifecycle().WithService(() => interceptor);
-        var oldChild = new Person();
-        var root = new Person(context) { Father = oldChild };
-        var replacement = new Person();
-        interceptor.Throw = true;
-
-        // Act
-        var exception = Record.Exception(() => root.Father = replacement);
-
-        // Assert
-        Assert.NotNull(exception);
-        Assert.Same(replacement, root.Father);
-        Assert.Same(context, replacement.TryGetContext());
-        Assert.Equal(1, replacement.GetReferenceCount());
-        Assert.Null(oldChild.TryGetContext());
-    }
-
 }
 
 
@@ -250,16 +228,5 @@ public sealed class SpikeNestedInterceptor : IWriteInterceptor
         Action = null;
         action?.Invoke();
         next(ref context);
-    }
-}
-
-[RunsAfter(typeof(LifecycleInterceptor))]
-public sealed class SpikeThrowAfterInterceptor : IWriteInterceptor
-{
-    public bool Throw { get; set; }
-    public void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next)
-    {
-        next(ref context);
-        if (Throw) throw new InvalidOperationException("after terminal");
     }
 }

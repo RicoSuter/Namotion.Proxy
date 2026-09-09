@@ -3,6 +3,7 @@ using Namotion.Interceptor.Registry.Abstractions;
 using Namotion.Interceptor.Tracking.Lifecycle;
 using Namotion.Interceptor.Tracking.Parent;
 using Namotion.Interceptor.Tracking.Tests.Models;
+using static Namotion.Interceptor.Tracking.Tests.Lifecycle.SupportContractAssertions;
 
 namespace Namotion.Interceptor.Tracking.Tests.Lifecycle;
 
@@ -168,31 +169,4 @@ public class CommitThenNotifyBoundaryTests
 
     private static ISubjectRegistry Registry(IInterceptorSubjectContext context) => context.GetService<ISubjectRegistry>();
 
-    private static void AssertAttached(IInterceptorSubjectContext context, IInterceptorSubject subject, int references)
-    {
-        Assert.Same(context, subject.TryGetContext());
-        Assert.True(context.TryGetLifecycleInterceptor()!.Graph.IsOwned(subject));
-        Assert.Equal(references, subject.GetReferenceCount());
-        Assert.Equal(references, subject.GetParents().Length);
-        var registered = Registry(context).TryGetRegisteredSubject(subject);
-        Assert.NotNull(registered);
-        Assert.Equal(references, registered.Parents.Length);
-    }
-
-    private static void AssertReleased(IInterceptorSubjectContext context, params IInterceptorSubject[] subjects)
-    {
-        var graph = context.TryGetLifecycleInterceptor()!.Graph;
-        foreach (var subject in subjects)
-        {
-            Assert.Null(subject.TryGetContext());
-            Assert.False(graph.IsOwned(subject));
-            Assert.False(graph.IsReleasing(subject));
-            Assert.Equal(SubjectAttachmentAnchorKind.None, subject.Executor.AttachmentAnchor);
-            Assert.Equal(0, subject.GetReferenceCount());
-            Assert.Empty(subject.GetParents());
-            Assert.Null(Registry(context).TryGetRegisteredSubject(subject));
-            foreach (var property in subject.Properties.Keys)
-                Assert.False(graph.HasBaseline(new PropertyReference(subject, property)));
-        }
-    }
 }

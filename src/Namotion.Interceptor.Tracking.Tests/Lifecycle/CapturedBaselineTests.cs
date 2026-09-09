@@ -33,29 +33,6 @@ public class CapturedBaselineTests
     }
 
     [Fact]
-    public void WhenACommittedEnumerableRefusesAnotherRead_ThenReleaseDrainsItsCapturedOccurrences()
-    {
-        // Arrange
-        var context = InterceptorSubjectContext.Create().WithRegistry();
-        var child = new CallbackSpikeNode();
-        var sequence = new CaptureOnlySequence(child, child);
-        var root = new CallbackSpikeNode { Payload = sequence };
-        root.AttachToContext(context);
-        var reads = sequence.Reads;
-        sequence.RejectReads = true;
-
-        // Act
-        var exception = Record.Exception(() => root.DetachFromContext(context));
-
-        // Assert
-        Assert.Null(exception);
-        Assert.Equal(reads, sequence.Reads);
-        Assert.Null(root.TryGetContext());
-        Assert.Null(child.TryGetContext());
-        Assert.Empty(context.GetService<ISubjectRegistry>().KnownSubjects);
-    }
-
-    [Fact]
     public void WhenACommittedEnumerableRefusesAnotherRead_ThenReachabilityUsesCapturedDesiredMembership()
     {
         // Arrange

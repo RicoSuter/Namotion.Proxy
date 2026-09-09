@@ -20,7 +20,7 @@ public class CallbackSupportGetterSpikeTests
         var reads = 0;
         wrapper.OnRead = () =>
         {
-            if (ReferenceEquals(root.Payload, wrapper) && wrapper.GetReferenceCount() == 0)
+            if (ReferenceEquals(root.Payload, wrapper) && wrapper.GetReferenceCount() == 1)
             {
                 if (++reads > 16) throw new InvalidOperationException("unbounded getter retry");
                 wrapper.Children = stable;
@@ -33,10 +33,17 @@ public class CallbackSupportGetterSpikeTests
 
         // Assert
         Assert.Null(exception);
+        Assert.True(reads > 0);
         Assert.Same(wrapper, root.Payload);
         Assert.Same(context, wrapper.TryGetContext());
         Assert.Same(context, target.TryGetContext());
         Assert.Equal(1, target.GetReferenceCount());
+
+        root.Payload = null;
+        Assert.Null(wrapper.TryGetContext());
+        Assert.Null(target.TryGetContext());
+        Assert.Equal(0, wrapper.GetReferenceCount());
+        Assert.Equal(0, target.GetReferenceCount());
     }
 
     [Fact]

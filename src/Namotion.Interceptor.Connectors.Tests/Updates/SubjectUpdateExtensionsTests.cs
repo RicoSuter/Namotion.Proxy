@@ -243,6 +243,11 @@ public partial class SubjectUpdateExtensionsTests
         // Act
         var update = SubjectUpdate.CreatePartialUpdateFromChanges(source, changes.ToArray(), []);
         await Verify(update);
+        var propertyUpdate = update.Subjects[update.Root!][nameof(source.Children)];
+        var operation = Assert.Single(propertyUpdate.Operations!);
+        Assert.Equal(SubjectCollectionOperationType.Remove, operation.Action);
+        Assert.Null(operation.Id);
+        Assert.Equal([update.Root], update.Subjects.Keys);
         target.ApplySubjectUpdate(update, DefaultSubjectFactory.Instance, ChangeOrigin.Local);
 
         // Assert
@@ -416,6 +421,11 @@ public partial class SubjectUpdateExtensionsTests
         // Act
         var update = SubjectUpdate.CreatePartialUpdateFromChanges(source, changes.ToArray(), []);
         await Verify(update);
+        var propertyUpdate = update.Subjects[update.Root!][nameof(source.Lookup)];
+        var operation = Assert.Single(propertyUpdate.Operations!);
+        Assert.Equal(SubjectCollectionOperationType.Remove, operation.Action);
+        Assert.Null(operation.Id);
+        Assert.Equal([update.Root], update.Subjects.Keys);
         target.ApplySubjectUpdate(update, DefaultSubjectFactory.Instance, ChangeOrigin.Local);
 
         // Assert

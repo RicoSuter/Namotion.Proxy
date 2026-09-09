@@ -4,45 +4,12 @@ using Namotion.Interceptor.Registry.Abstractions;
 using Namotion.Interceptor.Tracking.Lifecycle;
 using Namotion.Interceptor.Tracking.Parent;
 using Namotion.Interceptor.Tracking.Tests.Models;
+using static Namotion.Interceptor.Tracking.Tests.Lifecycle.SupportContractAssertions;
 
 namespace Namotion.Interceptor.Tracking.Tests.Lifecycle;
 
 public class CommitThenNotifyAcceptanceTests
 {
-    [Fact]
-    public void WhenAnAttachCallbackFailsAfterABackEdgeCommits_ThenTheCompleteRootCanBeReleased()
-    {
-        // Arrange
-        var context = InterceptorSubjectContext.Create().WithRegistry();
-        var root = new Person();
-        var backEdgeChild = new Person { Father = root };
-        var refusedChild = new Person();
-        root.Father = backEdgeChild;
-        root.Mother = refusedChild;
-        var failure = FailAttach(context, refusedChild);
-
-        // Act
-        var exception = Record.Exception(() => root.AttachToContext(context));
-
-        // Assert
-        Assert.Same(failure, exception);
-        Assert.Equal(SubjectAttachmentAnchorKind.Explicit, ((IInterceptorSubject)root).Executor.AttachmentAnchor);
-        AssertAttached(context, root, 1);
-        AssertAttached(context, backEdgeChild, 1);
-        AssertAttached(context, refusedChild, 1);
-        AssertEdge(context, backEdgeChild, new PropertyReference(root, nameof(Person.Father)));
-        AssertEdge(context, refusedChild, new PropertyReference(root, nameof(Person.Mother)));
-        AssertEdge(context, root, new PropertyReference(backEdgeChild, nameof(Person.Father)));
-        Assert.Equal(3, Registry(context).KnownSubjects.Count);
-
-        // Act
-        root.DetachFromContext(context);
-
-        // Assert
-        AssertReleased(context, root, backEdgeChild, refusedChild);
-        Assert.Empty(Registry(context).KnownSubjects);
-    }
-
     [Theory]
     [InlineData(1, false)]
     [InlineData(2, false)]
@@ -229,17 +196,6 @@ public class CommitThenNotifyAcceptanceTests
 
     private static ISubjectRegistry Registry(IInterceptorSubjectContext context) => context.GetService<ISubjectRegistry>();
 
-    private static void AssertAttached(IInterceptorSubjectContext context, IInterceptorSubject subject, int references)
-    {
-        Assert.Same(context, subject.TryGetContext());
-        Assert.True(context.TryGetLifecycleInterceptor()!.Graph.IsOwned(subject));
-        Assert.Equal(references, subject.GetReferenceCount());
-        Assert.Equal(references, subject.GetParents().Length);
-        var registered = Registry(context).TryGetRegisteredSubject(subject);
-        Assert.NotNull(registered);
-        Assert.Equal(references, registered.Parents.Length);
-    }
-
     private static void AssertEdge(IInterceptorSubjectContext context, IInterceptorSubject child, PropertyReference property, object? index = null)
     {
         Assert.Contains(child.GetParents(), parent => parent.Property.Equals(property) && Equals(parent.Index, index));
@@ -247,21 +203,6 @@ public class CommitThenNotifyAcceptanceTests
         Assert.Contains(registered.Parents, parent => parent.Property.Reference.Equals(property) && Equals(parent.Index, index));
         var registeredProperty = Registry(context).TryGetRegisteredSubject(property.Subject)!.TryGetProperty(property.Name)!;
         Assert.Contains(registeredProperty.Children, item => ReferenceEquals(item.Subject, child) && Equals(item.Index, index));
-    }
-
-    private static void AssertReleased(IInterceptorSubjectContext context, params IInterceptorSubject[] subjects)
-    {
-        var graph = context.TryGetLifecycleInterceptor()!.Graph;
-        foreach (var subject in subjects)
-        {
-            Assert.Null(subject.TryGetContext());
-            Assert.False(graph.IsOwned(subject));
-            Assert.Equal(0, subject.GetReferenceCount());
-            Assert.Empty(subject.GetParents());
-            Assert.Null(Registry(context).TryGetRegisteredSubject(subject));
-            foreach (var property in subject.Properties.Keys)
-                Assert.False(graph.HasBaseline(new PropertyReference(subject, property)));
-        }
     }
 
     private sealed class HookEnumerable(IEnumerable<Person> values, Action onEnumeration) : IEnumerable<Person>

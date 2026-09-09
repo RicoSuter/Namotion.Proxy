@@ -77,6 +77,27 @@ public class SubjectUpdateDictionaryShapeTests
         Assert.Equal("child", Assert.Single(target.TryGetRegisteredProperty(nameof(target.Relationships))!.Children).Index);
     }
 
+    [Fact]
+    public void WhenADictionaryProvidesATypedSubjectSequenceView_ThenItsPositionalDeclarationIsSupported()
+    {
+        // Arrange
+        var root = new Person(InterceptorSubjectContext.Create().WithRegistry());
+        var child = new Person { FirstName = "Ada" };
+        var children = new TypedDictionarySequenceView(new Dictionary<string, Person> { ["child"] = child });
+        root.TryGetRegisteredSubject()!.AddProperty(
+            "RuntimeChildren", typeof(IEnumerable<Person>), _ => children, (_, _) => { });
+
+        // Act
+        var update = SubjectUpdate.CreateCompleteUpdate(root, []);
+
+        // Assert
+        var propertyUpdate = update.Subjects[update.Root!]["RuntimeChildren"];
+        Assert.Equal(SubjectPropertyUpdateKind.Collection, propertyUpdate.Kind);
+        var item = Assert.Single(propertyUpdate.Items!);
+        Assert.Equal(0, item.Index);
+        Assert.Equal("Ada", update.Subjects[item.Id!][nameof(Person.FirstName)].Value);
+    }
+
     [Theory]
     [InlineData(typeof(IDictionary<string, Person>))]
     [InlineData(typeof(IReadOnlyDictionary<string, Person>))]
@@ -156,5 +177,19 @@ public class SubjectUpdateDictionaryShapeTests
         public IEnumerator<KeyValuePair<string, Person>> GetEnumerator() => entries.GetEnumerator();
         IEnumerator IEnumerable.GetEnumerator() => enumerateValues ? entries.Values.GetEnumerator() : GetEnumerator();
         public void CopyTo(Array array, int index) => ((ICollection)entries).CopyTo(array, index);
+    }
+
+    private sealed class TypedDictionarySequenceView(Dictionary<string, Person> entries)
+        : IReadOnlyDictionary<string, Person>, IEnumerable<Person>
+    {
+        public Person this[string key] => entries[key];
+        public IEnumerable<string> Keys => entries.Keys;
+        public IEnumerable<Person> Values => entries.Values;
+        public int Count => entries.Count;
+        public bool ContainsKey(string key) => entries.ContainsKey(key);
+        public bool TryGetValue(string key, out Person value) => entries.TryGetValue(key, out value!);
+        IEnumerator<KeyValuePair<string, Person>> IEnumerable<KeyValuePair<string, Person>>.GetEnumerator() => entries.GetEnumerator();
+        IEnumerator<Person> IEnumerable<Person>.GetEnumerator() => entries.Values.GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => entries.Values.GetEnumerator();
     }
 }

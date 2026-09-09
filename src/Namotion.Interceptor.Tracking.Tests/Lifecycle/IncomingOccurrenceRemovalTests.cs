@@ -36,7 +36,7 @@ public class IncomingOccurrenceRemovalTests
     }
 
     [Fact]
-    public void WhenIncomingIndexIsStale_ThenRemovalPreservesTheLeadingOccurrenceWithoutCallingUserEquality()
+    public void WhenRemovingAPropertyDuplicate_ThenRemovalPreservesTheLeadingOccurrenceWithoutCallingUserEquality()
     {
         // Arrange
         var parent = new Person();
@@ -48,7 +48,7 @@ public class IncomingOccurrenceRemovalTests
         ownership.AddIncoming(property, second);
 
         // Act
-        var removed = ownership.RemoveIncoming(property, new ThrowingKey(3));
+        var removed = ownership.RemoveIncoming(property);
 
         // Assert
         Assert.True(removed);
@@ -72,7 +72,7 @@ public class IncomingOccurrenceRemovalTests
         ownership.AddIncoming(property, second);
 
         // Act
-        var removed = ownership.RemoveIncoming(property, second);
+        var removed = ownership.RemoveIncoming(property);
 
         // Assert
         Assert.True(removed);

@@ -535,8 +535,7 @@ public class RegisteredSubjectProperty
 
     /// <summary>
     /// Maps unique subjects to their positions and detects when occurrence matching is required.
-    /// Uses IList indexed access when available; falls back to ICollection foreach,
-    /// then IEnumerable for read-only types that implement neither.
+    /// Uses IList indexed access when available, then IEnumerable for other collection types.
     /// Reuses a ThreadStatic dictionary to avoid allocations.
     /// </summary>
     /// <remarks>
@@ -563,19 +562,6 @@ public class RegisteredSubjectProperty
                     collectionPositions ??= _reusableCollectionPositions = new Dictionary<IInterceptorSubject, int>(capacityHint, ReferenceEqualityComparer.Instance);
                     if (!collectionPositions.TryAdd(subject, index)) hasDuplicates = true;
                 }
-            }
-        }
-        else if (value is ICollection collection)
-        {
-            var index = 0;
-            foreach (var item in collection)
-            {
-                if (item is IInterceptorSubject subject)
-                {
-                    collectionPositions ??= _reusableCollectionPositions = new Dictionary<IInterceptorSubject, int>(capacityHint, ReferenceEqualityComparer.Instance);
-                    if (!collectionPositions.TryAdd(subject, index)) hasDuplicates = true;
-                }
-                index++;
             }
         }
         else if (value is IEnumerable enumerable and not string)

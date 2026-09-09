@@ -24,7 +24,7 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
     public void RemoveEdge(IInterceptorSubject subject, PropertyReference property, object? index)
     {
         var ownership = graph.TryGetOwnership(subject);
-        if (ownership is null || !ownership.RemoveIncoming(property, index))
+        if (ownership is null || !ownership.RemoveIncoming(property))
         {
             // Already released, or the edge was drained by a reentrant descent.
             return;
@@ -77,7 +77,7 @@ internal sealed class ReleaseTraversal(LifecycleNotifier notifier, OwnershipGrap
             ownership.CopyIncomingEdges(remaining);
             foreach (var edge in remaining)
             {
-                if (ownership.RemoveIncoming(edge.Property, edge.Index)) graph.RecordIncomingRemoved(edge.Property, subject);
+                if (ownership.RemoveIncoming(edge.Property)) graph.RecordIncomingRemoved(edge.Property, subject);
                 ownership.RepublishParents();
                 notifier.PublishEdgeRemoved(subject, edge.Property, edge.Index, ownership.IncomingCount);
             }

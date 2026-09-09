@@ -16,7 +16,7 @@ internal static class SupportContractAssertions
             Assert.NotEqual(SubjectAttachmentAnchorKind.None, root.Executor.AttachmentAnchor);
     }
 
-    private static List<string> CompareStorageGraph(
+    public static List<string> CompareStorageGraph(
         IInterceptorSubjectContext context,
         IInterceptorSubject[] roots,
         IInterceptorSubject[] universe,
@@ -31,7 +31,12 @@ internal static class SupportContractAssertions
         string Identity(IInterceptorSubject subject)
         {
             var index = Array.FindIndex(universe, candidate => ReferenceEquals(candidate, subject));
-            Assert.True(index >= 0, $"{phase}: encountered a subject absent from the fixture universe ({subject.GetType().Name})");
+            if (index < 0)
+            {
+                var identity = $"unexpected subject ({subject.GetType().Name})";
+                errors.Add($"{phase}: encountered a subject absent from the fixture universe: {identity}");
+                return identity;
+            }
             return $"subject[{index}]";
         }
         string Edge(PropertyReference property, object? index) => $"{Identity(property.Subject)}.{property.Name}[{index ?? "-"}]";
@@ -114,5 +119,34 @@ internal static class SupportContractAssertions
         }
         EqualEdges(reachable.Select(Identity), registry.KnownSubjects.Keys.Select(Identity), "complete Registry membership");
         return errors;
+    }
+
+    public static void AssertAttached(IInterceptorSubjectContext context, IInterceptorSubject subject, int references)
+    {
+        Assert.Same(context, subject.TryGetContext());
+        Assert.True(context.TryGetLifecycleInterceptor()!.Graph.IsOwned(subject));
+        Assert.Equal(references, subject.GetReferenceCount());
+        Assert.Equal(references, subject.GetParents().Length);
+        var registered = context.GetService<ISubjectRegistry>().TryGetRegisteredSubject(subject);
+        Assert.NotNull(registered);
+        Assert.Equal(references, registered.Parents.Length);
+    }
+
+    public static void AssertReleased(IInterceptorSubjectContext context, params IInterceptorSubject[] subjects)
+    {
+        var graph = context.TryGetLifecycleInterceptor()!.Graph;
+        var registry = context.GetService<ISubjectRegistry>();
+        foreach (var subject in subjects)
+        {
+            Assert.Null(subject.TryGetContext());
+            Assert.False(graph.IsOwned(subject));
+            Assert.False(graph.IsReleasing(subject));
+            Assert.Equal(SubjectAttachmentAnchorKind.None, subject.Executor.AttachmentAnchor);
+            Assert.Equal(0, subject.GetReferenceCount());
+            Assert.Empty(subject.GetParents());
+            Assert.Null(registry.TryGetRegisteredSubject(subject));
+            foreach (var property in subject.Properties.Keys)
+                Assert.False(graph.HasBaseline(new PropertyReference(subject, property)));
+        }
     }
 }

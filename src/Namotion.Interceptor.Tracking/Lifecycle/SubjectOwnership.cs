@@ -94,10 +94,7 @@ internal sealed class SubjectOwnership
     }
 
     /// <summary>Removes the last occurrence of the property, preserving its leading occurrences.</summary>
-    public bool RemoveIncoming(PropertyReference property, object? index) => RemoveIncoming(property, index, out _);
-
-    /// <summary>Removes the last occurrence and returns its stored index.</summary>
-    public bool RemoveIncoming(PropertyReference property, object? index, out object? removedIndex)
+    public bool RemoveIncoming(PropertyReference property)
     {
         lock (this)
         {
@@ -110,7 +107,6 @@ internal sealed class SubjectOwnership
                     var edge = _additionalEdges[position];
                     if (edge.Property.Equals(property))
                     {
-                        removedIndex = edge.Index;
                         RemoveAdditionalAt(position);
                         return true;
                     }
@@ -119,12 +115,10 @@ internal sealed class SubjectOwnership
 
             if (_incomingCount > 0 && _firstProperty.Equals(property))
             {
-                removedIndex = _firstIndex;
                 RemoveFirstSlot();
                 return true;
             }
 
-            removedIndex = null;
             return false;
         }
     }
