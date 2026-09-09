@@ -87,7 +87,7 @@ internal sealed class CollectionDiffBuilder
         }
 
         // Detect reordering and compute intermediate indices for moves
-        if (_oldRetainedOrder.Count > 0 && !_oldRetainedOrder.SequenceEqual(_newRetainedOrder, ReferenceEqualityComparer.Instance))
+        if (_oldRetainedOrder.Count > 0 && !_oldRetainedOrder.SequenceEqual<IInterceptorSubject>(_newRetainedOrder, ReferenceEqualityComparer.Instance))
         {
             _oldRetainedIndexMap.Clear();
             for (var i = 0; i < _oldRetainedOrder.Count; i++)
