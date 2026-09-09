@@ -16,6 +16,8 @@ public class SubscriptionTransactionOrderingTests
 {
     [Theory]
     [InlineData("Committed", 0, false)]
+    // TODO #373: This older-notification case records a known consistency defect, not the intended contract.
+    // Update its timestamp and conflict expectations when inbound ordering is fixed.
     [InlineData("Initial", -1, true)]
     [InlineData("External", 0, true)]
     [InlineData("External", 1, true)]
@@ -92,7 +94,6 @@ public class SubscriptionTransactionOrderingTests
         // Assert
         Assert.Empty(errors);
         Assert.Equal("Pending", root.Name);
-        // Characterizes the documented absence of timestamp ordering on subscription applies.
         Assert.Equal(incomingTimestamp, property.Reference.TryGetWriteTimestamp());
         if (expectConflict)
         {
