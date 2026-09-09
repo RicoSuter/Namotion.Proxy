@@ -109,6 +109,9 @@ public partial class TransactionTestArea
     {
         SingleProperty = new TransactionSinglePropertyArea();
         MultiProperty = new TransactionMultiPropertyArea();
+        SinglePropertyRollback = new TransactionSinglePropertyArea();
+        MultiPropertyRollback = new TransactionMultiPropertyArea();
+        SynchronizationMarker = "";
     }
 
     [Path("opc", "SingleProperty")]
@@ -116,6 +119,15 @@ public partial class TransactionTestArea
 
     [Path("opc", "MultiProperty")]
     public partial TransactionMultiPropertyArea MultiProperty { get; set; }
+
+    [Path("opc", "SinglePropertyRollback")]
+    public partial TransactionSinglePropertyArea SinglePropertyRollback { get; set; }
+
+    [Path("opc", "MultiPropertyRollback")]
+    public partial TransactionMultiPropertyArea MultiPropertyRollback { get; set; }
+
+    [Path("opc", "SynchronizationMarker")]
+    public partial string SynchronizationMarker { get; set; }
 }
 
 /// <summary>
