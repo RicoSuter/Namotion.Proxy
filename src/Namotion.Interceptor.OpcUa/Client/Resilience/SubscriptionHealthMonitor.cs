@@ -111,6 +111,6 @@ internal sealed class SubscriptionHealthMonitor
     internal static bool IsRetryable(MonitoredItem item)
     {
         var statusCode = item.Status?.Error?.StatusCode ?? StatusCodes.Good;
-        return OpcUaStatusCodeClassifier.IsTransientError(statusCode);
+        return OpcUaStatusCodeClassifier.IsRecoverableWithinSession(statusCode);
     }
 }

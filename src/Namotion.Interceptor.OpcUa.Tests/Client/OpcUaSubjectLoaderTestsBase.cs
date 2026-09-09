@@ -39,7 +39,7 @@ public class OpcUaSubjectLoaderTestsBase
         Func<ReferenceDescription, CancellationToken, Task<bool>>? shouldAddDynamicProperties = null,
         Func<ReferenceDescription, CancellationToken, Task<bool>>? shouldAddDynamicAttributes = null,
         OpcUaTypeResolver? typeResolver = null,
-        int? maxAttributeTraversals = null)
+        int? maxAttributeTraversalDepth = null)
     {
         var subject = new DynamicSubject(CreateSubjectContext());
         var (loader, ownership, _) = CreateLoaderFor(
@@ -47,7 +47,7 @@ public class OpcUaSubjectLoaderTestsBase
             shouldAddDynamicProperties,
             shouldAddDynamicAttributes,
             typeResolver,
-            maxAttributeTraversals);
+            maxAttributeTraversalDepth);
 
         return (loader, ownership, subject);
     }
@@ -63,9 +63,9 @@ public class OpcUaSubjectLoaderTestsBase
         Func<ReferenceDescription, CancellationToken, Task<bool>>? shouldAddDynamicProperties = null,
         Func<ReferenceDescription, CancellationToken, Task<bool>>? shouldAddDynamicAttributes = null,
         OpcUaTypeResolver? typeResolver = null,
-        int? maxAttributeTraversals = null,
+        int? maxAttributeTraversalDepth = null,
         OpcUaSubjectFactory? subjectFactory = null,
-        int? maxBrowseContinuations = null)
+        int? maxBrowseContinuationRounds = null)
     {
         var config = new OpcUaClientConfiguration
         {
@@ -76,8 +76,8 @@ public class OpcUaSubjectLoaderTestsBase
             ShouldAddDynamicProperty = shouldAddDynamicProperties ?? BaseConfiguration.ShouldAddDynamicProperty,
             ShouldAddDynamicAttribute = shouldAddDynamicAttributes,
             DefaultNamespaceUri = BaseConfiguration.DefaultNamespaceUri,
-            MaxAttributeTraversals = maxAttributeTraversals ?? BaseConfiguration.MaxAttributeTraversals,
-            MaxBrowseContinuations = maxBrowseContinuations ?? BaseConfiguration.MaxBrowseContinuations
+            MaxAttributeTraversalDepth = maxAttributeTraversalDepth ?? BaseConfiguration.MaxAttributeTraversalDepth,
+            MaxBrowseContinuationRounds = maxBrowseContinuationRounds ?? BaseConfiguration.MaxBrowseContinuationRounds
         };
 
         var source = new OpcUaSubjectClientSource(subject, config, NullLogger<OpcUaSubjectClientSource>.Instance);
@@ -254,7 +254,7 @@ public class OpcUaSubjectLoaderTestsBase
     /// Like <see cref="SetupBrowseAsync(Mock{ISession}, Dictionary{NodeId, ReferenceDescription[]}, Func{NodeId, bool}?, uint)"/>,
     /// except that <paramref name="pagingNodeId"/> never finishes paging: its first page carries a
     /// continuation point and every BrowseNext hands out a fresh one, so the node is omitted from
-    /// the load once <c>MaxBrowseContinuations</c> is spent.
+    /// the load once <c>MaxBrowseContinuationRounds</c> is spent.
     /// </summary>
     private protected static void SetupBrowseAsyncPagingForever(
         Mock<ISession> mockSession,

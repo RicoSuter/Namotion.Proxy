@@ -13,7 +13,7 @@ public class OpcUaSubjectLoaderAttributeTests : OpcUaSubjectLoaderTestsBase
         // Arrange: a 4-level deep chain of variable-typed sub-attributes
         //   Root -> Level1 -> Level2 -> Level3 -> Level4
         // Each level is discovered via the dynamic-attribute path. With
-        // MaxAttributeTraversals = 2, the loader processes exactly two rounds
+        // MaxAttributeTraversalDepth = 2, the loader processes exactly two rounds
         // of attribute traversal: round 1 adds Level2 to Level1, round 2 adds
         // Level3 to Level2. Round 3 (which would add Level4 to Level3) is
         // aborted by the safety bound.
@@ -43,7 +43,7 @@ public class OpcUaSubjectLoaderAttributeTests : OpcUaSubjectLoaderTestsBase
         var (loader, _, subject) = CreateLoader(
             shouldAddDynamicProperties: (_, _) => Task.FromResult(true),
             shouldAddDynamicAttributes: (_, _) => Task.FromResult(true),
-            maxAttributeTraversals: 2);
+            maxAttributeTraversalDepth: 2);
 
         var rootNode = CreateTestReferenceDescription("Root", new NodeId(1, 0));
 
@@ -252,7 +252,7 @@ public class OpcUaSubjectLoaderAttributeTests : OpcUaSubjectLoaderTestsBase
     {
         // Arrange: Root -> Value, whose attribute A has the child B, and B's child is A again by
         // NodeId. Following NodeIds alone nests A under B under A without end, and with
-        // MaxAttributeTraversals = 100 the cap alone would still create a hundred attributes.
+        // MaxAttributeTraversalDepth = 100 the cap alone would still create a hundred attributes.
         var valueId = new NodeId(7101, 2);
         var attributeAId = new NodeId(7102, 2);
         var attributeBId = new NodeId(7103, 2);
@@ -277,7 +277,7 @@ public class OpcUaSubjectLoaderAttributeTests : OpcUaSubjectLoaderTestsBase
         var (loader, _, subject) = CreateLoader(
             shouldAddDynamicProperties: (_, _) => Task.FromResult(true),
             shouldAddDynamicAttributes: (_, _) => Task.FromResult(true),
-            maxAttributeTraversals: 100);
+            maxAttributeTraversalDepth: 100);
 
         var rootNode = CreateTestReferenceDescription("Root", new NodeId(1, 0));
 

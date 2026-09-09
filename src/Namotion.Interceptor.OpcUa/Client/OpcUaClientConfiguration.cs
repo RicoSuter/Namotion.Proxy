@@ -208,15 +208,19 @@ public class OpcUaClientConfiguration
     public uint MaxReferencesPerNode { get; set; } = 0;
 
     /// <summary>
-    /// Gets or sets the maximum number of BrowseNext continuation rounds per browse. Bounds pagination depth
-    /// so a server that returns a fresh continuation point forever cannot loop the loader. Default is 100.
+    /// Gets or sets the maximum number of BrowseNext rounds per browse, where one round drains every
+    /// pending continuation point. A node still paginating when the limit is reached is omitted from the
+    /// browse result and logged as a warning, so the loader keeps that property's current value and
+    /// reloads the node on the next load. Default is 100. Must be positive.
     /// </summary>
-    public int MaxBrowseContinuations { get; set; } = 100;
+    public int MaxBrowseContinuationRounds { get; set; } = 100;
 
     /// <summary>
-    /// Gets or sets the maximum attribute-traversal depth (attributes of attributes) during loading. Default is 100.
+    /// Gets or sets the maximum number of attribute levels (attributes of attributes) walked per load.
+    /// When the limit is reached, the remaining pending attributes are skipped for this load and logged
+    /// as a warning; everything matched on earlier levels stays monitored. Default is 100. Must be positive.
     /// </summary>
-    public int MaxAttributeTraversals { get; set; } = 100;
+    public int MaxAttributeTraversalDepth { get; set; } = 100;
 
     /// <summary>
     /// Gets or sets whether to enable automatic polling fallback when subscriptions are not supported.
@@ -469,18 +473,18 @@ public class OpcUaClientConfiguration
                 nameof(MaxItemsPerSubscription));
         }
 
-        if (MaxBrowseContinuations <= 0)
+        if (MaxBrowseContinuationRounds <= 0)
         {
             throw new ArgumentException(
-                $"MaxBrowseContinuations must be positive, got: {MaxBrowseContinuations}",
-                nameof(MaxBrowseContinuations));
+                $"MaxBrowseContinuationRounds must be positive, got: {MaxBrowseContinuationRounds}",
+                nameof(MaxBrowseContinuationRounds));
         }
 
-        if (MaxAttributeTraversals <= 0)
+        if (MaxAttributeTraversalDepth <= 0)
         {
             throw new ArgumentException(
-                $"MaxAttributeTraversals must be positive, got: {MaxAttributeTraversals}",
-                nameof(MaxAttributeTraversals));
+                $"MaxAttributeTraversalDepth must be positive, got: {MaxAttributeTraversalDepth}",
+                nameof(MaxAttributeTraversalDepth));
         }
 
         if (EnablePollingFallback)

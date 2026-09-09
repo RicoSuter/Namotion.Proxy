@@ -103,7 +103,7 @@ public class OpcUaSubjectLoaderFailureTests : OpcUaSubjectLoaderTestsBase
             source.Ownership,
             source,
             maxReferencesPerNode: 1000,
-            maxBrowseContinuations: 100,
+            maxBrowseContinuationRounds: 100,
             NullLogger<OpcUaSubjectClientSource>.Instance,
             CancellationToken.None);
 
@@ -118,6 +118,7 @@ public class OpcUaSubjectLoaderFailureTests : OpcUaSubjectLoaderTestsBase
         Assert.True(preOwned.Reference.TryGetSource(out var owner));
         Assert.Same(source, owner);
         Assert.False(newlyClaimed.Reference.TryGetSource(out _));
+        Assert.False(source.TryGetNodeId(newlyClaimed.Reference, out _));
         Assert.Empty(context.MonitoredItems);
         Assert.Equal("before", bound.GetValue());
     }
@@ -577,7 +578,7 @@ public class OpcUaSubjectLoaderFailureTests : OpcUaSubjectLoaderTestsBase
     {
         // Arrange: Parent.Items holds two items before the load and its node is left out of the
         // browse result, either because the browse returns BadUserAccessDenied, which the load
-        // skips as permanent, or because the node keeps paging past MaxBrowseContinuations, after
+        // skips as permanent, or because the node keeps paging past MaxBrowseContinuationRounds, after
         // which BrowseNodesAsync drops it rather than report a truncated child list. Either way the
         // loader must keep the items it has, and the sibling Status variable must still be loaded.
         var parentId = new NodeId(4701, 2);
@@ -599,7 +600,7 @@ public class OpcUaSubjectLoaderFailureTests : OpcUaSubjectLoaderTestsBase
         var itemOne = new RollbackCollectionItem(modelContext);
         var itemTwo = new RollbackCollectionItem(modelContext);
         parent.Items = [itemOne, itemTwo];
-        var (loader, _, source) = CreateLoaderFor(parent, maxBrowseContinuations: 1);
+        var (loader, _, source) = CreateLoaderFor(parent, maxBrowseContinuationRounds: 1);
 
         var mockSession = CreateMockSession();
         if (browseFailsPermanently)

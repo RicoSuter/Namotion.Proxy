@@ -97,8 +97,8 @@ namespace Namotion.Interceptor.OpcUa.Client
         public bool EnableReadAfterWrite { get; set; }
         public System.TimeSpan KeepAliveInterval { get; set; }
         public Namotion.Interceptor.Connectors.Mapping.IReversePropertyMapper<Namotion.Interceptor.OpcUa.Mapping.OpcUaPropertyMapping, Namotion.Interceptor.OpcUa.Mapping.OpcUaLookupKey> Mapper { get; set; }
-        public int MaxAttributeTraversals { get; set; }
-        public int MaxBrowseContinuations { get; set; }
+        public int MaxAttributeTraversalDepth { get; set; }
+        public int MaxBrowseContinuationRounds { get; set; }
         public int MaxItemsPerSubscription { get; set; }
         public System.TimeSpan MaxReconnectDuration { get; set; }
         public uint MaxReferencesPerNode { get; set; }
@@ -163,7 +163,7 @@ namespace Namotion.Interceptor.OpcUa.Client
     {
         public OpcUaTypeResolver(Microsoft.Extensions.Logging.ILogger logger) { }
         public virtual System.Attribute[] GetDynamicPropertyAttributes(Opc.Ua.ReferenceDescription reference, Opc.Ua.Client.ISession session) { }
-        public virtual System.Type ResolveObjectNodeType(System.Collections.Generic.IReadOnlyList<Opc.Ua.ReferenceDescription> children) { }
+        public virtual System.Type ResolveObjectNodeType(Opc.Ua.ReferenceDescription node, System.Collections.Generic.IReadOnlyList<Opc.Ua.ReferenceDescription> children) { }
         public virtual System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyDictionary<Opc.Ua.NodeId, System.Type?>> ResolveVariableTypesAsync(Opc.Ua.Client.ISession session, System.Collections.Generic.IReadOnlyCollection<Opc.Ua.ReferenceDescription> variables, System.Threading.CancellationToken cancellationToken) { }
         protected virtual System.Type? TryMapBuiltInType(Opc.Ua.BuiltInType builtInType) { }
     }

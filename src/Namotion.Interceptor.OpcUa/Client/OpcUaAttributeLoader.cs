@@ -55,7 +55,7 @@ internal sealed class OpcUaAttributeLoader
     /// Runs the multi-round attribute traversal over <paramref name="variableNodes"/>: each round
     /// browses the current variable nodes, matches known attributes and (when configured) adds
     /// dynamic attributes, then feeds those attributes back as the next round so attributes-of-
-    /// attributes are discovered until no new nodes appear or <see cref="OpcUaClientConfiguration.MaxAttributeTraversals"/>
+    /// attributes are discovered until no new nodes appear or <see cref="OpcUaClientConfiguration.MaxAttributeTraversalDepth"/>
     /// is reached.
     /// </summary>
     public async Task LoadAttributesAsync(
@@ -76,7 +76,7 @@ internal sealed class OpcUaAttributeLoader
 
         // Tracks the NodeIds already traversed under each variable property. A dynamic attribute
         // pointing back at one of them would rebuild the chain from that node without end, so it
-        // is skipped; MaxAttributeTraversals stays as the backstop.
+        // is skipped; MaxAttributeTraversalDepth stays as the backstop.
         var visitedNodeIds = new HashSet<(RegisteredSubjectProperty RootProperty, NodeId NodeId)>();
 
         var currentRound = new List<TraversalEntry>(variableNodes.Count);
@@ -92,11 +92,11 @@ internal sealed class OpcUaAttributeLoader
             // responsive to cancellation between rounds.
             context.CancellationToken.ThrowIfCancellationRequested();
 
-            if (++traversal > _configuration.MaxAttributeTraversals)
+            if (++traversal > _configuration.MaxAttributeTraversalDepth)
             {
                 _logger.LogWarning(
                     "Aborting attribute traversal after {MaxTraversals} levels with {Remaining} entries still pending. Possible cycle in address space or attribute registration.",
-                    _configuration.MaxAttributeTraversals, currentRound.Count);
+                    _configuration.MaxAttributeTraversalDepth, currentRound.Count);
                 break;
             }
 

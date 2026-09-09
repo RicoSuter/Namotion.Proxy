@@ -20,23 +20,16 @@ internal static class OpcUaSessionExtensions
     private static int GetMaxNodesPerRead(ISession session) => ToBatchLimit(session.OperationLimits?.MaxNodesPerRead);
 
     /// <summary>
-    /// Batch size for browse calls. The continuation-point quota only applies when the request can
-    /// actually leave continuation points open, which requires <paramref name="maxReferencesPerNode"/>
-    /// to be non-zero: at zero the server returns every reference in the first response and issues
-    /// no continuation point at all, so the much larger per-call operation limit governs instead.
-    /// Capping unconditionally costs real round-trips. A server advertising MaxNodesPerBrowse 4000
-    /// against MaxBrowseContinuationPoints 100 needed 16 browse calls for an address space that
-    /// takes 9 uncapped.
+    /// Batch size for browse calls: the per-call operation limit, capped by the server's
+    /// continuation-point quota when <paramref name="maxReferencesPerNode"/> is non-zero. At zero the
+    /// server returns every reference in the first response and issues no continuation point, so the
+    /// quota cannot bind.
     /// </summary>
     /// <remarks>
-    /// When the request does page, the quota is a separate and much smaller limit than the per-call
-    /// operation limit (SDK servers default to 10 against a MaxNodesPerBrowse of 2500), and a batch
-    /// larger than the quota either fails with <c>BadNoContinuationPoints</c> or has its oldest
-    /// points evicted and then fails BrowseNext with <c>BadContinuationPointInvalid</c>. Both are
-    /// permanent for the load, so retrying with the same batch size would fail identically: capping
-    /// is what makes it converge. Mirrors what <c>Opc.Ua.Client.Browser</c> does for the same
-    /// reason. A server that under-reports or dynamically shrinks its quota is still caught by the
-    /// <c>BadNoContinuationPoints</c> split-and-retry in <see cref="BrowseBatchAsync"/>.
+    /// A batch that opens more continuation points than the quota fails with
+    /// <c>BadNoContinuationPoints</c> or has its oldest points evicted, and a same-size retry fails
+    /// identically. A server that under-reports or shrinks its quota is still caught by the
+    /// <c>BadNoContinuationPoints</c> split in <see cref="BrowseBatchAsync"/>.
     /// </remarks>
     private static int GetBrowseBatchSize(ISession session, uint maxReferencesPerNode)
     {
@@ -220,26 +213,12 @@ internal static class OpcUaSessionExtensions
             return;
         }
 
-        var actual = response.Results.Count;
-        if (actual != count)
-        {
-            // Extras are ignored (their continuation points are still released below); a short
-            // response aborts the load once the processing loop reaches the first missing slot.
-            logger.LogWarning(
-                "BrowseAsync returned {Actual} results but {Expected} were requested.",
-                actual, count);
-        }
-        // Collect continuation points from good in-range results upfront so they can be
-        // released if ThrowIfTransientError aborts during result processing.
-        var continuationPoints = new List<(NodeId NodeId, byte[] ContinuationPoint)>();
-        await CollectContinuationPointsAsync(session, response.Results, count, i => nodeIds[offset + i], continuationPoints, logger).ConfigureAwait(false);
-
-        // Checked before the processing loop runs, not after: GetOrCreateBucket appends, so
-        // retrying a partially processed batch would duplicate references. BadNoContinuationPoints
-        // means the batch asked for more continuation points than the server's quota allows, which
-        // a same-size retry would repeat forever, so shrinking the batch is what makes it converge.
-        // Reachable whenever the quota cap is skipped (maxReferencesPerNode 0) against a server
-        // that pages anyway, or when a server under-reports or dynamically shrinks its quota.
+        // Checked before any result is merged: GetOrCreateBucket appends, so retrying a partially
+        // merged batch would duplicate references. BadNoContinuationPoints means the batch asked for
+        // more continuation points than the server's quota allows, which a same-size retry would
+        // repeat forever, so shrinking the batch is what makes it converge. Reachable whenever the
+        // quota cap is skipped (maxReferencesPerNode 0) against a server that pages anyway, or when
+        // a server under-reports or dynamically shrinks its quota.
         if (count > 1 && HasNoContinuationPointsStatus(response.Results, count))
         {
             logger.LogWarning(
@@ -248,7 +227,9 @@ internal static class OpcUaSessionExtensions
 
             // The points the server did issue must go back before retrying, otherwise this attempt
             // keeps holding quota that the smaller batches then fail to obtain.
-            await ReleaseContinuationPointsAsync(session, continuationPoints, logger).ConfigureAwait(false);
+            var issuedPoints = new List<(NodeId NodeId, byte[] ContinuationPoint)>();
+            await CollectContinuationPointsAsync(session, response.Results, count, i => nodeIds[offset + i], issuedPoints, logger).ConfigureAwait(false);
+            await ReleaseContinuationPointsAsync(session, issuedPoints, logger).ConfigureAwait(false);
 
             var splitPoint = offset + count / 2;
             await BrowseBatchAsync(session, nodeIds, offset, splitPoint, maxReferencesPerNode, maxContinuationRounds, result, logger, cancellationToken).ConfigureAwait(false);
@@ -256,33 +237,10 @@ internal static class OpcUaSessionExtensions
             return;
         }
 
+        var continuationPoints = new List<(NodeId NodeId, byte[] ContinuationPoint)>();
         try
         {
-            for (var i = 0; i < count; i++)
-            {
-                var nodeId = nodeIds[offset + i];
-                if (i >= actual)
-                {
-                    // Missing result for a requested node: this slot has no result at all. Abort
-                    // so the load retries instead of loading the subject with zero children.
-                    throw new OpcUaTransientServiceException("Browse", nodeId, (StatusCode)StatusCodes.BadUnexpectedError);
-                }
-
-                var browseResult = response.Results[i];
-                if (!StatusCode.IsGood(browseResult.StatusCode))
-                {
-                    OpcUaStatusCodeClassifier.ThrowIfTransientError(browseResult.StatusCode, "Browse", nodeId);
-                    logger.LogWarning(
-                        "BrowseAsync returned permanent bad status for {NodeId} ({StatusCode}); skipping (this NodeId cannot be browsed).",
-                        nodeId, browseResult.StatusCode);
-                    continue;
-                }
-                var bucket = GetOrCreateBucket(result, nodeId);
-                if (browseResult.References is { Count: > 0 })
-                {
-                    bucket.AddRange(browseResult.References);
-                }
-            }
+            await MergeBrowseResultsAsync(session, "Browse", response.Results, count, i => nodeIds[offset + i], result, continuationPoints, logger).ConfigureAwait(false);
         }
         catch
         {
@@ -490,44 +448,67 @@ internal static class OpcUaSessionExtensions
             return;
         }
 
-        var actual = nextResponse.Results.Count;
+        // Fresh continuation points go to `next`, which the caller releases on abort together with
+        // the point still pending in `current` for a slot whose result is missing.
+        await MergeBrowseResultsAsync(session, "BrowseNext", nextResponse.Results, count, i => current[offset + i].NodeId, result, next, logger).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Merges one Browse or BrowseNext response into <paramref name="result"/>: good references are
+    /// appended to their node's bucket, a permanent bad status omits the node, and a transient bad
+    /// status or a missing result slot throws <see cref="OpcUaTransientServiceException"/>. The
+    /// continuation points of good in-range results are collected into
+    /// <paramref name="continuationPoints"/> before any result is merged, so the caller can release
+    /// them when the merge throws; those of bad-status and extra results are released here.
+    /// </summary>
+    private static async Task MergeBrowseResultsAsync(
+        ISession session,
+        string operation,
+        BrowseResultCollection results,
+        int count,
+        Func<int, NodeId> nodeIdAt,
+        Dictionary<NodeId, ReferenceDescriptionCollection> result,
+        List<(NodeId NodeId, byte[] ContinuationPoint)> continuationPoints,
+        ILogger logger)
+    {
+        var actual = results.Count;
         if (actual != count)
         {
-            // Same handling as Browse: extras are released as orphans, a short response aborts.
             logger.LogWarning(
-                "BrowseNextAsync returned {Actual} results but {Expected} were requested.",
-                actual, count);
+                "{Operation} returned {Actual} results but {Expected} were requested.",
+                operation, actual, count);
         }
 
-        // Collect fresh continuation points into `next` (the caller releases them on abort)
-        // before the processing loop can throw.
-        await CollectContinuationPointsAsync(session, nextResponse.Results, count, i => current[offset + i].NodeId, next, logger).ConfigureAwait(false);
+        await CollectContinuationPointsAsync(session, results, count, nodeIdAt, continuationPoints, logger).ConfigureAwait(false);
 
         for (var i = 0; i < count; i++)
         {
-            var nodeId = current[offset + i].NodeId;
+            var nodeId = nodeIdAt(i);
             if (i >= actual)
             {
-                // Server returned fewer results than continuation points sent: this slot has no
-                // result at all. Abort so the load retries instead of silently truncating this
-                // node's children. The caller's catch releases the continuation point still
-                // pending in `current` for this slot.
-                throw new OpcUaTransientServiceException("BrowseNext", nodeId, (StatusCode)StatusCodes.BadUnexpectedError);
+                // Abort so the load retries instead of loading the node with a truncated child list.
+                throw new OpcUaTransientServiceException(operation, nodeId, (StatusCode)StatusCodes.BadUnexpectedError);
             }
 
-            var browseResult = nextResponse.Results[i];
+            var browseResult = results[i];
             if (!StatusCode.IsGood(browseResult.StatusCode))
             {
-                OpcUaStatusCodeClassifier.ThrowIfTransientError(browseResult.StatusCode, "BrowseNext", nodeId);
+                OpcUaStatusCodeClassifier.ThrowIfLoadMustRetry(browseResult.StatusCode, operation, nodeId);
                 logger.LogWarning(
-                    "BrowseNextAsync returned permanent bad status for {NodeId} ({StatusCode}); dropping the pages collected so far because the child list would be truncated.",
-                    nodeId, browseResult.StatusCode);
+                    "{Operation} returned permanent bad status for {NodeId} ({StatusCode}); omitting the node from this load.",
+                    operation, nodeId, browseResult.StatusCode);
+
+                // Drops the pages collected so far, which would leave the child list truncated. A
+                // no-op on a first page: the result dictionary is per call and its inputs are
+                // deduplicated, so the node has no bucket yet.
                 result.Remove(nodeId);
                 continue;
             }
+
+            var bucket = GetOrCreateBucket(result, nodeId);
             if (browseResult.References is { Count: > 0 })
             {
-                GetOrCreateBucket(result, nodeId).AddRange(browseResult.References);
+                bucket.AddRange(browseResult.References);
             }
         }
     }

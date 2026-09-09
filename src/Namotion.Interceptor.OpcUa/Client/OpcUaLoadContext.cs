@@ -23,7 +23,7 @@ internal sealed class OpcUaLoadContext : IDisposable
     private readonly SourceOwnershipManager _ownership;
     private readonly OpcUaSubjectClientSource _source;
     private readonly uint _maxReferencesPerNode;
-    private readonly int _maxBrowseContinuations;
+    private readonly int _maxBrowseContinuationRounds;
     private readonly ILogger _logger;
     private readonly Dictionary<NodeId, IReadOnlyList<ReferenceDescription>> _browseCache = new();
     private readonly List<(PropertyReference Property, NodeId NodeId, MonitoredItem MonitoredItem)> _pendingClaims = new();
@@ -37,7 +37,7 @@ internal sealed class OpcUaLoadContext : IDisposable
         SourceOwnershipManager ownership,
         OpcUaSubjectClientSource source,
         uint maxReferencesPerNode,
-        int maxBrowseContinuations,
+        int maxBrowseContinuationRounds,
         ILogger logger,
         CancellationToken cancellationToken)
     {
@@ -45,7 +45,7 @@ internal sealed class OpcUaLoadContext : IDisposable
         _ownership = ownership;
         _source = source;
         _maxReferencesPerNode = maxReferencesPerNode;
-        _maxBrowseContinuations = maxBrowseContinuations;
+        _maxBrowseContinuationRounds = maxBrowseContinuationRounds;
         _logger = logger;
         CancellationToken = cancellationToken;
     }
@@ -94,7 +94,7 @@ internal sealed class OpcUaLoadContext : IDisposable
             var results = await Session.BrowseNodesAsync(
                 missing,
                 _maxReferencesPerNode,
-                _maxBrowseContinuations,
+                _maxBrowseContinuationRounds,
                 _logger,
                 CancellationToken).ConfigureAwait(false);
 

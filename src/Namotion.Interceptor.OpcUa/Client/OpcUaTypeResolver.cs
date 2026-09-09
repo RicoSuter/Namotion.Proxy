@@ -29,10 +29,15 @@ public class OpcUaTypeResolver
     }
 
     /// <summary>
-    /// Classifies an OPC UA Object node as an array, dictionary, or single subject
-    /// reference based on the BrowseName bracket pattern of its first Object child.
+    /// Classifies an OPC UA Object node as a collection, a dictionary or a single subject reference
+    /// from the browse name of its first child, and only when that child is an Object: numeric bracket
+    /// content (<c>Items[0]</c>) yields <c>DynamicSubject[]</c>, other bracket content (<c>Items[Key]</c>)
+    /// yields <c>IReadOnlyDictionary&lt;string, DynamicSubject&gt;</c>, and anything else, including an
+    /// empty child list, yields <see cref="DynamicSubject"/>.
     /// </summary>
-    public virtual Type ResolveObjectNodeType(IReadOnlyList<ReferenceDescription> children)
+    /// <param name="node">The Object node being classified. Not inspected here; available to overrides.</param>
+    /// <param name="children">The node's browsed children in browse order.</param>
+    public virtual Type ResolveObjectNodeType(ReferenceDescription node, IReadOnlyList<ReferenceDescription> children)
     {
         if (children.Count > 0 && children[0].NodeClass == NodeClass.Object)
         {
@@ -48,6 +53,14 @@ public class OpcUaTypeResolver
         return typeof(DynamicSubject);
     }
 
+    /// <summary>
+    /// Infers the CLR type of every Variable node in <paramref name="variables"/> from one batched read
+    /// of its DataType and ValueRank attributes. The result is keyed by resolved <see cref="NodeId"/>:
+    /// a key is absent when the reference's <see cref="ExpandedNodeId"/> cannot be resolved against the
+    /// session's namespace table, and a key with a null value means the type could not be inferred, so
+    /// the loader skips the node. A ValueRank of zero or more yields an array of the mapped element type.
+    /// </summary>
+    /// <exception cref="OpcUaTransientServiceException">A DataType or ValueRank read returned a transient bad status.</exception>
     public virtual async Task<IReadOnlyDictionary<NodeId, Type?>> ResolveVariableTypesAsync(
         ISession session,
         IReadOnlyCollection<ReferenceDescription> variables,
@@ -95,8 +108,8 @@ public class OpcUaTypeResolver
             // Abort on a transient attribute read: an unresolved type silently drops the
             // property from the model (does not self-heal). Permanent statuses fall through
             // to the graceful skip below.
-            OpcUaStatusCodeClassifier.ThrowIfTransientError(allResults[dataTypeIndex].StatusCode, "Read", nodeId);
-            OpcUaStatusCodeClassifier.ThrowIfTransientError(allResults[valueRankIndex].StatusCode, "Read", nodeId);
+            OpcUaStatusCodeClassifier.ThrowIfLoadMustRetry(allResults[dataTypeIndex].StatusCode, "Read", nodeId);
+            OpcUaStatusCodeClassifier.ThrowIfLoadMustRetry(allResults[valueRankIndex].StatusCode, "Read", nodeId);
 
             Type? type = null;
             try
@@ -128,6 +141,11 @@ public class OpcUaTypeResolver
         return result;
     }
 
+    /// <summary>
+    /// Maps an OPC UA built-in type to the CLR type of the dynamic property. Returns null when there is
+    /// no mapping, which includes <see cref="BuiltInType.Variant"/> and <see cref="BuiltInType.Null"/> by
+    /// design, so the caller skips the node.
+    /// </summary>
     protected virtual Type? TryMapBuiltInType(BuiltInType builtInType) => builtInType switch
     {
         BuiltInType.Boolean => typeof(bool),

@@ -180,11 +180,14 @@ public class OpcUaSessionExtensionsTests
         Assert.Equal((StatusCode)StatusCodes.BadTimeout, exception.StatusCode);
     }
 
-    [Fact]
-    public async Task WhenReadReturnsTransientBadStatus_ThenPassesResultThroughToCaller()
+    [Theory]
+    [InlineData(StatusCodes.BadServerNotConnected)]
+    [InlineData(StatusCodes.BadUserAccessDenied)]
+    public async Task WhenReadReturnsBadStatus_ThenPassesResultThroughToCaller(uint statusCode)
     {
-        // Arrange: the read path is best-effort and never throws, even on a transient
-        // status (BadServerNotConnected). The bad status passes through for the caller to handle.
+        // Arrange: the read path is best-effort and never classifies, so a transient status
+        // (BadServerNotConnected) and a permanent one (BadUserAccessDenied) both pass through for
+        // the caller to handle per property.
         var nodeId = new NodeId(5001, 2);
         var mockSession = CreateMockSession();
         mockSession
@@ -196,7 +199,7 @@ public class OpcUaSessionExtensionsTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ReadResponse
             {
-                Results = [new DataValue { StatusCode = StatusCodes.BadServerNotConnected }],
+                Results = [new DataValue { StatusCode = statusCode }],
                 DiagnosticInfos = []
             });
 
@@ -214,7 +217,7 @@ public class OpcUaSessionExtensionsTests
 
         // Assert
         Assert.Single(results);
-        Assert.Equal(StatusCodes.BadServerNotConnected, results[0].StatusCode);
+        Assert.Equal(statusCode, results[0].StatusCode);
     }
 
     [Fact]
@@ -260,43 +263,6 @@ public class OpcUaSessionExtensionsTests
         Assert.True(StatusCode.IsGood(results[0].StatusCode));
         Assert.Equal(42, results[0].Value);
         Assert.Equal(StatusCodes.BadWaitingForInitialData, results[1].StatusCode);
-    }
-
-    [Fact]
-    public async Task WhenReadReturnsPermanentBadStatus_ThenPassesResultThroughToCaller()
-    {
-        // Arrange: BadUserAccessDenied is permanent. The read returns successfully and the
-        // bad DataValue passes through to the caller, which decides per-property how to handle it.
-        var nodeId = new NodeId(5001, 2);
-        var mockSession = CreateMockSession();
-        mockSession
-            .Setup(s => s.ReadAsync(
-                It.IsAny<RequestHeader>(),
-                It.IsAny<double>(),
-                It.IsAny<TimestampsToReturn>(),
-                It.IsAny<ReadValueIdCollection>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ReadResponse
-            {
-                Results = [new DataValue { StatusCode = StatusCodes.BadUserAccessDenied }],
-                DiagnosticInfos = []
-            });
-
-        var nodesToRead = new ReadValueIdCollection
-        {
-            new ReadValueId { NodeId = nodeId, AttributeId = Opc.Ua.Attributes.Value }
-        };
-
-        // Act
-        var results = await mockSession.Object.ReadNodesAsync(
-            nodesToRead,
-            TimestampsToReturn.Neither,
-            NullLogger<OpcUaSessionExtensionsTests>.Instance,
-            CancellationToken.None);
-
-        // Assert
-        Assert.Single(results);
-        Assert.Equal(StatusCodes.BadUserAccessDenied, results[0].StatusCode);
     }
 
     [Fact]
@@ -572,13 +538,17 @@ public class OpcUaSessionExtensionsTests
         Assert.Equal([continuationToken], releasedTokens);
     }
 
-    [Fact]
-    public async Task WhenContinuationRoundCapIsReached_ThenPartiallyPagedNodeIsOmitted()
+    [Theory]
+    [InlineData(2)]
+    [InlineData(7)]
+    [InlineData(100)]
+    public async Task WhenBrowseNextReturnsFreshContinuationPointForever_ThenStopsAfterMaxContinuationRoundsAndOmitsNode(int maxContinuationRounds)
     {
-        // Arrange: the server never stops handing out continuation points. Hitting the round cap
-        // leaves the node's child list truncated, so it must be reported as failed this round
-        // rather than as a successfully browsed node with fewer children than it really has.
+        // Arrange: the server never stops handing out continuation points. The round cap must stop
+        // the loop, omit the node rather than report the prefix collected so far as its children,
+        // and release the trailing continuation point.
         var nodeId = new NodeId(1001, 2);
+        var browseNextCallCount = 0;
         var mockSession = CreateMockSession();
 
         mockSession
@@ -610,20 +580,24 @@ public class OpcUaSessionExtensionsTests
                 false,
                 It.IsAny<ByteStringCollection>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new BrowseNextResponse
+            .ReturnsAsync((RequestHeader _, bool _, ByteStringCollection _, CancellationToken _) =>
             {
-                Results =
-                [
-                    new BrowseResult
-                    {
-                        References =
-                        [
-                            new ReferenceDescription { BrowseName = new QualifiedName("Next"), NodeId = new ExpandedNodeId(new NodeId(3002, 2)) }
-                        ],
-                        ContinuationPoint = [0xBB]
-                    }
-                ],
-                DiagnosticInfos = []
+                var round = ++browseNextCallCount;
+                return new BrowseNextResponse
+                {
+                    Results =
+                    [
+                        new BrowseResult
+                        {
+                            References =
+                            [
+                                new ReferenceDescription { BrowseName = new QualifiedName($"Page{round}"), NodeId = new ExpandedNodeId(new NodeId((uint)(3000 + round), 2)) }
+                            ],
+                            ContinuationPoint = [(byte)round]
+                        }
+                    ],
+                    DiagnosticInfos = []
+                };
             });
 
         var releasedTokens = new List<byte[]>();
@@ -643,12 +617,13 @@ public class OpcUaSessionExtensionsTests
         var result = await mockSession.Object.BrowseNodesAsync(
             [nodeId],
             maxReferencesPerNode: 1000,
-            maxContinuationRounds: 2,
+            maxContinuationRounds,
             NullLogger<OpcUaSessionExtensionsTests>.Instance,
             CancellationToken.None);
 
         // Assert
         Assert.Empty(result);
+        Assert.Equal(maxContinuationRounds, browseNextCallCount);
         Assert.Single(releasedTokens);
     }
 
@@ -896,6 +871,159 @@ public class OpcUaSessionExtensionsTests
         // The four continuation points the server did issue for the two rejected batches are handed
         // back before recursing, otherwise the smaller batches compete with quota this attempt holds.
         Assert.Equal(4, releasedTokens.Count);
+    }
+
+    [Fact]
+    public async Task WhenBatchOfOneReturnsBadNoContinuationPoints_ThenThrowsTransientServiceException()
+    {
+        // Arrange: a single node cannot be split any further, so the quota status is classified
+        // like any other bad status and aborts the load instead of looping on the split.
+        var nodeId = new NodeId(1001, 2);
+        var mockSession = CreateMockSession();
+        mockSession
+            .Setup(s => s.BrowseAsync(
+                It.IsAny<RequestHeader>(),
+                It.IsAny<ViewDescription>(),
+                It.IsAny<uint>(),
+                It.IsAny<BrowseDescriptionCollection>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BrowseResponse
+            {
+                Results = [new BrowseResult { StatusCode = StatusCodes.BadNoContinuationPoints, References = [] }],
+                DiagnosticInfos = []
+            });
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<OpcUaTransientServiceException>(() =>
+            mockSession.Object.BrowseNodesAsync(
+                [nodeId],
+                maxReferencesPerNode: 1000,
+                maxContinuationRounds: 100,
+                NullLogger<OpcUaSessionExtensionsTests>.Instance,
+                CancellationToken.None));
+
+        Assert.Equal("Browse", exception.Operation);
+        Assert.Equal(nodeId, exception.NodeId);
+        Assert.Equal((StatusCode)StatusCodes.BadNoContinuationPoints, exception.StatusCode);
+    }
+
+    [Fact]
+    public async Task WhenBrowseReturnsMoreResultsThanRequested_ThenExtrasAreReleasedAndTheLoadContinues()
+    {
+        // Arrange: one node requested, two results returned. The extra result was never asked for,
+        // so its continuation point goes back to the server and the requested node still loads.
+        var nodeId = new NodeId(1001, 2);
+        var extraToken = new byte[] { 0xEE };
+        var mockSession = CreateMockSession();
+        mockSession
+            .Setup(s => s.BrowseAsync(
+                It.IsAny<RequestHeader>(),
+                It.IsAny<ViewDescription>(),
+                It.IsAny<uint>(),
+                It.IsAny<BrowseDescriptionCollection>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BrowseResponse
+            {
+                Results =
+                [
+                    new BrowseResult
+                    {
+                        References =
+                        [
+                            new ReferenceDescription { BrowseName = new QualifiedName("Child"), NodeId = new ExpandedNodeId(new NodeId(3001, 2)) }
+                        ]
+                    },
+                    new BrowseResult { References = [], ContinuationPoint = extraToken }
+                ],
+                DiagnosticInfos = []
+            });
+
+        var releasedTokens = new List<byte[]>();
+        mockSession
+            .Setup(s => s.BrowseNextAsync(
+                It.IsAny<RequestHeader>(),
+                true,
+                It.IsAny<ByteStringCollection>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((RequestHeader _, bool _, ByteStringCollection points, CancellationToken _) =>
+            {
+                releasedTokens.AddRange(points);
+                return new BrowseNextResponse { Results = [], DiagnosticInfos = [] };
+            });
+
+        // Act
+        var result = await mockSession.Object.BrowseNodesAsync(
+            [nodeId],
+            maxReferencesPerNode: 1000,
+            maxContinuationRounds: 100,
+            NullLogger<OpcUaSessionExtensionsTests>.Instance,
+            CancellationToken.None);
+
+        // Assert
+        Assert.Single(result[nodeId]);
+        Assert.Equal([extraToken], releasedTokens);
+    }
+
+    [Fact]
+    public async Task WhenReadSpansMultipleBatches_ThenResultsStayAlignedWithRequests()
+    {
+        // Arrange: MaxNodesPerRead 3 splits four ReadValueIds into two calls. Each request is
+        // answered by its own (NodeId, AttributeId) pair, so a batch boundary that shifted or
+        // reordered results would surface as a value under the wrong request.
+        var firstNodeId = new NodeId(5001, 2);
+        var secondNodeId = new NodeId(5002, 2);
+        var mockSession = CreateMockSession();
+        mockSession.SetupGet(s => s.OperationLimits).Returns(new OperationLimits { MaxNodesPerRead = 3 });
+
+        var valuesByRequest = new Dictionary<(NodeId NodeId, uint AttributeId), int>
+        {
+            [(firstNodeId, Opc.Ua.Attributes.Value)] = 11,
+            [(firstNodeId, Opc.Ua.Attributes.DataType)] = 12,
+            [(secondNodeId, Opc.Ua.Attributes.Value)] = 21,
+            [(secondNodeId, Opc.Ua.Attributes.DataType)] = 22
+        };
+
+        var batchSizes = new List<int>();
+        mockSession
+            .Setup(s => s.ReadAsync(
+                It.IsAny<RequestHeader>(),
+                It.IsAny<double>(),
+                It.IsAny<TimestampsToReturn>(),
+                It.IsAny<ReadValueIdCollection>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((RequestHeader _, double _, TimestampsToReturn _, ReadValueIdCollection batch, CancellationToken _) =>
+            {
+                batchSizes.Add(batch.Count);
+                var results = new DataValueCollection();
+                foreach (var readValueId in batch)
+                {
+                    results.Add(new DataValue { Value = valuesByRequest[(readValueId.NodeId, readValueId.AttributeId)], StatusCode = StatusCodes.Good });
+                }
+                return new ReadResponse { Results = results, DiagnosticInfos = [] };
+            });
+
+        var nodesToRead = new ReadValueIdCollection
+        {
+            new ReadValueId { NodeId = firstNodeId, AttributeId = Opc.Ua.Attributes.Value },
+            new ReadValueId { NodeId = firstNodeId, AttributeId = Opc.Ua.Attributes.DataType },
+            new ReadValueId { NodeId = secondNodeId, AttributeId = Opc.Ua.Attributes.Value },
+            new ReadValueId { NodeId = secondNodeId, AttributeId = Opc.Ua.Attributes.DataType }
+        };
+
+        // Act
+        var results = await mockSession.Object.ReadNodesAsync(
+            nodesToRead,
+            TimestampsToReturn.Neither,
+            NullLogger<OpcUaSessionExtensionsTests>.Instance,
+            CancellationToken.None);
+
+        // Assert
+        Assert.Equal([3, 1], batchSizes);
+        Assert.Equal(nodesToRead.Count, results.Count);
+        for (var i = 0; i < nodesToRead.Count; i++)
+        {
+            Assert.Equal(valuesByRequest[(nodesToRead[i].NodeId, nodesToRead[i].AttributeId)], results[i].Value);
+        }
     }
 
     private static Mock<ISession> CreateMockSession()

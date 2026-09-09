@@ -145,50 +145,50 @@ public class OpcUaClientConfigurationTests
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
-    public void WhenMaxBrowseContinuationsIsNotPositive_ThenValidateThrows(int maxBrowseContinuations)
+    public void WhenMaxBrowseContinuationRoundsIsNotPositive_ThenValidateThrows(int maxBrowseContinuationRounds)
     {
         // Arrange
         var configuration = CreateValidConfiguration();
-        configuration.MaxBrowseContinuations = maxBrowseContinuations;
+        configuration.MaxBrowseContinuationRounds = maxBrowseContinuationRounds;
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentException>(() => configuration.Validate());
-        Assert.Equal(nameof(OpcUaClientConfiguration.MaxBrowseContinuations), exception.ParamName);
+        Assert.Equal(nameof(OpcUaClientConfiguration.MaxBrowseContinuationRounds), exception.ParamName);
     }
 
     [Fact]
-    public void WhenMaxBrowseContinuationsIsDefault_ThenValidateSucceeds()
+    public void WhenMaxBrowseContinuationRoundsIsDefault_ThenValidateSucceeds()
     {
         // Arrange
         var configuration = CreateValidConfiguration();
 
         // Act & Assert - Should not throw
         configuration.Validate();
-        Assert.Equal(100, configuration.MaxBrowseContinuations);
+        Assert.Equal(100, configuration.MaxBrowseContinuationRounds);
     }
 
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
-    public void WhenMaxAttributeTraversalsIsNotPositive_ThenValidateThrows(int maxAttributeTraversals)
+    public void WhenMaxAttributeTraversalDepthIsNotPositive_ThenValidateThrows(int maxAttributeTraversalDepth)
     {
         // Arrange
         var configuration = CreateValidConfiguration();
-        configuration.MaxAttributeTraversals = maxAttributeTraversals;
+        configuration.MaxAttributeTraversalDepth = maxAttributeTraversalDepth;
 
         // Act & Assert
         var exception = Assert.Throws<ArgumentException>(() => configuration.Validate());
-        Assert.Equal(nameof(OpcUaClientConfiguration.MaxAttributeTraversals), exception.ParamName);
+        Assert.Equal(nameof(OpcUaClientConfiguration.MaxAttributeTraversalDepth), exception.ParamName);
     }
 
     [Fact]
-    public void WhenMaxAttributeTraversalsIsDefault_ThenValidateSucceeds()
+    public void WhenMaxAttributeTraversalDepthIsDefault_ThenValidateSucceeds()
     {
         // Arrange
         var configuration = CreateValidConfiguration();
 
         // Act & Assert - Should not throw
         configuration.Validate();
-        Assert.Equal(100, configuration.MaxAttributeTraversals);
+        Assert.Equal(100, configuration.MaxAttributeTraversalDepth);
     }
 }

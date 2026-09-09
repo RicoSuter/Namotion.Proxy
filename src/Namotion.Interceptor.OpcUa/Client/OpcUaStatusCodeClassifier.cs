@@ -9,26 +9,27 @@ namespace Namotion.Interceptor.OpcUa.Client;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="IsTransientError"/> answers <em>can this recover without a new session?</em> It backs
-/// the subscribe and write paths. Access-scoped codes (<c>BadUserAccessDenied</c>,
-/// <c>BadNotReadable</c>, <c>BadNotImplemented</c>) are transient here: role permissions and the
-/// <c>AccessLevel</c> attribute are mutable server-side, so a monitored item can start succeeding
-/// mid-session and must be kept for retry rather than dropped. <c>BadSecurityModeInsufficient</c> is
-/// permanent because it is bound to the SecureChannel's <c>MessageSecurityMode</c>, which can only
-/// change by opening a new channel, and reconnect re-attempts everything anyway.
+/// <see cref="IsRecoverableWithinSession"/> answers <em>can this status recover without a new
+/// session?</em> It backs the subscribe and write paths. Access-scoped codes
+/// (<c>BadUserAccessDenied</c>, <c>BadNotReadable</c>, <c>BadNotImplemented</c>) are recoverable
+/// here: role permissions and the <c>AccessLevel</c> attribute are mutable server-side, so a
+/// monitored item can start succeeding mid-session and must be kept for retry rather than dropped.
+/// <c>BadSecurityModeInsufficient</c> is permanent because it is bound to the SecureChannel's
+/// <c>MessageSecurityMode</c>, which can only change by opening a new channel, and reconnect
+/// re-attempts everything anyway.
 /// </para>
 /// <para>
-/// <see cref="ThrowIfTransientError"/> answers <em>would aborting and reloading now help?</em> It
-/// backs the browse and read paths, where a transient status aborts the load so reconnect retries
-/// and a permanent one is logged and skipped. Here the access-scoped codes are permanent: they
-/// repeat immediately on reload (the session's identity and permissions have not changed), so
-/// throwing would crash-loop the whole load instead of skipping the one unreachable node. That
-/// makes the load-skip set a superset of the session-permanent set by exactly those three codes.
+/// <see cref="ThrowIfLoadMustRetry"/> answers <em>must the load abort and retry on this status?</em>
+/// It backs the browse and read paths, where a status that a fresh load could clear aborts the load
+/// so reconnect retries it, and one that would repeat is logged and the node skipped. Here the
+/// access-scoped codes repeat: the session's identity and permissions have not changed, so throwing
+/// would crash-loop the whole load instead of skipping the one unreachable node. That makes the
+/// load-skip set a superset of the session-permanent set by exactly those three codes.
 /// </para>
 /// <para>
-/// The write path uses <see cref="IsTransientError"/> for diagnostics only:
+/// The write path uses <see cref="IsRecoverableWithinSession"/> for diagnostics only:
 /// <c>WriteResult.FailedChanges</c> must stay complete for the retry queue and the transaction
-/// writer, so permanently-failed writes are still requeued (#332).
+/// writer, so permanently failed writes are still requeued.
 /// </para>
 /// </remarks>
 internal static class OpcUaStatusCodeClassifier
@@ -67,7 +68,7 @@ internal static class OpcUaStatusCodeClassifier
     /// session (e.g. transport glitch, server-side resource exhaustion, a later permission grant).
     /// Returns false for good and uncertain statuses. Used by the subscribe and write paths.
     /// </summary>
-    public static bool IsTransientError(StatusCode statusCode)
+    public static bool IsRecoverableWithinSession(StatusCode statusCode)
     {
         return StatusCode.IsBad(statusCode) && !SessionPermanentCodes.Contains(statusCode.Code);
     }
@@ -78,7 +79,7 @@ internal static class OpcUaStatusCodeClassifier
     /// retry. Statuses that would repeat immediately on reload (permanent design-time and
     /// access-scoped codes) and non-bad statuses are ignored, so the caller logs and skips the node.
     /// </summary>
-    public static void ThrowIfTransientError(StatusCode statusCode, string operation, NodeId? nodeId)
+    public static void ThrowIfLoadMustRetry(StatusCode statusCode, string operation, NodeId? nodeId)
     {
         if (StatusCode.IsBad(statusCode) && !LoadSkipCodes.Contains(statusCode.Code))
         {

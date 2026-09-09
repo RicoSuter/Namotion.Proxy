@@ -9,6 +9,12 @@ namespace Namotion.Interceptor.OpcUa.Tests.Client;
 
 public class OpcUaTypeResolverTests
 {
+    private static readonly ReferenceDescription ObjectNode = new()
+    {
+        BrowseName = new QualifiedName("Parent"),
+        NodeClass = NodeClass.Object
+    };
+
     private readonly OpcUaTypeResolver _resolver;
 
     public OpcUaTypeResolverTests()
@@ -30,7 +36,7 @@ public class OpcUaTypeResolverTests
         };
 
         // Act
-        var result = _resolver.ResolveObjectNodeType(children);
+        var result = _resolver.ResolveObjectNodeType(ObjectNode, children);
 
         // Assert
         Assert.Equal(typeof(DynamicSubject[]), result);
@@ -50,7 +56,7 @@ public class OpcUaTypeResolverTests
         };
 
         // Act
-        var result = _resolver.ResolveObjectNodeType(children);
+        var result = _resolver.ResolveObjectNodeType(ObjectNode, children);
 
         // Assert
         Assert.Equal(typeof(IReadOnlyDictionary<string, DynamicSubject>), result);
@@ -70,7 +76,7 @@ public class OpcUaTypeResolverTests
         };
 
         // Act
-        var result = _resolver.ResolveObjectNodeType(children);
+        var result = _resolver.ResolveObjectNodeType(ObjectNode, children);
 
         // Assert
         Assert.Equal(typeof(DynamicSubject), result);
@@ -80,7 +86,7 @@ public class OpcUaTypeResolverTests
     public void WhenObjectHasNoChildren_ThenClassifiesAsSubject()
     {
         // Act
-        var result = _resolver.ResolveObjectNodeType(new ReferenceDescriptionCollection());
+        var result = _resolver.ResolveObjectNodeType(ObjectNode, new ReferenceDescriptionCollection());
 
         // Assert
         Assert.Equal(typeof(DynamicSubject), result);
@@ -101,7 +107,7 @@ public class OpcUaTypeResolverTests
         };
 
         // Act
-        var result = _resolver.ResolveObjectNodeType(children);
+        var result = _resolver.ResolveObjectNodeType(ObjectNode, children);
 
         // Assert
         Assert.Equal(typeof(DynamicSubject), result);
@@ -377,12 +383,10 @@ public class OpcUaTypeResolverTests
         Assert.Equal(typeof(float), result[node1Id]);
         Assert.Equal(typeof(int), result[node2Id]);
 
-        // Assert: split-and-retry actually invoked ReadAsync multiple times. A regression
-        // that silently dropped the batch on rejection would also produce 0 results here,
-        // but a regression that swallowed the exception and returned partial data could
-        // satisfy the Count==2 check without retrying. The call-count pin closes that gap.
-        Assert.True(readCallCount > 1,
-            $"Expected ReadAsync to be called more than once for split-and-retry, but got {readCallCount}.");
+        // Assert: the rejected call of four ReadValueIds, then one accepted call per half. A
+        // regression that swallowed the rejection and returned partial data could still satisfy
+        // the Count == 2 check without retrying; the exact call count closes that gap.
+        Assert.Equal(3, readCallCount);
     }
 
     private static Mock<ISession> CreateMockSession()

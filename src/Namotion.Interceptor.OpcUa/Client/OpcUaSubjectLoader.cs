@@ -69,7 +69,7 @@ internal sealed class OpcUaSubjectLoader
             _ownership,
             _source,
             _configuration.MaxReferencesPerNode,
-            _configuration.MaxBrowseContinuations,
+            _configuration.MaxBrowseContinuationRounds,
             _logger,
             cancellationToken);
 
@@ -95,7 +95,7 @@ internal sealed class OpcUaSubjectLoader
         }
 
         // Phase 2: Classify children, collect dynamic nodes
-        var allDynamicObjectNodeIds = new HashSet<NodeId>();
+        var allDynamicObjectNodes = new Dictionary<NodeId, ReferenceDescription>();
         var allDynamicVariableNodes = new Dictionary<NodeId, ReferenceDescription>();
         var subjectStates = new List<SubjectState>(validSubjects.Count);
 
@@ -105,14 +105,14 @@ internal sealed class OpcUaSubjectLoader
 
             var childEntries = await ClassifyChildReferencesAsync(
                 registeredSubject, distinctReferences,
-                allDynamicObjectNodeIds, allDynamicVariableNodes,
+                allDynamicObjectNodes, allDynamicVariableNodes,
                 context).ConfigureAwait(false);
 
             subjectStates.Add(new SubjectState(subject, registeredSubject, childEntries));
         }
 
         // Phase 3: Batch resolve types (populates the context's browse cache for reuse by Collections and next-level Subjects)
-        var objectTypeMap = await ResolveObjectTypesAsync(allDynamicObjectNodeIds, context).ConfigureAwait(false);
+        var objectTypeMap = await ResolveObjectTypesAsync(allDynamicObjectNodes, context).ConfigureAwait(false);
 
         var variableTypeMap = allDynamicVariableNodes.Count > 0
             ? await _configuration.TypeResolver!.ResolveVariableTypesAsync(context.Session, allDynamicVariableNodes.Values, context.CancellationToken).ConfigureAwait(false)
@@ -182,7 +182,7 @@ internal sealed class OpcUaSubjectLoader
         ClassifyChildReferencesAsync(
             RegisteredSubject registeredSubject,
             List<(ReferenceDescription Reference, NodeId NodeId)> distinctReferences,
-            HashSet<NodeId> dynamicObjectNodeIds,
+            Dictionary<NodeId, ReferenceDescription> dynamicObjectNodes,
             Dictionary<NodeId, ReferenceDescription> dynamicVariableNodes,
             OpcUaLoadContext context)
     {
@@ -236,7 +236,7 @@ internal sealed class OpcUaSubjectLoader
             childEntries.Add(new ChildEntry(nodeReference, resolvedNodeId, null));
             if (nodeReference.NodeClass == NodeClass.Object)
             {
-                dynamicObjectNodeIds.Add(resolvedNodeId);
+                dynamicObjectNodes.TryAdd(resolvedNodeId, nodeReference);
             }
             else if (nodeReference.NodeClass == NodeClass.Variable)
             {
@@ -247,23 +247,23 @@ internal sealed class OpcUaSubjectLoader
         return childEntries;
     }
 
-    private async Task<Dictionary<NodeId, Type>> ResolveObjectTypesAsync(IReadOnlyCollection<NodeId> objectNodeIds, OpcUaLoadContext context)
+    private async Task<Dictionary<NodeId, Type>> ResolveObjectTypesAsync(Dictionary<NodeId, ReferenceDescription> objectNodes, OpcUaLoadContext context)
     {
         var objectTypeMap = new Dictionary<NodeId, Type>();
-        if (objectNodeIds.Count == 0)
+        if (objectNodes.Count == 0)
         {
             return objectTypeMap;
         }
 
-        var objectBrowseResults = await context.BrowseAsync(objectNodeIds).ConfigureAwait(false);
-        foreach (var nodeId in objectNodeIds)
+        var objectBrowseResults = await context.BrowseAsync(objectNodes.Keys).ConfigureAwait(false);
+        foreach (var (nodeId, node) in objectNodes)
         {
             // Missing entry = browse returned a bad status (BrowseNodesAsync deliberately
             // omits failed NodeIds so they aren't cached). Leave unset; TryCreateDynamicProperty
             // logs "Could not infer type" and skips, and the next load gets to retry.
             if (objectBrowseResults.TryGetValue(nodeId, out var children))
             {
-                objectTypeMap[nodeId] = _configuration.TypeResolver!.ResolveObjectNodeType(children);
+                objectTypeMap[nodeId] = _configuration.TypeResolver!.ResolveObjectNodeType(node, children);
             }
         }
 

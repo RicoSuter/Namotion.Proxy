@@ -5,9 +5,9 @@ namespace Namotion.Interceptor.OpcUa.Tests.Client;
 
 /// <summary>
 /// Tests for the OPC UA status code classifier. It answers two questions that the access-scoped
-/// codes answer oppositely: <see cref="OpcUaStatusCodeClassifier.IsTransientError"/> (can this
+/// codes answer oppositely: <see cref="OpcUaStatusCodeClassifier.IsRecoverableWithinSession"/> (can this
 /// recover without a new session?) backs the subscribe and write paths, and
-/// <see cref="OpcUaStatusCodeClassifier.ThrowIfTransientError"/> (would reloading now help?) backs
+/// <see cref="OpcUaStatusCodeClassifier.ThrowIfLoadMustRetry"/> (must the load abort and retry?) backs
 /// the browse and read paths, where access-scoped codes are skipped rather than retried.
 /// </summary>
 public class OpcUaStatusCodeClassifierTests
@@ -21,16 +21,16 @@ public class OpcUaStatusCodeClassifierTests
     [InlineData(StatusCodes.BadSecurityModeInsufficient)]
     [InlineData(StatusCodes.BadNotWritable)]
     [InlineData(StatusCodes.BadWriteNotSupported)]
-    public void WhenStatusIsSessionPermanent_ThenIsTransientErrorReturnsFalse(uint statusCode)
+    public void WhenStatusIsSessionPermanent_ThenIsRecoverableWithinSessionReturnsFalse(uint statusCode)
     {
         // Arrange
         var status = new StatusCode(statusCode);
 
         // Act
-        var isTransient = OpcUaStatusCodeClassifier.IsTransientError(status);
+        var isRecoverable = OpcUaStatusCodeClassifier.IsRecoverableWithinSession(status);
 
         // Assert
-        Assert.False(isTransient);
+        Assert.False(isRecoverable);
     }
 
     [Theory]
@@ -48,16 +48,16 @@ public class OpcUaStatusCodeClassifierTests
     [InlineData(StatusCodes.BadDeviceFailure)]
     [InlineData(StatusCodes.BadSensorFailure)]
     [InlineData(StatusCodes.BadTooManyMonitoredItems)]
-    public void WhenStatusIsTransientBadCode_ThenIsTransientErrorReturnsTrue(uint statusCode)
+    public void WhenStatusIsTransientBadCode_ThenIsRecoverableWithinSessionReturnsTrue(uint statusCode)
     {
         // Arrange
         var status = new StatusCode(statusCode);
 
         // Act
-        var isTransient = OpcUaStatusCodeClassifier.IsTransientError(status);
+        var isRecoverable = OpcUaStatusCodeClassifier.IsRecoverableWithinSession(status);
 
         // Assert
-        Assert.True(isTransient);
+        Assert.True(isRecoverable);
     }
 
     [Theory]
@@ -67,37 +67,37 @@ public class OpcUaStatusCodeClassifierTests
     [InlineData(StatusCodes.BadUserAccessDenied)]
     [InlineData(StatusCodes.BadNotReadable)]
     [InlineData(StatusCodes.BadNotImplemented)]
-    public void WhenStatusIsAccessScoped_ThenIsTransientErrorReturnsTrue(uint statusCode)
+    public void WhenStatusIsAccessScoped_ThenIsRecoverableWithinSessionReturnsTrue(uint statusCode)
     {
         // Arrange
         var status = new StatusCode(statusCode);
 
         // Act
-        var isTransient = OpcUaStatusCodeClassifier.IsTransientError(status);
+        var isRecoverable = OpcUaStatusCodeClassifier.IsRecoverableWithinSession(status);
 
         // Assert
-        Assert.True(isTransient);
+        Assert.True(isRecoverable);
     }
 
     [Fact]
-    public void WhenStatusIsGood_ThenIsTransientErrorReturnsFalse()
+    public void WhenStatusIsGood_ThenIsRecoverableWithinSessionReturnsFalse()
     {
         // Arrange
         var status = new StatusCode(StatusCodes.Good);
 
         // Act & Assert
-        Assert.False(OpcUaStatusCodeClassifier.IsTransientError(status));
+        Assert.False(OpcUaStatusCodeClassifier.IsRecoverableWithinSession(status));
     }
 
     [Fact]
-    public void WhenStatusIsUncertain_ThenIsTransientErrorReturnsFalse()
+    public void WhenStatusIsUncertain_ThenIsRecoverableWithinSessionReturnsFalse()
     {
         // Arrange: Uncertain carries a real value with reduced confidence; it is neither
         // a transient failure (no retry will improve it) nor a permanent design-time error.
         var status = new StatusCode(StatusCodes.Uncertain);
 
         // Act & Assert
-        Assert.False(OpcUaStatusCodeClassifier.IsTransientError(status));
+        Assert.False(OpcUaStatusCodeClassifier.IsRecoverableWithinSession(status));
     }
 
     [Theory]
@@ -105,14 +105,14 @@ public class OpcUaStatusCodeClassifierTests
     [InlineData(StatusCodes.BadOutOfService)]
     [InlineData(StatusCodes.BadTooManyMonitoredItems)]
     [InlineData(StatusCodes.BadServerNotConnected)]
-    public void WhenBrowseStatusCanClearOnReload_ThenThrowIfTransientErrorThrows(uint statusCode)
+    public void WhenBrowseStatusCanClearOnReload_ThenThrowIfLoadMustRetryThrows(uint statusCode)
     {
         // Arrange
         var status = new StatusCode(statusCode);
 
         // Act & Assert
         var exception = Assert.Throws<OpcUaTransientServiceException>(
-            () => OpcUaStatusCodeClassifier.ThrowIfTransientError(status, "Browse", new NodeId(1)));
+            () => OpcUaStatusCodeClassifier.ThrowIfLoadMustRetry(status, "Browse", new NodeId(1)));
         Assert.Equal("Browse", exception.Operation);
         Assert.Equal(status, exception.StatusCode);
     }
@@ -123,20 +123,34 @@ public class OpcUaStatusCodeClassifierTests
     [InlineData(StatusCodes.BadTypeMismatch)]
     [InlineData(StatusCodes.BadSecurityModeInsufficient)]
     // Access-scoped codes: transient over a longer horizon, but deterministic for this session, so
-    // a browse/read reload would crash-loop. They must NOT throw here even though IsTransientError
-    // classifies them transient for the subscribe path.
+    // a browse/read reload would crash-loop. They must NOT throw here even though
+    // IsRecoverableWithinSession classifies them recoverable for the subscribe path.
     [InlineData(StatusCodes.BadUserAccessDenied)]
     [InlineData(StatusCodes.BadNotReadable)]
     [InlineData(StatusCodes.BadNotImplemented)]
     // Non-bad statuses never throw.
     [InlineData(StatusCodes.Good)]
     [InlineData(StatusCodes.Uncertain)]
-    public void WhenBrowseStatusWouldRepeatOnReload_ThenThrowIfTransientErrorDoesNotThrow(uint statusCode)
+    public void WhenBrowseStatusWouldRepeatOnReload_ThenThrowIfLoadMustRetryDoesNotThrow(uint statusCode)
     {
         // Arrange
         var status = new StatusCode(statusCode);
 
         // Act & Assert (does not throw)
-        OpcUaStatusCodeClassifier.ThrowIfTransientError(status, "Browse", new NodeId(1));
+        OpcUaStatusCodeClassifier.ThrowIfLoadMustRetry(status, "Browse", new NodeId(1));
+    }
+
+    [Theory]
+    [InlineData(StatusCodes.BadTooManyOperations)]
+    [InlineData(StatusCodes.BadEncodingLimitsExceeded)]
+    [InlineData(StatusCodes.BadRequestTooLarge)]
+    [InlineData(StatusCodes.BadResponseTooLarge)]
+    public void WhenServerRejectsBatchSize_ThenIsBatchTooLargeReturnsTrue(uint statusCode)
+    {
+        // Arrange
+        var exception = new ServiceResultException(statusCode);
+
+        // Act & Assert
+        Assert.True(OpcUaStatusCodeClassifier.IsBatchTooLarge(exception));
     }
 }

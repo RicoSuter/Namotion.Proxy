@@ -15,7 +15,7 @@ namespace Namotion.Interceptor.OpcUa.Client.Connection;
 
 /// <summary>
 /// How a monitored item that failed to (re-)create should be handled, aligned with
-/// <see cref="OpcUaStatusCodeClassifier.IsTransientError"/>.
+/// <see cref="OpcUaStatusCodeClassifier.IsRecoverableWithinSession"/>.
 /// </summary>
 internal enum FailedMonitoredItemDisposition
 {
@@ -476,7 +476,7 @@ internal class SubscriptionManager : IAsyncDisposable
                 : FailedMonitoredItemDisposition.Drop;
         }
 
-        return OpcUaStatusCodeClassifier.IsTransientError(statusCode)
+        return OpcUaStatusCodeClassifier.IsRecoverableWithinSession(statusCode)
             ? FailedMonitoredItemDisposition.KeepForRetry
             : FailedMonitoredItemDisposition.Drop;
     }
