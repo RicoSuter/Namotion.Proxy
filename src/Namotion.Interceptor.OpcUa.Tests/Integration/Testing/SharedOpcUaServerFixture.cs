@@ -121,6 +121,15 @@ public class SharedOpcUaServerFixture : IAsyncLifetime
             {
                 Name = "Initial",
                 Number = 0m
+            },
+            SinglePropertyRollback = new TransactionSinglePropertyArea(context)
+            {
+                Name = "InitialValue"
+            },
+            MultiPropertyRollback = new TransactionMultiPropertyArea(context)
+            {
+                Name = "SetupName",
+                Number = 100m
             }
         };
 

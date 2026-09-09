@@ -272,6 +272,46 @@ public class SubjectUpdateDictionaryTests
     }
 
     [Fact]
+    public void WhenValueReplacedAtSameKey_ThenRemoveIsEmittedBeforeInsertForThatKey()
+    {
+        // Arrange
+        // The apply side walks operations sequentially, so the Remove for the replaced key
+        // has to precede the Insert that carries the replacement.
+        var context = InterceptorSubjectContext.Create().WithPropertyChangeSubscriptions().WithRegistry();
+        var item1 = new CycleTestNode { Name = "Item1" };
+        var node = new CycleTestNode(context)
+        {
+            Name = "Root",
+            Lookup = new Dictionary<string, CycleTestNode> { ["key1"] = item1 }
+        };
+
+        var changes = new List<SubjectPropertyChange>();
+        context.GetPropertyChangeObservable(ImmediateScheduler.Instance).Subscribe(c => changes.Add(c));
+
+        // Act
+        var item2 = new CycleTestNode { Name = "ReplacementItem" };
+        node.Lookup = new Dictionary<string, CycleTestNode> { ["key1"] = item2 };
+
+        var update = SubjectUpdate.CreatePartialUpdateFromChanges(node, changes.ToArray(), []);
+
+        // Assert
+        var operations = update.Subjects[update.Root]["Lookup"].Operations;
+        Assert.NotNull(operations);
+        Assert.Collection(operations,
+            operation =>
+            {
+                Assert.Equal(SubjectCollectionOperationType.Remove, operation.Action);
+                Assert.Equal("key1", operation.Index);
+            },
+            operation =>
+            {
+                Assert.Equal(SubjectCollectionOperationType.Insert, operation.Action);
+                Assert.Equal("key1", operation.Index);
+                Assert.NotNull(operation.Id);
+            });
+    }
+
+    [Fact]
     public async Task WhenDictionarySetToNull_ThenCompleteUpdateHasValueKindWithNull()
     {
         // Arrange

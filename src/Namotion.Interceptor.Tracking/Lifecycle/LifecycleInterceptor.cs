@@ -7,7 +7,7 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 
 public class LifecycleInterceptor : IWriteInterceptor, ILifecycleInterceptor
 {
-    private readonly Dictionary<IInterceptorSubject, PropertyReferenceSet> _attachedSubjects = [];
+    private readonly Dictionary<IInterceptorSubject, PropertyReferenceSet> _attachedSubjects = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<PropertyReference, object?> _lastProcessedValues = new(PropertyReference.Comparer);
 
     [ThreadStatic]
@@ -485,33 +485,30 @@ public class LifecycleInterceptor : IWriteInterceptor, ILifecycleInterceptor
                 return;
 
             case IEnumerable enumerable:
-                // Read-only types (no ICollection): dispatch on declared property shape.
-                if (property.Metadata.Type.IsSubjectDictionaryType())
+            {
+                // A pair carries its key, but a dictionary type is free to enumerate as its values
+                // instead, and a broad declaration (object, plain interface) never classifies as a
+                // dictionary, so the value's own type has to answer when the declared one cannot.
+                var isKeyed = property.Metadata.Type.IsSubjectDictionaryType() ||
+                              enumerable.GetType().IsSubjectDictionaryType();
+                var index = 0;
+                foreach (var item in enumerable)
                 {
-                    foreach (var item in enumerable)
+                    if (isKeyed && item is not null &&
+                        SubjectLookup.TryGetSubjectFromKeyValuePair(item, out var key, out var keyedItem))
                     {
-                        if (item is null) continue;
-                        if (SubjectLookup.TryGetSubjectFromKeyValuePair(item, out var key, out var subjectItem))
-                        {
-                            touchedSubjects?.Add(subjectItem);
-                            collectedSubjects.Add((subjectItem, property, key));
-                        }
+                        touchedSubjects?.Add(keyedItem);
+                        collectedSubjects.Add((keyedItem, property, key));
                     }
-                }
-                else
-                {
-                    var i = 0;
-                    foreach (var item in enumerable)
+                    else if (item is IInterceptorSubject subjectItem)
                     {
-                        if (item is IInterceptorSubject subjectItem)
-                        {
-                            touchedSubjects?.Add(subjectItem);
-                            collectedSubjects.Add((subjectItem, property, i));
-                        }
-                        i++;
+                        touchedSubjects?.Add(subjectItem);
+                        collectedSubjects.Add((subjectItem, property, index));
                     }
+                    index++;
                 }
                 return;
+            }
         }
     }
 
@@ -528,7 +525,7 @@ public class LifecycleInterceptor : IWriteInterceptor, ILifecycleInterceptor
     private static HashSet<IInterceptorSubject> GetSubjectHashSet()
     {
         _subjectHashSetPool ??= new Stack<HashSet<IInterceptorSubject>>();
-        return _subjectHashSetPool.Count > 0 ? _subjectHashSetPool.Pop() : new HashSet<IInterceptorSubject>(8);
+        return _subjectHashSetPool.Count > 0 ? _subjectHashSetPool.Pop() : new HashSet<IInterceptorSubject>(8, ReferenceEqualityComparer.Instance);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

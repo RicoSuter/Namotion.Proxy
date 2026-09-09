@@ -379,6 +379,47 @@ public partial class SubjectUpdateExtensionsTests
     }
 
     [Fact]
+    public void WhenApplyingDictionaryValueReplacedAtSameKey_ThenEntryIsReplacedNotDeleted()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithFullPropertyTracking().WithRegistry();
+        var originalItem = new CycleTestNode(context) { Name = "Item1" };
+        var source = new CycleTestNode(context)
+        {
+            Name = "Root",
+            Lookup = new Dictionary<string, CycleTestNode> { ["key1"] = originalItem }
+        };
+        var target = new CycleTestNode(context)
+        {
+            Name = "Root",
+            Lookup = new Dictionary<string, CycleTestNode>
+            {
+                ["key1"] = new(context) { Name = "Item1" }
+            }
+        };
+
+        // Make a change - replace the value at an existing key with a different subject
+        var changes = new List<SubjectPropertyChange>();
+        using (context.GetPropertyChangeObservable(System.Reactive.Concurrency.ImmediateScheduler.Instance)
+            .Subscribe(c => changes.Add(c)))
+        {
+            source.Lookup = new Dictionary<string, CycleTestNode>
+            {
+                ["key1"] = new(context) { Name = "Replacement" }
+            };
+        }
+
+        // Act
+        var update = SubjectUpdate.CreatePartialUpdateFromChanges(source, changes.ToArray(), []);
+        target.ApplySubjectUpdate(update, DefaultSubjectFactory.Instance, ChangeOrigin.Local);
+
+        // Assert
+        Assert.True(target.Lookup.ContainsKey("key1"), "The replaced entry must survive the round trip.");
+        Assert.Equal("Replacement", target.Lookup["key1"].Name);
+        Assert.Single(target.Lookup);
+    }
+
+    [Fact]
     public async Task WhenApplyingCircularReference_ThenItWorks()
     {
         // Arrange

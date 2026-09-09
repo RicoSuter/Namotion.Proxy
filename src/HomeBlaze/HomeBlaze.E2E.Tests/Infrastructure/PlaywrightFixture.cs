@@ -1,4 +1,6 @@
 using HomeBlaze.Components;
+using HomeBlaze.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Playwright;
 
 namespace HomeBlaze.E2E.Tests.Infrastructure;
@@ -25,6 +27,19 @@ public class PlaywrightFixture : IAsyncLifetime
         // Force server to start by accessing ServerAddress which calls EnsureServer
         var address = _factory.ServerAddress;
         Console.WriteLine($"Test server started at: {address}");
+
+        // The root subject is loaded by a background service, so the server serves requests before the
+        // object graph behind them exists. The UI waits that window out on its own, but the wait would
+        // otherwise land inside the first test's own timeout instead of here.
+        var rootManager = _factory.ServerServices.GetRequiredService<RootManager>();
+        try
+        {
+            await rootManager.RootLoaded.WaitAsync(TimeSpan.FromSeconds(60));
+        }
+        catch (TimeoutException exception)
+        {
+            throw new TimeoutException("The root subject was not loaded before the tests started", exception);
+        }
 
         // Initialize Playwright and launch browser
         _playwright = await Playwright.CreateAsync();

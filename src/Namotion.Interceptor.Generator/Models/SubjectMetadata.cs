@@ -11,6 +11,7 @@ internal sealed record SubjectMetadata(
     ContainingType[] ContainingTypes,
     bool NeedsGeneratedParameterlessConstructor,
     bool HasOrWillHaveParameterlessConstructor,
+    bool ParameterlessConstructorSetsRequiredMembers,
     SubjectBaseClass BaseClass,
     IReadOnlyList<PropertyMetadata> Properties,
     IReadOnlyList<MethodMetadata> Methods);

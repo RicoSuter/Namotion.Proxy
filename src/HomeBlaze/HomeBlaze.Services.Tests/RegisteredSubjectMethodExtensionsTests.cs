@@ -11,6 +11,24 @@ namespace HomeBlaze.Services.Tests;
 
 public class RegisteredSubjectMethodExtensionsTests
 {
+    [Fact]
+    public void WhenUnrelatedGettersThrow_ThenMethodDiscoveryStillFindsAllSupportedMetadataShapes()
+    {
+        // Arrange
+        var subject = new MethodDiscoveryGetterSubject(CreateContext());
+        var registered = subject.TryGetRegisteredSubject()!;
+
+        // Act
+        var all = registered.GetAllMethods();
+        var operations = registered.GetOperationMethods();
+        var queries = registered.GetQueryMethods();
+
+        // Assert
+        Assert.Equal(new[] { "Object", "Interface", "Subclass" }, all.Select(method => method.Title));
+        Assert.Equal(new[] { "Object", "Subclass" }, operations.Select(method => method.Title));
+        Assert.Equal("Interface", Assert.Single(queries).Title);
+    }
+
     private static IInterceptorSubjectContext CreateContext()
     {
         return InterceptorSubjectContext.Create()
@@ -132,4 +150,32 @@ public partial class MethodExtTestSubject
 
     [Query(Title = "Third", Position = 3)]
     public Task<string> ThirdAsync() => Task.FromResult("result");
+}
+
+public interface IMethodDiscoveryMarker;
+
+public sealed class MethodDiscoveryMetadata : MethodMetadata, IMethodDiscoveryMarker
+{
+    public MethodDiscoveryMetadata() : base(_ => Task.CompletedTask) { }
+}
+
+[InterceptorSubject]
+public partial class MethodDiscoveryGetterSubject
+{
+    public int UnavailableValue => throw new InvalidOperationException("Value is not ready");
+
+    public object ObjectMethod { get; } = new MethodMetadata(_ => Task.CompletedTask)
+    {
+        Title = "Object", Position = 0, Kind = MethodKind.Operation
+    };
+
+    public IMethodDiscoveryMarker InterfaceMethod { get; } = new MethodDiscoveryMetadata
+    {
+        Title = "Interface", Position = 1, Kind = MethodKind.Query
+    };
+
+    public MethodDiscoveryMetadata SubclassMethod { get; } = new()
+    {
+        Title = "Subclass", Position = 2, Kind = MethodKind.Operation
+    };
 }

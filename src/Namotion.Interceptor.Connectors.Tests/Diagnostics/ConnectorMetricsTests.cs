@@ -1,4 +1,5 @@
 using Namotion.Interceptor.Connectors.Diagnostics;
+using Namotion.Interceptor.Testing;
 
 namespace Namotion.Interceptor.Connectors.Tests.Diagnostics;
 
@@ -271,11 +272,15 @@ public class ConnectorMetricsTests
         ClockTestHelpers.WaitForClockTick();
 
         // Act
-        var restart = Task.Run(metrics.MarkStarted);
-        await resettable.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        // Off the thread pool: the restart parks inside the resettable for as long as this test holds
+        // it, and a pool work item can wait seconds to be scheduled at all while the rest of the
+        // assembly runs, which times out the wait below for a reason the test does not cover.
+        var restart = DedicatedThreadTestHelpers.RunOnDedicatedThreadAsync(metrics.MarkStarted, "restart reset");
 
         try
         {
+            await resettable.Entered.WaitAsync(TimeSpan.FromSeconds(30));
+
             // Assert
             Assert.Equal(firstStart, diagnostics.StartTime);
         }

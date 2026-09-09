@@ -192,6 +192,22 @@ internal static class SubjectItemsUpdateFactory
             // every subject-valued entry in newDictionary is either a new insert or a retained common item.
             update.Count = (newItemsToProcess?.Count ?? 0) + changeBuilder.GetRetainedDictionaryItems().Count;
 
+            // Add Remove operations before the Insert operations: a value replaced at an existing key
+            // appears in both lists, and the apply side walks the operations sequentially, so an Insert
+            // emitted first would be undone by the Remove that follows it.
+            if (removedKeys is not null)
+            {
+                foreach (var removedKey in removedKeys)
+                {
+                    operations ??= [];
+                    operations.Add(new SubjectCollectionOperation
+                    {
+                        Action = SubjectCollectionOperationType.Remove,
+                        Index = removedKey
+                    });
+                }
+            }
+
             // Add Insert operations for new items
             if (newItemsToProcess is not null)
             {
@@ -206,20 +222,6 @@ internal static class SubjectItemsUpdateFactory
                         Action = SubjectCollectionOperationType.Insert,
                         Index = key,
                         Id = itemId
-                    });
-                }
-            }
-
-            // Add Remove operations
-            if (removedKeys is not null)
-            {
-                foreach (var removedKey in removedKeys)
-                {
-                    operations ??= [];
-                    operations.Add(new SubjectCollectionOperation
-                    {
-                        Action = SubjectCollectionOperationType.Remove,
-                        Index = removedKey
                     });
                 }
             }

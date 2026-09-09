@@ -935,6 +935,7 @@ public class SubjectTransactionTests
         }, null));
 
         // Act
+        bool writerStopped;
         try
         {
             writerThread.Start();
@@ -945,10 +946,14 @@ public class SubjectTransactionTests
         {
             transaction.Dispose();
             continueComparison.Set();
-            Assert.True(writerThread.Join(TimeSpan.FromSeconds(10)), "writer did not stop");
+
+            // Only capture here: an assertion inside the finally would replace a failure from the try body,
+            // and a writer parked elsewhere never stops, so the join failure would hide the real one.
+            writerStopped = writerThread.Join(TimeSpan.FromSeconds(10));
         }
 
         // Assert
+        Assert.True(writerStopped, "writer did not stop");
         Assert.Null(escapedException);
         Assert.Same(valueWrittenAfterDispose, subject.Value);
         Assert.Empty(transaction.GetPendingChanges());

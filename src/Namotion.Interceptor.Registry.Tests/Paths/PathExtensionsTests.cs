@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Namotion.Interceptor.Registry.Paths;
 using Namotion.Interceptor.Tracking;
 
@@ -11,6 +12,83 @@ public class PathExtensionsTests
             .Create()
             .WithFullPropertyTracking()
             .WithRegistry();
+    }
+
+
+    // --- Immutable dictionary values behind a broadly declared property ---
+
+    [Fact]
+    public void WhenPropertyHoldsImmutableDictionaryAndKeyIsAbsent_ThenSubjectPathResolvesToNull()
+    {
+        // Arrange
+        var context = CreateContext();
+        var item = new TestItem(context) { Value = "hello" };
+        var container = new TestBroadContainer(context) { Name = "Root" };
+        container.Items = new Dictionary<string, TestItem> { ["key1"] = item }.ToImmutableDictionary();
+        var pathProvider = DefaultPathProvider.Instance;
+        var rootRegistered = container.TryGetRegisteredSubject()!;
+
+        // Act
+        var result = pathProvider.TryGetSubjectFromPath(rootRegistered, "Items[absent]");
+
+        // Assert
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void WhenPropertyHoldsImmutableDictionaryAndKeyHasWrongType_ThenSubjectPathResolvesToNull()
+    {
+        // Arrange
+        var context = CreateContext();
+        var item = new TestItem(context) { Value = "hello" };
+        var container = new TestBroadContainer(context) { Name = "Root" };
+        container.Items = new Dictionary<string, TestItem> { ["key1"] = item }.ToImmutableDictionary();
+        var pathProvider = DefaultPathProvider.Instance;
+        var rootRegistered = container.TryGetRegisteredSubject()!;
+
+        // Act
+        // A numeric segment is parsed into an int, which cannot be a key of a string-keyed dictionary.
+        var result = pathProvider.TryGetSubjectFromPath(rootRegistered, "Items[1]");
+
+        // Assert
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void WhenPropertyHoldsImmutableDictionaryAndIntermediateKeyIsAbsent_ThenPropertyPathResolvesToNull()
+    {
+        // Arrange
+        var context = CreateContext();
+        var item = new TestItem(context) { Value = "hello" };
+        var container = new TestBroadContainer(context) { Name = "Root" };
+        container.Items = new Dictionary<string, TestItem> { ["key1"] = item }.ToImmutableDictionary();
+        var pathProvider = DefaultPathProvider.Instance;
+        var rootRegistered = container.TryGetRegisteredSubject()!;
+
+        // Act
+        var result = pathProvider.TryGetPropertyFromPath(rootRegistered, "Items[absent].Value");
+
+        // Assert
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void WhenPropertyHoldsImmutableDictionaryAndKeyExists_ThenSubjectPathResolves()
+    {
+        // Arrange
+        var context = CreateContext();
+        var item = new TestItem(context) { Value = "hello" };
+        var container = new TestBroadContainer(context) { Name = "Root" };
+        container.Items = new Dictionary<string, TestItem> { ["key1"] = item }.ToImmutableDictionary();
+        var pathProvider = DefaultPathProvider.Instance;
+        var rootRegistered = container.TryGetRegisteredSubject()!;
+
+        // Act
+        var result = pathProvider.TryGetSubjectFromPath(rootRegistered, "Items[key1]");
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Same(item, result.Subject);
     }
 
     // --- TryGetPropertyFromPath ---

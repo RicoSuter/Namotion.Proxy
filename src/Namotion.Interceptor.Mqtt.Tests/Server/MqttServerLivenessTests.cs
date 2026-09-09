@@ -509,12 +509,17 @@ public partial class MqttServerLivenessTests
         finally
         {
             mapper.Release();
-            commitGate.Release();
 
+            // Drain the publish before releasing the commit gate. The gate is what holds the shutdown
+            // open, so releasing it first lets the broker send DISCONNECT and the QoS 1 publish the
+            // body left in flight never gets its PUBACK. The transport error that then surfaces here
+            // would replace the failure the body is already reporting.
             if (stalePublishTask is not null)
             {
                 await stalePublishTask.WaitAsync(TimeSpan.FromSeconds(10));
             }
+
+            commitGate.Release();
 
             if (admittedCallback is not null)
             {

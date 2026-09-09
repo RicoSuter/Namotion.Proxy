@@ -468,6 +468,99 @@ public class LifecycleInterceptorTests
         Assert.Contains(events, e => e.Contains("Car3") && e.Contains("attached"));
     }
 
+    [Fact]
+    public void WhenAssigningNullableImmutableArray_ThenSubjectsAreAttached()
+    {
+        // Arrange
+        var handler = new TestLifecycleHandler();
+        var context = InterceptorSubjectContext
+            .Create()
+            .WithLifecycle()
+            .WithService(() => handler)
+            .WithContextInheritance();
+
+        var holder = new NullableStructuralHolder(context);
+        var car1 = new Car { Name = "Car1" };
+        var car2 = new Car { Name = "Car2" };
+
+        // Act
+        holder.ImmutableCars = ImmutableArray.Create(car1, car2);
+
+        // Assert
+        var events = handler.GetEvents();
+        Assert.Contains(events, e => e.Contains("ImmutableCars[0] -> Car1") && e.Contains("attached"));
+        Assert.Contains(events, e => e.Contains("ImmutableCars[1] -> Car2") && e.Contains("attached"));
+    }
+
+    [Fact]
+    public void WhenAssigningNullableReadOnlyStructCollection_ThenSubjectsAreAttached()
+    {
+        // Arrange
+        var handler = new TestLifecycleHandler();
+        var context = InterceptorSubjectContext
+            .Create()
+            .WithLifecycle()
+            .WithService(() => handler)
+            .WithContextInheritance();
+
+        var holder = new NullableStructuralHolder(context);
+        var car = new Car { Name = "Car1" };
+
+        // Act
+        holder.BagCars = new CarBag(car);
+
+        // Assert
+        var events = handler.GetEvents();
+        Assert.Contains(events, e => e.Contains("BagCars[0] -> Car1") && e.Contains("attached"));
+    }
+
+    [Fact]
+    public void WhenAssigningNullableReadOnlyStructDictionary_ThenSubjectsAreAttachedUnderTheirKey()
+    {
+        // Arrange: the boxed value is only an IEnumerable of key value pairs, so the keyed dispatch
+        // arm has to come from the declared Nullable<CarMap> property type.
+        var handler = new TestLifecycleHandler();
+        var context = InterceptorSubjectContext
+            .Create()
+            .WithLifecycle()
+            .WithService(() => handler)
+            .WithContextInheritance();
+
+        var holder = new NullableStructuralHolder(context);
+        var car = new Car { Name = "Car1" };
+
+        // Act
+        holder.MappedCars = new CarMap(new Dictionary<string, Car> { ["first"] = car });
+
+        // Assert
+        var events = handler.GetEvents();
+        Assert.Contains(events, e => e.Contains("MappedCars[first] -> Car1") && e.Contains("attached"));
+    }
+
+    [Fact]
+    public void WhenClearingNullableStructuralProperty_ThenSubjectsAreDetached()
+    {
+        // Arrange
+        var handler = new TestLifecycleHandler();
+        var context = InterceptorSubjectContext
+            .Create()
+            .WithLifecycle()
+            .WithService(() => handler)
+            .WithContextInheritance();
+
+        var holder = new NullableStructuralHolder(context);
+        var car = new Car { Name = "Car1" };
+        holder.ImmutableCars = ImmutableArray.Create(car);
+        handler.Clear();
+
+        // Act
+        holder.ImmutableCars = null;
+
+        // Assert
+        var events = handler.GetEvents();
+        Assert.Contains(events, e => e.Contains("ImmutableCars[0] -> Car1") && e.Contains("detached"));
+    }
+
     public class AddPropertyToSubjectHandler : ILifecycleHandler
     {
         public void HandleLifecycleChange(SubjectLifecycleChange change)

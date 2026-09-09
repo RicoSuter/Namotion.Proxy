@@ -28,6 +28,20 @@ public class WebTestingHostFactory<TProgram> : WebApplicationFactory<TProgram>
         }
     }
 
+    /// <summary>
+    /// The services of the Kestrel host that serves the tests. This is a different container from
+    /// <see cref="WebApplicationFactory{TProgram}.Services"/>, which belongs to the TestServer host
+    /// the base class requires and which no request ever reaches.
+    /// </summary>
+    public IServiceProvider ServerServices
+    {
+        get
+        {
+            EnsureServer();
+            return _kestrelHost!.Services;
+        }
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseUrls("http://127.0.0.1:0");
