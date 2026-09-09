@@ -122,9 +122,7 @@ public class RootManager : BackgroundService, IConfigurationWriter
         _logger?.LogInformation("Root loaded: {Type}", Root.GetType().FullName);
         _context.AddService(Root);
 
-        // Signalled here rather than by the caller once this returns, because the scope releases the
-        // deferred starts as it goes out of scope below. A hosted service that waits on RootLoaded
-        // inside its own StartAsync would otherwise be racing the caller's assignment.
+        // Publish readiness before scope disposal releases deferred starts.
         _rootLoaded.TrySetResult(Root);
 
         return Root;

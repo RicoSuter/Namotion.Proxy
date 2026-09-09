@@ -4,8 +4,7 @@ namespace Namotion.Interceptor.Hosting;
 /// Defers hosted-service starts captured in this scope until it and its enclosing scopes are disposed.
 /// </summary>
 /// <remarks>
-/// Disposal is the only release, so a <c>using</c> is the whole contract and an exception unwinding
-/// through it releases the captured starts like any other exit.
+/// Disposal releases captured starts even when configuration throws.
 /// Do not await a captured service's startup before disposing the scope.
 /// Scopes must be disposed in reverse creation order in the creating execution flow.
 /// </remarks>
@@ -28,10 +27,7 @@ public sealed class HostedServiceStartupScope : IDisposable
     /// </summary>
     public void Dispose()
     {
-        // Ahead of the disposed check, so a scope already released from another execution flow is
-        // still cleared from the flow that created it. Skipping it there would pin that flow's
-        // current scope to a disposed one for good, and every later attach on it would take the
-        // deferred path for a scope nobody can release again.
+        // Restore this flow's parent even if another flow already disposed the scope.
         if (ReferenceEquals(_current.Value, this))
         {
             _current.Value = _parent;

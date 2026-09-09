@@ -152,9 +152,7 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
 
             foreach (var action in pending)
             {
-                // Cancelled for starts, which must not begin during shutdown. A stop reads the same
-                // token as "shut down without waiting" and still runs, since the service it stops
-                // has already left _hostedServices and StopAsync above therefore skipped it.
+                // Cancel starts, but still stop detached services omitted from the shutdown snapshot.
                 await action.Execute(new CancellationToken(true));
             }
         }
@@ -182,19 +180,13 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
             IHostedService[] started;
             lock (_hostedServices)
             {
-                // Every attached service, including one whose deferred start never ran: shutdown is
-                // the last owner of the stop, and skipping those would orphan a service that a
-                // detach arriving during shutdown has already been refused
-                // (WhenShutdownCancellationDetachesADeferredService_ThenShutdownStillStopsIt).
-                // Telling the two apart needs a record of which starts actually ran, which this
-                // handler does not keep.
+                // Include deferred services: shutdown owns their cleanup once detach is refused.
                 started = _hostedServices.ToArray();
 
                 _hostedServices.Clear();
             }
 
-            // Materialized outside the lock: an async lambda runs up to its first await inline, so
-            // building the tasks under the lock would enter every StopAsync while holding it.
+            // Async methods run synchronously until their first await; invoke them outside the lock.
             await Task.WhenAll(started.Select(async hostedService =>
             {
                 try
@@ -281,8 +273,7 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
     internal async Task AttachHostedServiceAsync(
         IHostedService hostedService, IInterceptorSubjectContext context, CancellationToken cancellationToken)
     {
-        // Continuations run off the completing thread: the action loop completes this, and a caller
-        // that resumes inline would otherwise run its own work on the loop's only thread.
+        // Inline caller continuations could block the action loop.
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_hostedServices)
         {
@@ -375,9 +366,7 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
                 {
                     lock (_hostedServices)
                     {
-                        // Under the lock, so a detach cannot be holding this source while it is
-                        // cancelled and disposed here: it takes the entry out under the same lock,
-                        // and whichever of the two removes it owns the rest of its lifetime.
+                        // Serialize disposal with detach cancellation and startup admission.
                         RemoveDeferredStart(hostedService, cancellation);
                         cancellation.Cancel();
                         cancellation.Dispose();
@@ -408,15 +397,7 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
         }));
     }
 
-    /// <summary>
-    /// Drops the deferred-start entry for <paramref name="hostedService"/>, if it is still the one
-    /// <paramref name="cancellation"/> belongs to. Callers must hold the lock on
-    /// <see cref="_hostedServices"/>.
-    /// </summary>
-    /// <remarks>
-    /// A detach and re-attach in between installs a newer source for the same service, and dropping
-    /// that one would leave the newer start with nothing left to cancel it.
-    /// </remarks>
+    // Caller holds _hostedServices. Preserve any newer start installed by a detach and reattach.
     private void RemoveDeferredStart(IHostedService hostedService, CancellationTokenSource cancellation)
     {
         if (_deferredStarts.TryGetValue(hostedService, out var current) && ReferenceEquals(current, cancellation))
@@ -442,10 +423,7 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
         {
             try
             {
-                // A grace period inherited from the start path, which no longer has one; nothing is
-                // known to depend on it here. Suppressing the cancellation rather than throwing is
-                // what lets shutdown's drain reach the stop below: the service has already left
-                // _hostedServices, so nothing else stops it.
+                // Cancellation skips the legacy delay, but must still reach the detached service's stop.
                 await Task.Delay(50, token).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
                 _logger?.LogInformation("Stopping detached hosted service {Service}.", hostedService.ToString());

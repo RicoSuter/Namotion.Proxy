@@ -152,11 +152,11 @@ using (context.DeferHostedServiceStartup())
 }
 ```
 
-The scope follows the current execution flow for that context. Starts wait until the scope and all enclosing scopes are disposed, so the `using` is the whole contract. An exception unwinding through it releases the captured starts like any other exit: the scope decides when a start runs, not whether the subject is fit to run, so a subject whose configuration threw still starts and reports its own failure. The extension returns null when hosted services are not configured. Do not await an attaching service's startup inside its open scope, since that startup is waiting for scope disposal.
+The scope follows the current execution flow for that context. Captured starts wait until it and all enclosing scopes are disposed, including when configuration throws. Services and consumers remain responsible for configuration validity. The extension returns null when hosted services are not configured. Do not await a captured service's startup inside its open scope.
 
-Scopes should be disposed in reverse creation order in the execution flow that created them. Nothing enforces it: disposal out of order, from another flow, or more than once releases the scope's own starts and is otherwise ignored, so a misuse is silent rather than loud. A scope that is never disposed at all holds the starts it captured for the lifetime of the host.
+Dispose scopes in reverse creation order in the creating flow. Incorrect or repeated disposal does not throw, but ambient-scope cleanup is not guaranteed for misuse. An undisposed scope holds captured starts until host shutdown.
 
-`AddHostedSubject<T>()` holds a scope through its configuration callback. HomeBlaze deserialization uses this scope while populating configuration. Root loading holds an enclosing scope until the root is published, attached, registered as a context service and signalled through `RootLoaded`, so a service that waits on that task inside its own `StartAsync` is not racing it.
+`AddHostedSubject<T>()` defers startup through its configuration callback. HomeBlaze deserialization defers it through configuration population; root loading also waits until the root is published, attached, registered as a context service and signalled through `RootLoaded`.
 
 ## Deferred Starts and Startup Completion
 

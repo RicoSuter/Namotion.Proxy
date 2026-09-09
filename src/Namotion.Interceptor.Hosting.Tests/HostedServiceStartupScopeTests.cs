@@ -303,7 +303,7 @@ public class HostedServiceStartupScopeTests
     [InlineData("OutOfOrder")]
     [InlineData("OtherFlow")]
     [InlineData("Twice")]
-    public async Task WhenAScopeIsDisposedIrregularly_ThenItStillReleasesAndLeavesNoScopeBehind(string disposal)
+    public async Task WhenAScopeIsDisposedIrregularly_ThenCapturedAndLaterServicesCanStart(string disposal)
     {
         // Arrange
         await using var fixture = new Fixture();
@@ -329,7 +329,6 @@ public class HostedServiceStartupScopeTests
         Assert.Null(irregular);
         Assert.Equal("captured", await captured.Started.Task.WaitAsync(TimeSpan.FromSeconds(10)));
 
-        // The flow is usable afterwards rather than wedged behind a scope nobody can release again.
         var later = new ProbeService(() => "later");
         await subject.AttachHostedServiceAsync(later, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
     }
