@@ -161,6 +161,7 @@ For side-specific cleanup behavior, see [Client Lifecycle](connectors-opcua-clie
 The library includes optimizations:
 
 - Batched read/write operations respecting server limits
+- Batched breadth-first browse when loading the address space
 - Object pooling for change buffers
 - Fast data change callbacks bypassing caches
 - Buffered updates batching rapid changes
