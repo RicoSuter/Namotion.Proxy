@@ -140,9 +140,11 @@ await person.AttachHostedServiceAsync(
     cancellationToken);
 ```
 
-## Construction and Configuration
+## Configuration Before Startup
 
-A context-taking constructor can attach a hosted subject before its object initializer or deserializer has populated configuration. There is no timing delay that guarantees initialization completes first. Construct and populate a detached subject before attaching it, or use a startup scope. The scope keeps context-taking construction available while delaying captured service starts:
+A hosted subject that takes the context in its constructor is attached during construction, which queues its service start. Object initializers, property assignments and deserializers all run afterwards, so the service can start against a subject that is not configured yet.
+
+Either build the subject detached, configure it and attach it once it is ready, or keep the context-taking constructor and wrap the work in a startup scope:
 
 ```csharp
 using (context.DeferHostedServiceStartup())
@@ -152,11 +154,20 @@ using (context.DeferHostedServiceStartup())
 }
 ```
 
-The scope follows the current execution flow for that context. Captured starts wait until it and all enclosing scopes are disposed, including when configuration throws. Services and consumers remain responsible for configuration validity. The extension returns null when hosted services are not configured. Do not await a captured service's startup inside its open scope.
+Attaching still takes effect immediately: the subject joins the graph and is visible to the registry and to sources. Only the service start waits for the block to exit.
 
-Dispose scopes in reverse creation order in the creating flow. Incorrect or repeated disposal does not throw, but ambient-scope cleanup is not guaranteed for misuse. An undisposed scope holds captured starts until host shutdown.
+The contract:
 
-`AddHostedSubject<T>()` defers startup through its configuration callback. HomeBlaze deserialization defers it through configuration population; root loading also waits until the root is published, attached, registered as a context service and signalled through `RootLoaded`.
+- The scope applies to the current execution flow, including asynchronous work awaited inside the block. Attaches made from other flows keep starting immediately.
+- Leaving the block releases the captured starts, including when configuration throws. There is nothing to call on success and no way to report failure through the scope, so validating configuration stays with the service and its caller.
+- A captured start waits for its own scope and for every scope enclosing it.
+- Do not await a captured service's start inside its own block, because that start cannot run until the block exits.
+- Detaching a subject before the block exits cancels its pending start, so the service never runs.
+- A scope that is never disposed holds its starts until the host shuts down. There is no timeout.
+- Dispose scopes in reverse creation order, which nested `using` blocks do. Repeated or out-of-order disposal does not throw, but which attaches such a scope still covers is then undefined.
+- `DeferHostedServiceStartup()` returns null on a context without hosting support, and `using` accepts that.
+
+`AddHostedSubject<T>()` wraps construction and its `configure` callback in a scope, so subjects registered through dependency injection are configured before they start.
 
 ## Deferred Starts and Startup Completion
 
