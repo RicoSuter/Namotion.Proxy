@@ -56,5 +56,4 @@ public static class RegisteredSubjectMethodExtensions
             property.Type.IsAssignableFrom(typeof(MethodMetadata)) ||
             typeof(MethodMetadata).IsAssignableFrom(property.Type);
     }
-
 }

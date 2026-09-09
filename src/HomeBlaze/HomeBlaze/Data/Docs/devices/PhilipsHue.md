@@ -15,7 +15,7 @@ The Philips Hue integration connects to a Hue Bridge on the local network and ex
 |----------|------|---------|-------------|
 | `BridgeId` | string? | null | Bridge identifier from discovery |
 | `AppKey` | string? | null | Authentication key from Link button registration (secret) |
-| `PollingInterval` | TimeSpan | 500ms | UI polling interval for state updates |
+| `PollingInterval` | TimeSpan | 60s | Interval of the device set reconciliation poll |
 | `RetryInterval` | TimeSpan | 30s | Retry interval on connection failure |
 
 ### JSON Configuration
@@ -25,7 +25,7 @@ The Philips Hue integration connects to a Hue Bridge on the local network and ex
   "$type": "Namotion.Devices.Philips.Hue.HueBridge",
   "bridgeId": "MY_BRIDGE_ID",
   "appKey": "MY_APP_KEY",
-  "pollingInterval": "00:00:00.250",
+  "pollingInterval": "00:01:00",
   "retryInterval": "00:00:30"
 }
 ```
@@ -34,7 +34,7 @@ The Philips Hue integration connects to a Hue Bridge on the local network and ex
 
 ### Bridge Discovery
 
-When `BridgeId` and `AppKey` are configured, the bridge uses `HueBridgeDiscovery.FastDiscoveryWithNetworkScanFallbackAsync` to locate the bridge on the local network. It first tries mDNS/UPnP discovery (5-second timeout) and falls back to a network scan (30-second timeout).
+When `BridgeId` and `AppKey` are configured, the bridge tries each locator in turn until one reports the configured `BridgeId`: the Philips discovery endpoint, mDNS, SSDP (5-second budget each), then a local network scan (30-second budget). Each locator runs under its own timeout and a failure is kept local to it, so one locator being unavailable does not end the discovery. This matters in practice: the discovery endpoint answers 429 once it has been asked too often, and on macOS the mDNS locator can never bind port 5353 because the system resolver holds it.
 
 ### Link Button Registration
 
@@ -154,7 +154,7 @@ The Hue Bridge publishes real-time updates via Server-Sent Events (SSE). The `Hu
 
 ### Polling Cycle
 
-As a backup to the event stream, a full state refresh runs every 60 seconds. This catches any updates that may have been missed by the event stream (e.g., during brief disconnections).
+As a backup to the event stream, a full state refresh runs every 60 seconds. This catches any updates that may have been missed by the event stream (e.g., during brief disconnections). Its eleven resource requests are issued one at a time rather than concurrently, because the bridge rate limits a burst and answers the excess with a 429 and an HTML error page that the Hue SDK cannot parse.
 
 ## Resilience
 
@@ -164,7 +164,7 @@ The bridge runs in a reconnect loop inside `ExecuteAsync`:
 
 1. If `BridgeId` or `AppKey` is missing, the bridge enters an error state and waits for configuration changes via `IConfigurable.ApplyConfigurationAsync`
 2. On successful connection, it starts the event stream and polling loop in parallel
-3. If either task fails, the connection is torn down and retried after `RetryInterval`
+3. If the event stream fails, the connection is torn down and retried after `RetryInterval`. A failed poll is tolerated: the event stream carries the state changes and the poll only reconciles the device set, so the connection is kept until three consecutive polls fail
 4. Configuration changes (e.g., changing `BridgeId`) signal the bridge to restart the connection loop immediately
 
 ### Failure Modes and Recovery
@@ -174,7 +174,7 @@ The bridge runs in a reconnect loop inside `ExecuteAsync`:
 | Missing configuration       | Enters error state with message "Bridge not configured. Set BridgeId and AppKey." Waits for config change |
 | Bridge not found on network | Retries discovery every `RetryInterval` (default 30s)                                                     |
 | Event stream disconnect     | Connection teardown triggers reconnect loop                                                               |
-| API errors                  | Logged as warning, connection retried after `RetryInterval`                                               |
+| Poll errors                 | Logged as warning, connection kept; torn down and retried after three consecutive failures                |
 | Host shutdown               | Graceful stop via `CancellationToken`, status set to Stopped                                              |
 
 ## Known Limitations

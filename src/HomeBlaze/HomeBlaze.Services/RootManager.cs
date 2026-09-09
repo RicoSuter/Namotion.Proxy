@@ -19,24 +19,22 @@ public class RootManager : BackgroundService, IConfigurationWriter
     private readonly IInterceptorSubjectContext _context;
     private readonly IConfiguration? _configuration;
     private readonly ILogger<RootManager>? _logger;
+
+    // Continuations run off the loading thread so a UI waiter cannot resume inline inside the load.
+    private readonly TaskCompletionSource<IInterceptorSubject> _rootLoaded = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private string? _configurationPath;
 
     /// <summary>
     /// The root subject loaded from configuration.
     /// </summary>
-    /// <remarks>Available during attachment for path resolution. Await <see cref="LoadingCompleted"/> before browsing the graph.</remarks>
+    /// <remarks>Available during attachment for path resolution. Await <see cref="RootLoaded"/> before browsing the graph.</remarks>
     public IInterceptorSubject? Root { get; internal set; }
 
     /// <summary>
     /// Whether root loading, attachment and service registration completed successfully.
     /// </summary>
-    public bool IsLoaded => ExecuteTask?.IsCompletedSuccessfully == true;
-
-    /// <summary>
-    /// Completes after root loading, attachment and service registration finish, or reports the loading failure or cancellation.
-    /// </summary>
-    /// <exception cref="InvalidOperationException">The hosted service has not been started.</exception>
-    public Task LoadingCompleted => ExecuteTask ?? throw new InvalidOperationException("Root loading has not started.");
+    public bool IsLoaded => RootLoaded.IsCompletedSuccessfully;
 
     public RootManager(
         SubjectTypeRegistry typeRegistry,
@@ -71,16 +69,52 @@ public class RootManager : BackgroundService, IConfigurationWriter
         }
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    /// <summary>
+    /// Completes with the root subject after loading, attachment, service registration and deferred startup release.
+    /// Reports the loading failure or cancellation.
+    /// Assigning <see cref="Root"/> directly does not complete it.
+    /// </summary>
+    public Task<IInterceptorSubject> RootLoaded => _rootLoaded.Task;
+
+    /// <inheritdoc />
+    public override Task StartAsync(CancellationToken cancellationToken)
     {
-        await LoadAsync(stoppingToken);
+        var startup = base.StartAsync(cancellationToken);
+
+        // BackgroundService can cancel its queued work before ExecuteAsync runs, bypassing its catch.
+        _ = ExecuteTask!.ContinueWith(
+            _ => _rootLoaded.TrySetCanceled(cancellationToken),
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnCanceled | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+        return startup;
     }
 
-    private async Task LoadAsync(CancellationToken cancellationToken)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            _rootLoaded.TrySetResult(await LoadAsync(stoppingToken));
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Cancelled rather than faulted, so a waiting UI treats a normal shutdown as one.
+            _rootLoaded.TrySetCanceled(stoppingToken);
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _rootLoaded.TrySetException(exception);
+            throw;
+        }
+    }
+
+    private async Task<IInterceptorSubject> LoadAsync(CancellationToken cancellationToken)
     {
         if (Root != null)
         {
-            return;
+            return Root;
         }
 
         var configFileName = _configuration?["HomeBlaze:RootConfigFile"] ?? "root.json";
@@ -110,6 +144,7 @@ public class RootManager : BackgroundService, IConfigurationWriter
         _logger?.LogInformation("Root loaded: {Type}", Root.GetType().FullName);
         _context.AddService(Root);
         startup?.Complete();
+        return Root;
     }
 
     /// <summary>

@@ -455,7 +455,27 @@ public class SubjectRegistryTests
         Assert.Equal(0, second.TryGetRegisteredSubject()!.Parents[0].Index);
         Assert.Equal(1, first.TryGetRegisteredSubject()!.Parents[0].Index);
     }
+
+    [Fact]
+    public void WhenReplacingAChildWithAnEqualInstance_ThenOnlyTheReplacementRemainsRegistered()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithRegistry();
+        var first = new ValueEqualitySubject { Name = "same" };
+        var second = new ValueEqualitySubject { Name = "same" };
+        var parent = new ValueEqualitySubject(context) { Children = [first] };
+
+        // Act
+        parent.Children = [second];
+
+        // Assert
+        var registry = context.GetService<ISubjectRegistry>();
+        Assert.Null(registry.TryGetRegisteredSubject(first));
+        Assert.Same(second, registry.TryGetRegisteredSubject(second)!.Subject);
+        Assert.Same(second, Assert.Single(parent.TryGetRegisteredProperty(nameof(parent.Children))!.Children).Subject);
+    }
 }
+
 /// <summary>
 /// A subject whose <see cref="object.Equals(object?)"/> and <see cref="object.GetHashCode"/> compare by value,
 /// which is legal for a hand-written subject and must not merge distinct graph nodes.

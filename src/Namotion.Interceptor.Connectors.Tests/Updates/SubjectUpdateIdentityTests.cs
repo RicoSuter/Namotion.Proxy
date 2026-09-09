@@ -43,6 +43,37 @@ public class SubjectUpdateIdentityTests
         Assert.Equal(1, target.Children[0].Value);
         Assert.Equal(2, target.Children[1].Value);
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void WhenEqualSubjectsAreReplacedOrReordered_ThenPartialUpdatesPreserveTheirValues(bool reorder)
+    {
+        // Arrange
+        var first = new ValueEqualWireSubject { EqualityKey = "child", Value = 1 };
+        var second = new ValueEqualWireSubject { EqualityKey = "child", Value = 2 };
+        var source = new ValueEqualWireSubject(InterceptorSubjectContext.Create().WithRegistry())
+        {
+            EqualityKey = "root",
+            Children = reorder ? [first, second] : [first]
+        };
+        var target = new ValueEqualWireSubject(InterceptorSubjectContext.Create().WithRegistry());
+        target.ApplySubjectUpdate(SubjectUpdate.CreateCompleteUpdate(source, []), DefaultSubjectFactory.Instance, ChangeOrigin.Local);
+        var previousChildren = source.Children;
+        source.Children = reorder ? [second, first] : [second];
+        SubjectPropertyChange[] changes =
+        [
+            SubjectPropertyChange.Create(new PropertyReference(source, nameof(ValueEqualWireSubject.Children)),
+                ChangeOrigin.Local, DateTimeOffset.UtcNow, null, previousChildren, source.Children)
+        ];
+
+        // Act
+        var update = SubjectUpdate.CreatePartialUpdateFromChanges(source, changes, []);
+        target.ApplySubjectUpdate(update, DefaultSubjectFactory.Instance, ChangeOrigin.Local);
+
+        // Assert
+        Assert.Equal(reorder ? [2, 1] : [2], target.Children.Select(child => child.Value));
+    }
 }
 
 [InterceptorSubject]

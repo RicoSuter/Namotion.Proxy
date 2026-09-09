@@ -32,7 +32,7 @@ public class RootManagerTests
             Assert.Same(manager.Root, fixture.Resolver.ResolveSubject("/", PathStyle.Canonical));
             Assert.Null(fixture.Registry.TryGetRegisteredSubject(manager.Root));
             Assert.False(manager.IsLoaded);
-            Assert.False(manager.LoadingCompleted.IsCompleted);
+            Assert.False(manager.RootLoaded.IsCompleted);
         }
         finally
         {
@@ -41,7 +41,7 @@ public class RootManagerTests
         }
 
         Assert.True(manager.IsLoaded);
-        await manager.LoadingCompleted.WaitAsync(TimeSpan.FromSeconds(10));
+        await manager.RootLoaded.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.NotNull(fixture.Registry.TryGetRegisteredSubject(manager.Root));
         Assert.Same(manager.Root, fixture.Context.GetService<TestSubject>());
     }
@@ -66,11 +66,11 @@ public class RootManagerTests
         Assert.NotNull(fixture.Manager.Root);
         Assert.False(fixture.Manager.IsLoaded);
         Assert.Same(failure, await Assert.ThrowsAsync<InvalidOperationException>(
-            () => fixture.Manager.LoadingCompleted.WaitAsync(TimeSpan.FromSeconds(10))));
+            () => fixture.Manager.RootLoaded.WaitAsync(TimeSpan.FromSeconds(10))));
     }
 
     [Fact]
-    public async Task WhenRootLoadingIsCanceled_ThenCompletionReportsCancellation()
+    public async Task WhenRootStartupIsAlreadyCanceled_ThenCompletionReportsCancellation()
     {
         // Arrange
         using var barrier = new AttachBarrier();
@@ -85,7 +85,8 @@ public class RootManagerTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => fixture.Manager.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(10)));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => fixture.Manager.LoadingCompleted.WaitAsync(TimeSpan.FromSeconds(10)));
+            () => fixture.Manager.RootLoaded.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.True(fixture.Manager.RootLoaded.IsCanceled);
         Assert.False(fixture.Manager.IsLoaded);
         Assert.Null(fixture.Manager.Root);
     }
@@ -128,12 +129,12 @@ public class RootManagerTests
             if (foreignContext)
             {
                 await Assert.ThrowsAsync<InvalidOperationException>(
-                    () => rootManager.LoadingCompleted.WaitAsync(TimeSpan.FromSeconds(10)));
+                    () => rootManager.RootLoaded.WaitAsync(TimeSpan.FromSeconds(10)));
                 Assert.False(rootManager.IsLoaded);
             }
             else
             {
-                await rootManager.LoadingCompleted.WaitAsync(TimeSpan.FromSeconds(10));
+                await rootManager.RootLoaded.WaitAsync(TimeSpan.FromSeconds(10));
                 Assert.True(rootManager.IsLoaded);
                 Assert.Equal(SubjectAttachmentAnchorKind.Explicit, rootManager.Root!.Executor.AttachmentAnchor);
             }

@@ -54,23 +54,11 @@
 
     private IJSObjectReference? _jsModule;
     private ISubjectRegistry? _subjectRegistry;
-    private readonly CancellationTokenSource _disposeCancellation = new();
 
     protected override void OnInitialized()
     {
         base.OnInitialized();
         NavigationManager.LocationChanged += OnLocationChanged;
-    }
-
-    protected override async Task OnInitializedAsync()
-    {
-        try
-        {
-            await RootManager.LoadingCompleted.WaitAsync(_disposeCancellation.Token);
-        }
-        catch (OperationCanceledException) when (_disposeCancellation.IsCancellationRequested)
-        {
-        }
     }
 
     protected override void OnParametersSet()
@@ -129,7 +117,7 @@
         _panes.Clear();
         _breadcrumbs.Clear();
 
-        if (_disposeCancellation.IsCancellationRequested || !RootManager.IsLoaded || Root == null) return;
+        if (Root == null) return;
 
         // Get registry from root's context
         _subjectRegistry = RootContext?.GetService<ISubjectRegistry>();
@@ -437,11 +425,6 @@
     public void Dispose()
     {
         NavigationManager.LocationChanged -= OnLocationChanged;
-        if (!_disposeCancellation.IsCancellationRequested)
-        {
-            _disposeCancellation.Cancel();
-            _disposeCancellation.Dispose();
-        }
     }
 
     public async ValueTask DisposeAsync()

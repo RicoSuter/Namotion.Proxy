@@ -43,10 +43,13 @@ public class BrowserStartupTests(PlaywrightFixture fixture, ITestOutputHelper ou
 
             // Act
             await page.GetByRole(AriaRole.Link, new() { Name = "Browser", Exact = true }).ClickAsync();
-            await Assertions.Expect(page.Locator("#scrollContainer")).ToBeVisibleAsync();
+            await Assertions.Expect(page.GetByText("Loading configuration...", new() { Exact = true })).ToBeVisibleAsync();
+            await Assertions.Expect(page.Locator("#scrollContainer")).ToHaveCountAsync(0);
             factory.ReleaseAttachments();
 
             // Assert
+            await Assertions.Expect(page.GetByText("Loading configuration...", new() { Exact = true })).ToHaveCountAsync(0);
+            await Assertions.Expect(page.Locator("#scrollContainer")).ToBeVisibleAsync();
             await Assertions.Expect(page.Locator("#scrollContainer strong:text-is('Status:')")).ToBeVisibleAsync(
                 new() { Timeout = 15000 });
             await Assertions.Expect(page.Locator("#scrollContainer a:has(strong:text-is('Status:'))"))
