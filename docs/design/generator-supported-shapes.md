@@ -271,7 +271,7 @@ This is why NI0005's remedy is re-listing the interface, and it is the same rule
 
 ## Known limitations of the diagnostics
 
-Most of these surface as a compile error. Two do not, and both are worth knowing: a base that satisfies every symbol check NI0011 performs can still be behaviourally wrong, described below; and in root mode a differently signatured helper captures the generated call with no diagnostic at all, as the NI0013 breaking change above records.
+Most of these surface as a compile error. Some do not, and are worth knowing individually: a base that satisfies every symbol check NI0011 performs can still be behaviourally wrong, described below; in root mode a differently signatured helper captures the generated call with no diagnostic at all, as the NI0013 breaking change above records; and two of NI0015's own limits below are the same shape, a real displacement that the ancestor scan does not see at all.
 
 **The `new` modifier lookup matches on name and parameter count, not parameter types.** A base exposing a same-name, same-arity overload with different parameter types draws a `new` that hides nothing, which is CS0109 and therefore a build error. Narrow, since it needs one of four unusual names, and loud when it happens. Making it exact means comparing parameter types in `HidableMembers`.
 
