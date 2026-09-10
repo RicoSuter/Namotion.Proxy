@@ -11,11 +11,11 @@ namespace Namotion.Interceptor.Tests.Context;
 /// exact shape of the walk and not only on the set it reaches.
 ///
 /// The reference below is a direct transcription of the recursive walk that the iterative one
-/// replaced: depth first, left to right, own services before the fallback contexts, distinct and
-/// reordered once per context, and a visited set that both cuts cycles and collapses a shared
-/// subgraph onto the path that reached it first. Randomized graphs are resolved with both and the
-/// two sequences are compared element by element, so a walk that reaches the same services in a
-/// different order fails here.
+/// replaced: depth first, left to right, own services before fallback contexts and the ownership
+/// route after them, distinct and reordered once per context, and a visited set that both cuts
+/// cycles and collapses a shared subgraph onto the path that reached it first. Randomized graphs
+/// are resolved with both and the two sequences are compared element by element, so a walk that
+/// reaches the same services in a different order fails here.
 /// </summary>
 public class ContextServiceWalkOrderTests
 {
@@ -81,9 +81,14 @@ public class ContextServiceWalkOrderTests
         // otherwise this test could pass by never producing one.
         Assert.True(coverage.DelegationChains > 0, "No graph contained a delegating context.");
         Assert.True(coverage.DelegationCycles > 0, "No graph contained a delegation cycle.");
-        Assert.True(coverage.FallbackCycles > 0, "No graph contained a fallback cycle.");
+        Assert.True(coverage.FallbackSources > 0, "No graph contained a fallback context.");
+        Assert.True(coverage.OwnershipRouteSources > 0, "No graph contained an ownership route.");
+        Assert.True(coverage.FallbackCycles > 0, "No graph contained a fallback-only relationship cycle.");
+        Assert.True(coverage.OwnershipRouteCycles > 0, "No graph contained an ownership-route-only relationship cycle.");
+        Assert.True(coverage.MixedRelationshipCycles > 0, "No graph contained a mixed relationship cycle.");
         Assert.True(coverage.MultiFallbackNodes > 0, "No graph contained a context with several fallback contexts.");
-        Assert.True(coverage.SharedNodes > 0, "No graph contained a context reachable over more than one path.");
+        Assert.True(coverage.FallbackSharedNodes > 0, "No shared node had a fallback-context source.");
+        Assert.True(coverage.OwnershipRouteSharedNodes > 0, "No shared node had an ownership-route source.");
         Assert.True(coverage.DuplicateServices > 0, "No graph contained a service instance registered twice.");
     }
 
@@ -128,6 +133,11 @@ public class ContextServiceWalkOrderTests
         foreach (var fallback in node.Fallbacks)
         {
             collected.AddRange(CollectWithReference(fallback, visited));
+        }
+
+        if (node.OwnershipRoute is not null)
+        {
+            collected.AddRange(CollectWithReference(node.OwnershipRoute, visited));
         }
 
         return ServiceOrderResolver
@@ -187,6 +197,20 @@ public class ContextServiceWalkOrderTests
             source.Context.AddFallbackContext(target.Context);
         }
 
+        var ownershipDomain = InterceptorSubjectContext.Create();
+        foreach (var source in nodes)
+        {
+            if (random.Next(2) == 0)
+            {
+                continue;
+            }
+
+            var target = nodes[random.Next(nodes.Length)];
+            source.OwnershipRoute = target;
+            var route = new InterceptorSubjectContext.ContextOwnershipRoute(target.Context, ownershipDomain);
+            Assert.True(source.Context.TryChangeOwnershipRoute(null, route));
+        }
+
         return nodes;
     }
 
@@ -210,9 +234,11 @@ public class ContextServiceWalkOrderTests
         builder.AppendLine($"Seed {seed}, graph {graphIndex}:");
         foreach (var node in nodes)
         {
+            var ownershipRoute = node.OwnershipRoute;
             builder.AppendLine(
                 $"  c{node.Index} services [{string.Join(", ", node.Services)}] " +
-                $"fallbacks [{string.Join(", ", node.Fallbacks.Select(fallback => $"c{fallback.Index}"))}]");
+                $"fallbacks [{string.Join(", ", node.Fallbacks.Select(fallback => $"c{fallback.Index}"))}] " +
+                $"route [{(ownershipRoute is null ? string.Empty : $"c{ownershipRoute.Index}")}]");
         }
 
         builder.AppendLine($"  expected: [{string.Join(", ", expected)}]");
@@ -224,15 +250,25 @@ public class ContextServiceWalkOrderTests
     {
         internal int DelegationChains;
         internal int DelegationCycles;
+        internal int FallbackSources;
+        internal int OwnershipRouteSources;
         internal int FallbackCycles;
+        internal int OwnershipRouteCycles;
+        internal int MixedRelationshipCycles;
         internal int MultiFallbackNodes;
-        internal int SharedNodes;
+        internal int FallbackSharedNodes;
+        internal int OwnershipRouteSharedNodes;
         internal int DuplicateServices;
 
         internal void Observe(Node[] nodes)
         {
             foreach (var node in nodes)
             {
+                if (node.Fallbacks.Count != 0)
+                {
+                    FallbackSources++;
+                }
+
                 if (node.DelegationTarget is not null)
                 {
                     DelegationChains++;
@@ -248,42 +284,84 @@ public class ContextServiceWalkOrderTests
                     DuplicateServices++;
                 }
 
-                if (nodes.Count(other => other.Fallbacks.Contains(node)) > 1)
+                if (node.OwnershipRoute is not null)
                 {
-                    SharedNodes++;
+                    OwnershipRouteSources++;
                 }
 
-                if (ReachesItself(node))
+                var fallbackSourceCount = nodes.Sum(other => other.Fallbacks.Count(target => ReferenceEquals(target, node)));
+                var ownershipRouteSourceCount = nodes.Count(other => ReferenceEquals(other.OwnershipRoute, node));
+                if (fallbackSourceCount + ownershipRouteSourceCount > 1)
                 {
-                    FallbackCycles++;
+                    if (fallbackSourceCount != 0)
+                    {
+                        FallbackSharedNodes++;
+                    }
+
+                    if (ownershipRouteSourceCount != 0)
+                    {
+                        OwnershipRouteSharedNodes++;
+                    }
                 }
+
+                ObserveCycleShapes(node, node, false, false, [node]);
             }
         }
 
-        private static bool ReachesItself(Node node)
+        private void ObserveCycleShapes(
+            Node start,
+            Node current,
+            bool hasFallback,
+            bool hasOwnershipRoute,
+            HashSet<Node> path)
         {
-            var visited = new HashSet<Node>();
-            var pending = new Stack<Node>(node.Fallbacks);
-            while (pending.Count != 0)
+            foreach (var fallback in current.Fallbacks)
             {
-                var current = pending.Pop();
-                if (current == node)
-                {
-                    return true;
-                }
-
-                if (!visited.Add(current))
-                {
-                    continue;
-                }
-
-                foreach (var fallback in current.Fallbacks)
-                {
-                    pending.Push(fallback);
-                }
+                ObserveCycleEdge(start, fallback, true, hasFallback, hasOwnershipRoute, path);
             }
 
-            return false;
+            if (current.OwnershipRoute is not null)
+            {
+                ObserveCycleEdge(start, current.OwnershipRoute, false, hasFallback, hasOwnershipRoute, path);
+            }
+        }
+
+        private void ObserveCycleEdge(
+            Node start,
+            Node target,
+            bool isFallback,
+            bool hasFallback,
+            bool hasOwnershipRoute,
+            HashSet<Node> path)
+        {
+            hasFallback |= isFallback;
+            hasOwnershipRoute |= !isFallback;
+
+            if (ReferenceEquals(target, start))
+            {
+                if (hasFallback && hasOwnershipRoute)
+                {
+                    MixedRelationshipCycles++;
+                }
+                else if (hasFallback)
+                {
+                    FallbackCycles++;
+                }
+                else
+                {
+                    OwnershipRouteCycles++;
+                }
+
+                return;
+            }
+
+            if (!path.Add(target))
+            {
+                return;
+            }
+
+            ObserveCycleShapes(start, target, hasFallback, hasOwnershipRoute, path);
+            path.Remove(target);
         }
     }
 
@@ -297,8 +375,33 @@ public class ContextServiceWalkOrderTests
 
         internal List<Node> Fallbacks { get; } = [];
 
+        internal Node? OwnershipRoute { get; set; }
+
         /// <summary>Mirrors <c>ContextState.DelegationTarget</c>.</summary>
-        internal Node? DelegationTarget => Services.Count == 0 && Fallbacks.Count == 1 ? Fallbacks[0] : null;
+        internal Node? DelegationTarget
+        {
+            get
+            {
+                if (Services.Count != 0)
+                {
+                    return null;
+                }
+
+                if (OwnershipRoute is null)
+                {
+                    return Fallbacks.Count == 1 ? Fallbacks[0] : null;
+                }
+
+                if (Fallbacks.Count == 0)
+                {
+                    return OwnershipRoute;
+                }
+
+                return Fallbacks.Count == 1 && ReferenceEquals(Fallbacks[0], OwnershipRoute)
+                    ? OwnershipRoute
+                    : null;
+            }
+        }
     }
 
     // The attributes never contradict each other, so no subset of these types can make the resolver

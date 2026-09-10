@@ -228,6 +228,36 @@ public class ContextDeepGraphTests
         Assert.NotSame(stateBefore, GetState(usingContext));
     }
 
+    [Fact]
+    public void WhenOwnershipRouteChainIsVeryDeep_ThenResolutionAndInvalidationRemainIterative()
+    {
+        // Arrange
+        var ownershipDomain = InterceptorSubjectContext.Create();
+        var rootContext = InterceptorSubjectContext.Create();
+        rootContext.AddService(new MarkerService());
+
+        var deepestContext = rootContext;
+        for (var index = 0; index < ChainLength; index++)
+        {
+            var context = InterceptorSubjectContext.Create();
+            var route = new InterceptorSubjectContext.ContextOwnershipRoute(deepestContext, ownershipDomain);
+            Assert.True(context.TryChangeOwnershipRoute(null, route));
+            deepestContext = context;
+        }
+
+        Assert.Single(deepestContext.GetServices<MarkerService>());
+
+        // Act
+        rootContext.AddService(new MarkerService());
+
+        // Assert
+        Assert.Equal(2, deepestContext.GetServices<MarkerService>().Length);
+        Assert.Null(GetThreadStaticBuffer("_delegationCyclePath"));
+        Assert.Null(GetThreadStaticBuffer("_delegationCycleVisited"));
+        Assert.Null(GetThreadStaticBuffer("_invalidationVisited"));
+        Assert.Null(GetThreadStaticBuffer("_invalidationPending"));
+    }
+
     private sealed class MarkerService;
 
     private sealed class OtherMarkerService;
