@@ -33,14 +33,19 @@ public class HostedServiceHandlerTests
         {
             var handler = context.TryGetService<HostedServiceHandler>()!;
             var container = new ValueEqualityContainer(context);
-            var first = new ValueEqualityHostedSubject();
-            var second = new ValueEqualityHostedSubject();
+            var first = new ValueEqualityHostedSubject { Name = "same" };
+            var second = new ValueEqualityHostedSubject { Name = "same" };
             container.First = first;
-            container.Second = second;
+            await first.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-            // Act - the two compare equal, so one shared liveness entry means this detach clears the
-            // liveness of a subject that is still in the graph, and its next start declines on it.
-            container.First = null;
+            // Act - the scope holds the second start until after the detach, which is the shape the
+            // symptom has: one shared liveness entry means detaching either subject clears the other's,
+            // and the start still waiting reads it and declines.
+            using (context.DeferHostedServiceStartup())
+            {
+                container.Second = second;
+                container.First = null;
+            }
 
             // Assert
             Assert.False(handler.IsLive(first));

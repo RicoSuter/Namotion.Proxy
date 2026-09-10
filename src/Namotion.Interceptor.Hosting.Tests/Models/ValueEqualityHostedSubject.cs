@@ -12,6 +12,8 @@ public partial class ValueEqualityHostedSubject : IHostedService
 {
     public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    public partial string? Name { get; set; }
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         Started.TrySetResult();
@@ -20,9 +22,11 @@ public partial class ValueEqualityHostedSubject : IHostedService
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-    public override bool Equals(object? obj) => obj is ValueEqualityHostedSubject;
+    public override bool Equals(object? obj) => obj is ValueEqualityHostedSubject other && other.Name == Name;
 
-    public override int GetHashCode() => 0;
+    // Hashes a mutable property, as the registry's own value equality model does, so an entry written
+    // before a rename lands in a bucket a later lookup would not probe unless the key is the reference.
+    public override int GetHashCode() => Name?.GetHashCode() ?? 0;
 }
 
 /// <summary>Holds two of them in separate properties, so one can leave while the other stays.</summary>
