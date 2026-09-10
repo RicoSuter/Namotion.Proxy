@@ -472,14 +472,6 @@ What the call site does is put a constraint on the implementer, and an implement
 
 `SourceMonitor`, the only implementation in this repository, follows it: its take is an `Interlocked.Increment` that acquires nothing, and its release takes the monitor's `_lock` in an order that type already fixes for itself, which its `DeferCompletion` remarks set out. What holds that order is that nothing under `_lock` ever waits on anything that needs `_attachedSubjects`: the graph walk in `IsBranchSynchronized` reads parent sets, and completing a wait uses `RunContinuationsAsynchronously`, so no continuation runs on the releasing thread.
 
-### Disposal from a handler transition
-
-The handler disposing what it created puts a constraint on connectors that nothing enforces and no test covers: it disposes from a transition that can run while a detach cascade still holds `_attachedSubjects`, so a connector's dispose path and that lock interleave.
-
-The concrete collision is `SourceOwnershipManager`. Both its `Dispose` and its `SubjectDetaching` handler take its own lock and invoke `onReleasing` from inside it, and the `SubjectDetaching` handler runs from inside `_attachedSubjects`. That fixes one lock order, `_attachedSubjects` then the manager's lock, and a dispose that runs from a handler transition takes the manager's lock without holding `_attachedSubjects`. The order reverses the moment anything on that dispose path enters `_attachedSubjects`, which is what an `onReleasing` callback that writes a subject typed property or attaches or detaches a subject does.
-
-The constraint that follows is stated in [the user documentation](../hosting.md#keep-the-dispose-path-out-of-the-lifecycle-lock). Note that `LifecycleInterceptor.WriteProperty` takes the lock only when the property type can contain subjects, which is why writing a scalar from a dispose path is harmless and writing a subject typed or collection typed property is not, and why attaching or detaching a subject enters the same lock without being a property write at all.
-
 ### 5. Awaiting a captured start, or its detach, inside its own startup scope
 
 The flow holds the scope open, the start is parked on it, and the flow waits for something ordered behind that start: the start itself, or a detach whose stop is appended to the same chain. Only that flow can dispose the scope, and it cannot get there.
@@ -487,6 +479,14 @@ The flow holds the scope open, the start is parked on it, and the flow waits for
 `host.StartAsync()` is the instance that does not look like one. A subject registered with `AddSubject<T>` has its start captured by the enclosing scope through the factory's own nested scope, `SubjectActivation<T>` waits for that start, and the host waits for the activation, so the scope is disposed only after the call it is blocking returns. Nothing bounds it unless the application sets `HostOptions.StartupTimeout`.
 
 Stated for consumers in [Configuration Before Startup](../hosting.md#configuration-before-startup), because every one of these waits is public API and none of them is guarded.
+
+### Disposal from a handler transition
+
+The handler disposing what it created puts a constraint on connectors that nothing enforces and no test covers: it disposes from a transition that can run while a detach cascade still holds `_attachedSubjects`, so a connector's dispose path and that lock interleave.
+
+The concrete collision is `SourceOwnershipManager`. Both its `Dispose` and its `SubjectDetaching` handler take its own lock and invoke `onReleasing` from inside it, and the `SubjectDetaching` handler runs from inside `_attachedSubjects`. That fixes one lock order, `_attachedSubjects` then the manager's lock, and a dispose that runs from a handler transition takes the manager's lock without holding `_attachedSubjects`. The order reverses the moment anything on that dispose path enters `_attachedSubjects`, which is what an `onReleasing` callback that writes a subject typed property or attaches or detaches a subject does.
+
+The constraint that follows is stated in [the user documentation](../hosting.md#keep-the-dispose-path-out-of-the-lifecycle-lock). Note that `LifecycleInterceptor.WriteProperty` takes the lock only when the property type can contain subjects, which is why writing a scalar from a dispose path is harmless and writing a subject typed or collection typed property is not, and why attaching or detaching a subject enters the same lock without being a property write at all.
 
 ## What Has No Test Behind It
 
