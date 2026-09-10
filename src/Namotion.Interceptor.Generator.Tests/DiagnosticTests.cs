@@ -980,4 +980,245 @@ namespace Repro
         // Assert
         Assert.Empty(generated.GeneratorDiagnostics);
     }
+
+    [Fact]
+    public void WhenSubjectHidesAnAncestorSubjectProperty_ThenNI0015IsReported()
+    {
+        // Arrange: two backing fields under one property name. Both are intercepted, writes through
+        // either raise a change under the same key, and the metadata can only read one of them.
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    [InterceptorSubject]
+    public partial class BaseSubject
+    {
+        public partial string Origin { get; set; }
+    }
+
+    [InterceptorSubject]
+    public partial class DerivedSubject : BaseSubject
+    {
+        public new partial string Origin { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+        Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
+    }
+
+    [Fact]
+    public void WhenSubjectExplicitlyImplementsAnAncestorSubjectPropertyName_ThenNI0015IsReported()
+    {
+        // Arrange: the explicit implementation lands in the highest precedence tier and would flip the
+        // ancestor's intercepted property to a non-intercepted interface read.
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    public interface IKind { string Kind { get; } }
+
+    [InterceptorSubject]
+    public partial class BaseSubject
+    {
+        public partial string Kind { get; set; }
+    }
+
+    [InterceptorSubject]
+    public partial class DerivedSubject : BaseSubject, IKind
+    {
+        string IKind.Kind => ""explicit"";
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+    }
+
+    [Fact]
+    public void WhenSubjectHidesAPlainBaseClassProperty_ThenNI0015IsNotReported()
+    {
+        // Arrange: a plain base contributes nothing to any DefaultProperties, so exactly one subject
+        // property exists and it is the derived one.
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    public class PlainBase { public string Origin => ""base""; }
+
+    [InterceptorSubject]
+    public partial class DerivedSubject : PlainBase
+    {
+        public new partial string Origin { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+    }
+
+    [Fact]
+    public void WhenSubjectOverridesAnAncestorSubjectProperty_ThenNI0015IsNotReported()
+    {
+        // Arrange: an override shares one slot and one backing field, so there is nothing to displace.
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    [InterceptorSubject]
+    public partial class BaseSubject
+    {
+        public virtual partial string Origin { get; set; }
+    }
+
+    [InterceptorSubject]
+    public partial class DerivedSubject : BaseSubject
+    {
+        public override partial string Origin { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+    }
+
+    [Fact]
+    public void WhenAPlainClassBetweenTwoSubjectsDeclaresTheName_ThenNI0005IsReportedAndNI0015IsNot()
+    {
+        // Arrange: the plain class contributes to no DefaultProperties, so the conflict belongs to the
+        // ancestor subject's adopted interface default and the remedy is re-listing the interface.
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    public interface IHasLevel { int Level => 0; }
+
+    [InterceptorSubject]
+    public partial class Machine : IHasLevel { }
+
+    public class Plain : Machine { public int Level => 1; }
+
+    [InterceptorSubject]
+    public partial class Pump : Plain
+    {
+        public new partial int Level { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0005");
+    }
+
+    [Fact]
+    public void WhenSubjectHidesAnAbstractAncestorSubjectPropertyOverriddenByAPlainClass_ThenNI0015IsReported()
+    {
+        // Arrange: Middle is a plain class, so it contributes nothing, but its sealed override leaves
+        // 'new' as the only declaration C# permits in Derived. This compiles with zero diagnostics
+        // while Base.DefaultProperties still exposes Origin, so the displacement is silent.
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    [InterceptorSubject]
+    public abstract partial class BaseSubject
+    {
+        public abstract string Origin { get; set; }
+    }
+
+    public abstract class Middle : BaseSubject
+    {
+        public sealed override string Origin { get; set; } = ""middle"";
+    }
+
+    [InterceptorSubject]
+    public partial class DerivedSubject : Middle
+    {
+        public new partial string Origin { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+    }
+
+    [Fact]
+    public void WhenADisplacingDeclarationAlsoMissesAnInterfaceSlot_ThenOnlyNI0015IsReported()
+    {
+        // Arrange: both rules match this one declaration, since the ancestor subject both exposes the
+        // name and holds the IOrigin slot. Re-listing the interface, NI0005's remedy, would leave the
+        // displacement in place, so NI0015 stands alone.
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    public interface IOrigin { string Origin { get; } }
+
+    [InterceptorSubject]
+    public partial class BaseSubject : IOrigin
+    {
+        public partial string Origin { get; set; }
+    }
+
+    [InterceptorSubject]
+    public partial class DerivedSubject : BaseSubject
+    {
+        public new partial string Origin { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0005");
+    }
+
+    [Fact]
+    public void WhenSubjectDeclaresANameAnAncestorOnlyAdoptedFromAnInterface_ThenNI0015IsNotReported()
+    {
+        // Arrange: the ancestor merely adopts the interface default, so it declares no member of that
+        // name and there is nothing to displace. This is the shape the precedence feature exists for.
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    public interface IHasLevel { int Level => 0; }
+
+    [InterceptorSubject]
+    public partial class Machine : IHasLevel { }
+
+    [InterceptorSubject]
+    public partial class Pump : Machine, IHasLevel
+    {
+        public partial int Level { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+    }
 }

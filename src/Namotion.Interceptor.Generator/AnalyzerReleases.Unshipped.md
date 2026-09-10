@@ -19,3 +19,4 @@ NI0011 | Namotion.Interceptor | Error | Base class does not satisfy the subject 
 NI0012 | Namotion.Interceptor | Warning | Base class interception members cannot be shared
 NI0013 | Namotion.Interceptor | Error | Member hides an inherited generated member
 NI0014 | Namotion.Interceptor | Error | Member hijacks an inherited interface implementation
+NI0015 | Namotion.Interceptor | Error | Property displaces a property an ancestor subject already exposes

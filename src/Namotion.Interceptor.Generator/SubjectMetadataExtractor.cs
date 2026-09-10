@@ -118,7 +118,13 @@ internal static class SubjectMetadataExtractor
             location,
             diagnostics);
 
-        ReportPropertiesShadowingABaseImplementation(typeSymbol, classProperties, location, diagnostics);
+        // NI0015 runs first and its names are handed to NI0005, which stands down on them. The two
+        // rules are not mutually exclusive and both can match one declaration.
+        var displacedNames = ReportPropertiesDisplacingAnAncestorSubject(
+            typeSymbol, classProperties, location, diagnostics);
+
+        ReportPropertiesShadowingABaseImplementation(
+            typeSymbol, classProperties, displacedNames, location, diagnostics);
 
         // Collect interface properties with default implementations
         var interfaceProperties = ExtractInterfaceDefaultProperties(
@@ -711,6 +717,64 @@ internal static class SubjectMetadataExtractor
     }
 
     /// <summary>
+    /// A declaration in the subject's own class that displaces a property an ancestor subject already
+    /// contributes to its DefaultProperties. Reported by effect rather than by the 'new' keyword,
+    /// because omitting the keyword is only CS0108 and the displacement is identical either way.
+    /// </summary>
+    /// <remarks>
+    /// Restricted to ancestors carrying [InterceptorSubject]. A hand-written base satisfying the base
+    /// contract has a DefaultProperties whose contents no symbol query can reveal, so it is left alone
+    /// rather than guessed at, and a plain class contributes nothing at all.
+    /// </remarks>
+    private static HashSet<string> ReportPropertiesDisplacingAnAncestorSubject(
+        INamedTypeSymbol typeSymbol,
+        IReadOnlyList<PropertyMetadata> classProperties,
+        Location location,
+        List<Diagnostic> diagnostics)
+    {
+        var reported = new HashSet<string>();
+
+        var subjectAncestors = SymbolExtensions
+            .EnumerateChain(typeSymbol.BaseType)
+            .Where(SubjectAncestry.HasInterceptorSubjectAttribute)
+            .ToList();
+
+        if (subjectAncestors.Count == 0)
+        {
+            return reported;
+        }
+
+        foreach (var property in classProperties)
+        {
+            // An override shares the slot and the backing field it already had, so it displaces
+            // nothing. An explicit implementation is deliberately NOT skipped here: it lands in the
+            // highest precedence tier and would flip an ancestor's intercepted property to a
+            // non-intercepted interface read.
+            if (property.IsOverride)
+            {
+                continue;
+            }
+
+            // Abstract ancestor properties are deliberately NOT filtered out. They reach
+            // DefaultProperties like any other, and a plain class between the two subjects can supply
+            // the override that makes a 'new' declaration below it both legal and silent.
+            var isDisplacing = subjectAncestors.Any(ancestor => ancestor
+                .GetMembers(property.Name)
+                .OfType<IPropertySymbol>()
+                .Any(candidate => !IsNeverASubjectProperty(candidate)));
+
+            if (isDisplacing && reported.Add(property.Name))
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    Diagnostics.DisplacesAncestorSubjectProperty, location,
+                    typeSymbol.Name, property.Name));
+            }
+        }
+
+        return reported;
+    }
+
+    /// <summary>
     /// Reports a class-declared property whose name matches an interface member that resolves to an
     /// implementation outside this type, so that reading through the interface and reading through
     /// the subject return different values.
@@ -724,6 +788,7 @@ internal static class SubjectMetadataExtractor
     private static void ReportPropertiesShadowingABaseImplementation(
         INamedTypeSymbol typeSymbol,
         IReadOnlyList<PropertyMetadata> classProperties,
+        HashSet<string> displacedNames,
         Location location,
         List<Diagnostic> diagnostics)
     {
@@ -736,8 +801,12 @@ internal static class SubjectMetadataExtractor
         foreach (var property in classProperties)
         {
             // An explicit implementation is by definition the implementation, and an override
-            // shares the slot of the base member it overrides.
-            if (property.ExplicitInterfaceTypeName is not null || property.IsOverride)
+            // shares the slot of the base member it overrides. A name NI0015 already reported keeps
+            // only that report: both rules can match one declaration, and re-listing the interface,
+            // this rule's remedy, would leave the displacement in place.
+            if (property.ExplicitInterfaceTypeName is not null ||
+                property.IsOverride ||
+                displacedNames.Contains(property.Name))
             {
                 continue;
             }

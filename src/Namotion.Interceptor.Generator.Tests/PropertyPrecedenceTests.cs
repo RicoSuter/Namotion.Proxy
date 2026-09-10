@@ -55,6 +55,27 @@ public partial class PrecedenceCalibratedGauge : PrecedenceGauge
     public override partial string Reading { get; set; }
 }
 
+public interface IPrecedenceKind
+{
+    string Kind { get; }
+}
+
+[InterceptorSubject]
+public partial class PrecedenceKindBase
+{
+    public partial string Kind { get; set; }
+}
+
+// Suppressed because the shape is NI0015: the explicit implementation displaces the base subject's
+// intercepted Kind. Kept as a model so the behaviour behind that error stays recorded.
+#pragma warning disable NI0015
+[InterceptorSubject]
+public partial class PrecedenceExplicitKind : PrecedenceKindBase, IPrecedenceKind
+{
+    string IPrecedenceKind.Kind => "explicit";
+}
+#pragma warning restore NI0015
+
 public class PropertyPrecedenceTests
 {
     [Fact]
@@ -132,5 +153,23 @@ public class PropertyPrecedenceTests
         Assert.Equal(typeof(PrecedenceCalibratedGauge), metadata.PropertyInfo?.DeclaringType);
         Assert.Contains(metadata.Attributes, attribute => attribute is PrecedenceMarkerAttribute);
         Assert.Contains(metadata.Attributes, attribute => attribute is DescriptionAttribute);
+    }
+
+    [Fact]
+    public void WhenAnExplicitImplementationDisplacesAnAncestorProperty_ThenTheInterfaceReadTakesTheKey()
+    {
+        // Arrange: the shape NI0015 rejects. Recorded here because the error's justification is this
+        // behaviour: the ancestor's intercepted property stays writable and becomes unreachable.
+        var subject = new PrecedenceExplicitKind();
+        subject.Kind = "intercepted";
+
+        // Act
+        var metadata = ((IInterceptorSubject)subject).Properties["Kind"];
+
+        // Assert
+        Assert.False(metadata.IsIntercepted);
+        Assert.Equal("explicit", metadata.GetValue?.Invoke(subject));
+        Assert.Null(metadata.SetValue);
+        Assert.Equal("intercepted", subject.Kind);
     }
 }

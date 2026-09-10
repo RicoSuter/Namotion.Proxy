@@ -163,4 +163,14 @@ internal static class Diagnostics
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
         description: "Hijacking Context leaves the inherited helpers reading a context that is never populated, so interception silently stops.");
+
+    public static readonly DiagnosticDescriptor DisplacesAncestorSubjectProperty = new(
+        id: "NI0015",
+        title: "Property displaces a property an ancestor subject already exposes",
+        // Two sentences, so RS1032 requires the trailing period.
+        messageFormat: "'{0}' declares '{1}', which displaces the property an ancestor subject already exposes under that name, leaving two members and one key. Make the ancestor property virtual and override it, or rename one of them.",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        description: "Subject properties are keyed by simple name, so only one of the two members is reachable through the metadata while both remain writable through a differently typed reference, and both raise changes under the same name.");
 }
