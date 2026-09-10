@@ -285,6 +285,11 @@ internal sealed class HostedServiceTarget
 
     private async Task RunAsync(Func<Task> body, HostedServiceHandler? handler)
     {
+        // A body inherits the execution context of the flow that appended it, startup scope included.
+        // A stop body does not wait for that scope, so an attach it makes would be captured by a scope
+        // belonging to a caller it has nothing to do with and park until that caller closes it.
+        handler?.ClearAmbientStartupScope();
+
         // Bodies never throw. A faulted tail would raise UnobservedTaskException for every dropped
         // fire and forget transition and would be retained until the target transitions again.
         try

@@ -16,8 +16,8 @@ internal sealed class HostedServiceHandler : IHostedService, ILifecycleHandler
     private const int TransitionDelayMilliseconds = 50;
 
     /// <summary>
-    /// How long the drain waits between reads of the in flight count. Once per process, on a path that
-    /// already spends <see cref="TransitionDelayMilliseconds"/> inside every stop it waits for.
+    /// How long the drain waits between reads of the in flight count. Once per process, and every stop
+    /// it waits for already spends <see cref="TransitionDelayMilliseconds"/> of its own.
     /// </summary>
     private const int DrainPollMilliseconds = 1;
 
@@ -31,13 +31,17 @@ internal sealed class HostedServiceHandler : IHostedService, ILifecycleHandler
     /// runs inside a property write with nothing to pass a scope through.
     /// </summary>
     /// <remarks>
-    /// Deliberately not reset inside a transition body: a body runs with the execution context of the
-    /// flow that appended it, so a nested attach reads the scope that flow opened, which is the one it
-    /// belongs to. A handler with a shared consumer loop would have had to reset it.
+    /// Cleared at the top of every transition body through <see cref="ClearAmbientStartupScope"/>, or a
+    /// stop body would capture the scope of the flow that appended it for anything it attaches.
     /// </remarks>
     private readonly AsyncLocal<HostedServiceStartupScope?> _startupScope = new();
 
     internal HostedServiceStartupScope DeferStartup() => new(_startupScope);
+
+    /// <summary>
+    /// Drops the ambient scope for the calling flow, which for a transition body is its own copy.
+    /// </summary>
+    internal void ClearAmbientStartupScope() => _startupScope.Value = null;
 
     /// <summary>
     /// Transitions this handler appended that have not finished. Read by the drain rather than

@@ -143,6 +143,30 @@ public class HostedServiceStartupScopeTests
         }
     }
 
+    [Fact]
+    public async Task WhenAStopPathAttachesAService_ThenAnUnrelatedOpenScopeDoesNotCaptureIt()
+    {
+        // Arrange
+        await using var fixture = new Fixture();
+        await fixture.Handler.StartAsync(CancellationToken.None);
+        var subject = new Person(fixture.Context);
+        var second = new ProbeService(() => "second");
+        var first = new ProbeService(() => "first", stopped: () => subject.AttachHostedService(() => second));
+        var attachment = await subject
+            .AttachHostedServiceAsync(() => first, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Act - the detach is not awaited, which is what this scope's own rules ask of a caller, so its
+        // stop body runs while the scope is still open and with the execution context of this flow.
+        using (fixture.Context.DeferHostedServiceStartup())
+        {
+            subject.DetachHostedService(attachment);
+
+            // Assert - what a stop path attaches belongs to no scope this caller opened.
+            Assert.Equal("second", await second.Started.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+        }
+    }
+
     private sealed class Fixture : IAsyncDisposable, IStartupCompletionDeferrer
     {
         private readonly ServiceProvider _provider;
