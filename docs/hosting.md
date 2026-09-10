@@ -299,9 +299,10 @@ using (context.DeferHostedServiceStartup())
 
 Attaching still takes effect immediately, so the subject joins the graph and is visible to the registry and to sources. Only the start waits for the block to exit, and leaving the block releases it even when configuration throws: the scope says when a subject is ready, never whether it is fit to run. Validating configuration stays with the service and its caller.
 
-Three rules have consequences:
+Four rules have consequences:
 
 - Do not await a captured service's start, or its detach, inside its own block. Both wait for that start, which cannot run until the block exits.
+- Do not start the host inside a block. `AddSubject<T>()` opens a scope of its own inside yours, so a subject registered that way waits for yours, and host startup waits for that subject. Set `HostOptions.StartupTimeout` if you want that to fail rather than hang.
 - A scope nobody disposes holds its starts until the host shuts down.
 - `DeferHostedServiceStartup()` returns null on a context without hosting support, and `using` accepts that.
 
