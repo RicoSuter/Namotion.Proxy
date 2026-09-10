@@ -24,6 +24,36 @@ public class HostedServiceHandlerTests
     private static readonly TimeSpan WedgedShutdownTimeout = TimeSpan.FromSeconds(2);
 
     [Fact]
+    public async Task WhenTwoValueEqualSubjectsAreHosted_ThenDetachingOneLeavesTheOtherLive()
+    {
+        // Arrange
+        var (host, context) = await HostingTestHost.StartAsync();
+
+        try
+        {
+            var handler = context.TryGetService<HostedServiceHandler>()!;
+            var container = new ValueEqualityContainer(context);
+            var first = new ValueEqualityHostedSubject();
+            var second = new ValueEqualityHostedSubject();
+            container.First = first;
+            container.Second = second;
+
+            // Act - the two compare equal, so one shared liveness entry means this detach clears the
+            // liveness of a subject that is still in the graph, and its next start declines on it.
+            container.First = null;
+
+            // Assert
+            Assert.False(handler.IsLive(first));
+            Assert.True(handler.IsLive(second));
+            await second.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
+    [Fact]
     public async Task WhenSubjectImplementsIHostedService_ThenItIsStartedAndStopped()
     {
         // Arrange

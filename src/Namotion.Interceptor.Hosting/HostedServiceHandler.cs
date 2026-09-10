@@ -23,7 +23,11 @@ internal sealed class HostedServiceHandler : IHostedService, ILifecycleHandler
 
     private readonly HostedServiceGate _gate = new();
     private readonly ConcurrentDictionary<HostedServiceTarget, IInterceptorSubject> _owned = new();
-    private readonly ConcurrentDictionary<IInterceptorSubject, byte> _liveSubjects = new();
+    // Reference equality, as everywhere else a subject is a key: a hand written subject may compare by
+    // value, and two of those sharing one entry means detaching either one clears the other's liveness
+    // while it is still in the graph, which its next start reads and declines on.
+    private readonly ConcurrentDictionary<IInterceptorSubject, byte> _liveSubjects =
+        new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
     /// The startup scope open in the flow that appends a start, or null. Ambient because the flow that
@@ -753,7 +757,7 @@ internal sealed class HostedServiceHandler : IHostedService, ILifecycleHandler
 
             // Recorded only for an accepted append. A refused one has no body and therefore no finally,
             // so an attachment stop handed this signal would park on it for the whole shutdown deadline.
-            (subjectStops ??= new Dictionary<IInterceptorSubject, TaskCompletionSource>())[subject] = subjectStopped;
+            (subjectStops ??= new Dictionary<IInterceptorSubject, TaskCompletionSource>(ReferenceEqualityComparer.Instance))[subject] = subjectStopped;
         }
 
         foreach (var (target, subject) in snapshot)
