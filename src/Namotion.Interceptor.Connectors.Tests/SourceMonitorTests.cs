@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Namotion.Interceptor.Connectors.Diagnostics;
 using Namotion.Interceptor.Connectors.Monitoring;
 using Namotion.Interceptor.Connectors.Tests.Models;
 using Namotion.Interceptor.Testing;
@@ -302,11 +303,24 @@ public class SourceMonitorTests
         reachedStateRead.Reset();
         releaseStateRead.Reset();
 
-        var actTask = Task.Run(() => act(monitor, source));
+        // Both race participants park on locks and gates, so they run on dedicated threads rather than
+        // the pool: the full assembly runs its collections in parallel, and a queued work item can then
+        // wait seconds before it is ever scheduled. That starvation is what makes the State read time out
+        // below, and it also lets the blocked-Subscribe assertion pass for the wrong reason, since a
+        // Subscribe that was never scheduled has not completed either.
+        var actTask = DedicatedThreadTestHelpers.RunOnDedicatedThreadAsync(() => act(monitor, source));
         Assert.True(reachedStateRead.Wait(TimeSpan.FromSeconds(10)),
             "The racing action should have reached the State read before the timeout.");
 
-        var subscribeTask = Task.Run(() => monitor.Subscribe(sourceEvent => received.Enqueue(sourceEvent)));
+        var subscribeEntered = new ManualResetEventSlim(false);
+        var subscribeTask = DedicatedThreadTestHelpers.RunOnDedicatedThreadAsync(() =>
+        {
+            subscribeEntered.Set();
+            return monitor.Subscribe(sourceEvent => received.Enqueue(sourceEvent));
+        });
+
+        Assert.True(subscribeEntered.Wait(TimeSpan.FromSeconds(10)),
+            "The racing Subscribe should have started before the timeout.");
 
         // Subscribe must be BLOCKED here, on the lock the paused action still holds. Asserted
         // directly rather than by catching a timeout as the pass path: under load that catch fires
@@ -395,7 +409,8 @@ public class SourceMonitorTests
         // Act - pause StartAsync exactly where it reads RootSubject to resolve which monitors to
         // register with, so Dispose can run to completion (transitioning to Stopped and finding
         // nothing yet in _registeredMonitors to unregister) before StartAsync ever registers.
-        var startTask = Task.Run(() => source.StartAsync(CancellationToken.None));
+        var startTask = DedicatedThreadTestHelpers.RunOnDedicatedThreadAsync(
+            () => source.StartAsync(CancellationToken.None));
         Assert.True(reachedRootRead.Wait(TimeSpan.FromSeconds(10)));
 
         source.Dispose();
@@ -431,12 +446,14 @@ public class SourceMonitorTests
             var source = new TestStateSource(new Person(context));
 
             using var bothReady = new Barrier(2);
-            var startTask = Task.Run(() =>
+            // A Barrier both sides must reach, so a participant the pool never schedules hangs the
+            // test outright rather than failing it.
+            var startTask = DedicatedThreadTestHelpers.RunOnDedicatedThreadAsync(() =>
             {
                 bothReady.SignalAndWait();
                 return source.StartAsync(CancellationToken.None);
             });
-            var disposeTask = Task.Run(() =>
+            var disposeTask = DedicatedThreadTestHelpers.RunOnDedicatedThreadAsync(() =>
             {
                 bothReady.SignalAndWait();
                 source.Dispose();
@@ -473,11 +490,11 @@ public class SourceMonitorTests
         // Act - Register attaches the StateChanged forwarder BEFORE it publishes SourceRegistered,
         // and is pinned here on the State read it performs to build that event, still holding the
         // monitor lock.
-        var register = Task.Run(() => monitor.Register(source));
+        var register = DedicatedThreadTestHelpers.RunOnDedicatedThreadAsync(() => monitor.Register(source));
         Assert.True(reachedStateRead.Wait(TimeSpan.FromSeconds(10)));
 
         using var transitionStarted = new ManualResetEventSlim(false);
-        var transition = Task.Run(() =>
+        var transition = DedicatedThreadTestHelpers.RunOnDedicatedThreadAsync(() =>
         {
             transitionStarted.Set();
             source.RaiseStateChanged(SourceState.Synchronizing, SourceState.Synchronized);
@@ -625,9 +642,13 @@ internal sealed class GatedStateRaisingSource : ISubjectSource
         }
     }
 
+    public DateTimeOffset StateChangeTime { get; } = DateTimeOffset.UtcNow;
+
     public DateTimeOffset? LastSynchronizedAt => null;
 
-    public int PendingWriteCount => 0;
+    public SourceDiagnostics Diagnostics { get; } = new(new SourceMetrics());
+
+    ConnectorDiagnostics ISubjectConnector.Diagnostics => Diagnostics;
 
     public event EventHandler<SourceEvent>? StateChanged;
 

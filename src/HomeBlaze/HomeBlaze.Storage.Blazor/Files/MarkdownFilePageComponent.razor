@@ -7,10 +7,14 @@
 @using HomeBlaze.Storage.Internal
 @using MudBlazor
 @using Namotion.Interceptor
+@using HomeBlaze.Services
+@using HomeBlaze.Components.Abstractions.TimeZones
 
 @attribute [SubjectComponent(SubjectComponentType.Page, typeof(MarkdownFile))]
 
 @implements ISubjectComponent
+@implements IDisposable
+@inject ITimeZoneDisplay TimeZone
 
 <CascadingValue Value="@IsEditing" Name="IsEditing">
     <div class="markdown-content" style="position: relative;">
@@ -22,7 +26,7 @@
         {
             <div class="markdown-page-toolbar" style="position: absolute; top: 0.5rem; right: 1rem; display: flex; gap: 0.5rem; align-items: center;">
                 <span style="font-size: 0.8rem; color: rgba(128,128,128,0.7);">
-                    @File?.LastModified.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+                    @(File is { } file ? TimeZone.ToZoned(new DateTimeOffset(file.LastModified, TimeSpan.Zero)).ToString("yyyy-MM-dd HH:mm:ss") : "")
                 </span>
             </div>
             @foreach (var segment in GetRenderSegments())
@@ -68,6 +72,19 @@
     private MarkdownFile? File => Subject as MarkdownFile;
 
     private bool IsLoading => File?.Content is null;
+
+    protected override void OnInitialized()
+    {
+        // The last-modified stamp is formatted through the display time zone, so re-render when it changes.
+        TimeZone.Changed += OnTimeZoneChanged;
+    }
+
+    private void OnTimeZoneChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        TimeZone.Changed -= OnTimeZoneChanged;
+    }
 
     private record RenderSegment(string? Html, IInterceptorSubject? Widget);
 

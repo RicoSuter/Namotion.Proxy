@@ -52,11 +52,13 @@ When health status transitions (e.g., Healthy→Degraded), the subject publishes
 
 Several patterns already exist that would implement this interface:
 
+Built-in connectors publish `IsOperational == true` only after their protocol-specific serving observation and `IsOperational == false` after a reported outage or once they stop. The value is `null` only while a connector runs before its first liveness observation; health mapping should treat that as unknown rather than as an explicit outage.
+
 | Subject | Current Health Reporting | Maps To |
 |---------|------------------------|---------|
-| OPC UA client | `OpcUaClientDiagnostics`: IsConnected, IsReconnecting, ConsecutiveFailures, LastError | Unhealthy when disconnected, Degraded when reconnecting or items failing |
-| OPC UA server | `OpcUaServerDiagnostics`: IsRunning, LastError, ConsecutiveFailures | Unhealthy when not running or consecutive failures |
-| MQTT client/server | Connection state, error tracking | Unhealthy when disconnected |
+| OPC UA client | `OpcUaClientDiagnostics`: IsOperational, OperationalChangeTime, IsReconnecting, Reconnects.TotalFailed, LastError | Unhealthy when `IsOperational == false`, Degraded when reconnecting or items failing, unknown when `IsOperational == null` |
+| OPC UA server | `OpcUaServerDiagnostics`: IsOperational, OperationalChangeTime, LastError, ConsecutiveFailures | Unhealthy when `IsOperational == false` or consecutive failures, unknown when `IsOperational == null` |
+| MQTT and WebSocket clients/servers | The same `ConnectorDiagnostics` base: IsOperational, OperationalChangeTime, LastError | Unhealthy when `IsOperational == false`, unknown when `IsOperational == null` |
 | Storage containers | `StorageStatus` enum (Connected/Disconnected/Error) | Maps directly to health status |
 | Background services | `ServiceStatus` enum (Running/Error/Unavailable) | Maps directly to health status |
 | Network subjects | `IConnectionState.IsConnected` | Unhealthy when disconnected |
@@ -68,13 +70,13 @@ The Blazor UI provides a health page that:
 2. Subscribes to health changed events on the message bus for live updates
 3. Displays aggregated health status across the entire knowledge graph
 
-No special aggregator subject is needed — the page queries and subscribes directly. AI agents can do the same via MCP tools (query by interface type, subscribe to events).
+No special aggregator subject is needed; the page queries and subscribes directly. AI agents can do the same via MCP tools (query by interface type, subscribe to events).
 
 ## Health Subjects
 
-Each instance also exposes instance-level health as subjects in the knowledge graph — node role, property count, changes per second, uptime, last heartbeat. These are separate from per-subject health checks; they describe the health of the platform itself rather than individual subjects.
+Each instance also exposes instance-level health as subjects in the knowledge graph: node role, property count, changes per second, uptime, last heartbeat. These are separate from per-subject health checks; they describe the health of the platform itself rather than individual subjects.
 
-AI agents can monitor both levels using the standard MCP tools — no separate monitoring integration needed. Operators see health information in the Blazor UI alongside business subjects.
+AI agents can monitor both levels using the standard MCP tools; no separate monitoring integration is needed. Operators see health information in the Blazor UI alongside business subjects.
 
 ## Key Decisions
 
@@ -88,4 +90,4 @@ AI agents can monitor both levels using the standard MCP tools — no separate m
 
 - Which metrics and traces are essential for v1
 - Health subject schema standardization across instances
-- Alerting integration (separate from alarms — see [Alarms](alarms.md))
+- Alerting integration (separate from alarms; see [Alarms](alarms.md))

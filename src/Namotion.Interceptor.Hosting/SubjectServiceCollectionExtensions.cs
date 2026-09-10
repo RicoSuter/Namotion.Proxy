@@ -15,11 +15,9 @@ public static class SubjectServiceCollectionExtensions
     /// the context has hosting enabled, the context starts it.
     /// </summary>
     /// <remarks>
-    /// One instance per type; a second call throws. <paramref name="configure"/> runs before the attach
-    /// this method performs, so a subject whose first attach is that one is fully configured before
-    /// anything can start it. A generated context constructor has already attached the subject, so there
-    /// its assignments race the start, as they do for <c>new MySubject(context) { Name = "x" }</c>. The
-    /// three constructor shapes are compared in docs/hosting.md.
+    /// One instance per type; a second call throws. The subject is constructed and configured inside a
+    /// startup scope, so it is fully configured before anything can start it, whichever constructor
+    /// shape it has. The three shapes are compared in docs/hosting.md.
     /// </remarks>
     /// <typeparam name="T">The subject type.</typeparam>
     /// <param name="services">The service collection.</param>
@@ -52,6 +50,13 @@ public static class SubjectServiceCollectionExtensions
                 ? contextResolver(serviceProvider)
                 : serviceProvider.GetService<IInterceptorSubjectContext>();
 
+            // Held across construction as well as configuration, because a generated context
+            // constructor attaches the subject before this factory regains control. Taken from
+            // dependency injection when the resolver declined a context, since the constructor
+            // dependency injection resolves can still be given one.
+            using var startup = (context ?? serviceProvider.GetService<IInterceptorSubjectContext>())
+                ?.DeferHostedServiceStartup();
+
             // The factory is the decision, not a reflection query: reflection answers the looser question
             // of whether a constructor mentions the type, which can be true of one that cannot be called
             // with it.
@@ -59,9 +64,8 @@ public static class SubjectServiceCollectionExtensions
                 ? (T)contextFactory(serviceProvider, [context])
                 : ActivatorUtilities.CreateInstance<T>(serviceProvider);
 
-            // Before the attach, the only ordering this factory controls: for a shape whose first attach
-            // is the one below, configuring after it would let a handler start the subject half
-            // configured. The start delay is a mitigation, not a synchronisation.
+            // Ahead of the attach below as well as inside the scope, so the shape whose first attach is
+            // that one is configured without depending on the scope at all.
             configure?.Invoke(instance);
 
             // Also for the shape that takes the context and ignores it, which is otherwise unattached.

@@ -21,6 +21,11 @@ internal sealed class MqttConnectionMonitor : IAsyncDisposable
     private readonly Func<CancellationToken, Task> _onReconnected;
     private readonly Func<Task> _onDisconnected;
 
+    // Nothing outside this monitor reports its failures, but a stop tears the channel down with an
+    // MqttCommunicationException wrapping the cancellation rather than the cancellation itself, so
+    // only the token tells a shutdown apart from a genuine fault.
+    private readonly Action<Exception> _onError;
+
     private readonly SemaphoreSlim _reconnectSignal = new(0, 1);
     private readonly CircuitBreaker? _circuitBreaker;
 
@@ -34,6 +39,7 @@ internal sealed class MqttConnectionMonitor : IAsyncDisposable
         Func<MqttClientOptions> optionsBuilder,
         Func<CancellationToken, Task> onReconnected,
         Func<Task> onDisconnected,
+        Action<Exception> onError,
         ILogger logger)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
@@ -42,6 +48,7 @@ internal sealed class MqttConnectionMonitor : IAsyncDisposable
         _optionsBuilder = optionsBuilder ?? throw new ArgumentNullException(nameof(optionsBuilder));
         _onReconnected = onReconnected ?? throw new ArgumentNullException(nameof(onReconnected));
         _onDisconnected = onDisconnected ?? throw new ArgumentNullException(nameof(onDisconnected));
+        _onError = onError ?? throw new ArgumentNullException(nameof(onError));
 
         // Initialize circuit breaker if enabled
         if (configuration.CircuitBreakerFailureThreshold > 0)
@@ -105,7 +112,6 @@ internal sealed class MqttConnectionMonitor : IAsyncDisposable
                     }
 
                     _logger.LogWarning("MQTT disconnect event received.");
-                    await _onDisconnected().ConfigureAwait(false);
                 }
                 else
                 {
@@ -119,6 +125,30 @@ internal sealed class MqttConnectionMonitor : IAsyncDisposable
                     }
 
                     _logger.LogWarning("MQTT health check failed.");
+                }
+
+                await _onDisconnected().ConfigureAwait(false);
+
+                // A failed ping is authoritative even when the client's cached IsConnected flag has
+                // not caught up. Terminate that unhealthy transport before attempting a reconnect.
+                if (_client.IsConnected)
+                {
+                    try
+                    {
+                        await _client.DisconnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        if (!cancellationToken.IsCancellationRequested)
+                        {
+                            _onError(exception);
+                            _logger.LogWarning(exception, "Failed to terminate the unhealthy MQTT transport.");
+                        }
+                    }
                 }
 
                 // Stall detection: Check if reconnection is hung
@@ -142,102 +172,104 @@ internal sealed class MqttConnectionMonitor : IAsyncDisposable
                     }
                 }
 
-                if (!_client.IsConnected)
+                if (Interlocked.Exchange(ref _isReconnecting, 1) == 1)
                 {
-                    if (Interlocked.Exchange(ref _isReconnecting, 1) == 1)
-                    {
-                        continue; // Already reconnecting
-                    }
+                    continue; // Already reconnecting
+                }
 
-                    try
+                try
+                {
+                    var reconnectDelay = _configuration.ReconnectDelay;
+                    while (!cancellationToken.IsCancellationRequested)
                     {
-                        var reconnectDelay = _configuration.ReconnectDelay;
-                        while (!cancellationToken.IsCancellationRequested)
+                        // Check circuit breaker
+                        if (_circuitBreaker is not null && !_circuitBreaker.ShouldAttempt())
                         {
-                            // Check circuit breaker
-                            if (_circuitBreaker is not null && !_circuitBreaker.ShouldAttempt())
+                            var cooldownRemaining = _circuitBreaker.GetCooldownRemaining();
+                            _logger.LogWarning(
+                                "Circuit breaker open after {TripCount} trips. Pausing reconnection attempts for {Cooldown}s.",
+                                _circuitBreaker.TripCount,
+                                (int)cooldownRemaining.TotalSeconds);
+
+                            // Wait for cooldown period (or until cancellation)
+                            await Task.Delay(cooldownRemaining, cancellationToken).ConfigureAwait(false);
+
+                            // Reset backoff after cooldown so the first retry is fast
+                            reconnectDelay = _configuration.ReconnectDelay;
+                            continue;
+                        }
+
+                        try
+                        {
+                            _logger.LogInformation("Attempting to reconnect to MQTT broker in {Delay}...", reconnectDelay);
+                            await Task.Delay(reconnectDelay, cancellationToken).ConfigureAwait(false);
+
+                            var options = _optionsBuilder();
+                            await _client.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
+
+                            _logger.LogInformation("Reconnected to MQTT broker successfully.");
+                            await _onReconnected(cancellationToken).ConfigureAwait(false);
+
+                            // Success - close circuit breaker and reset counters
+                            _circuitBreaker?.RecordSuccess();
+                            Interlocked.Exchange(ref _reconnectingIterations, 0);
+
+                            // Drain any stale disconnect signals accumulated during reconnection
+                            // to prevent false StartBuffering on the next monitoring iteration
+                            try { _reconnectSignal.Wait(0); }
+                            catch (ObjectDisposedException) { }
+
+                            break;
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            _logger.LogInformation("Reconnection cancelled due to shutdown.");
+                            break;
+                        }
+                        catch (Exception ex)
+                        {
+                            if (!cancellationToken.IsCancellationRequested)
                             {
-                                var cooldownRemaining = _circuitBreaker.GetCooldownRemaining();
+                                _onError(ex);
+                            }
+
+                            var isTransient = MqttExceptionClassifier.IsTransient(ex);
+                            var description = MqttExceptionClassifier.GetFailureDescription(ex);
+
+                            if (isTransient)
+                            {
+                                _logger.LogError(ex,
+                                    "Failed to reconnect to MQTT broker: {Description}.",
+                                    description);
+                            }
+                            else
+                            {
+                                _logger.LogError(ex,
+                                    "Permanent connection failure detected: {Description}. " +
+                                    "Reconnection will be retried, but this likely requires configuration changes.",
+                                    description);
+                            }
+
+                            // Record failure in circuit breaker
+                            if (_circuitBreaker is not null && _circuitBreaker.RecordFailure())
+                            {
                                 _logger.LogWarning(
-                                    "Circuit breaker open after {TripCount} trips. Pausing reconnection attempts for {Cooldown}s.",
-                                    _circuitBreaker.TripCount,
-                                    (int)cooldownRemaining.TotalSeconds);
-
-                                // Wait for cooldown period (or until cancellation)
-                                await Task.Delay(cooldownRemaining, cancellationToken).ConfigureAwait(false);
-
-                                // Reset backoff after cooldown so the first retry is fast
-                                reconnectDelay = _configuration.ReconnectDelay;
-                                continue;
+                                    "Circuit breaker tripped after {Threshold} consecutive failures. " +
+                                    "Pausing reconnection attempts for {Cooldown}s.",
+                                    _configuration.CircuitBreakerFailureThreshold,
+                                    (int)_configuration.CircuitBreakerCooldown.TotalSeconds);
                             }
 
-                            try
-                            {
-                                _logger.LogInformation("Attempting to reconnect to MQTT broker in {Delay}...", reconnectDelay);
-                                await Task.Delay(reconnectDelay, cancellationToken).ConfigureAwait(false);
-
-                                var options = _optionsBuilder();
-                                await _client.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
-
-                                _logger.LogInformation("Reconnected to MQTT broker successfully.");
-                                await _onReconnected(cancellationToken).ConfigureAwait(false);
-
-                                // Success - close circuit breaker and reset counters
-                                _circuitBreaker?.RecordSuccess();
-                                Interlocked.Exchange(ref _reconnectingIterations, 0);
-
-                                // Drain any stale disconnect signals accumulated during reconnection
-                                // to prevent false StartBuffering on the next monitoring iteration
-                                try { _reconnectSignal.Wait(0); }
-                                catch (ObjectDisposedException) { }
-
-                                break;
-                            }
-                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                            {
-                                _logger.LogInformation("Reconnection cancelled due to shutdown.");
-                                break;
-                            }
-                            catch (Exception ex)
-                            {
-                                var isTransient = MqttExceptionClassifier.IsTransient(ex);
-                                var description = MqttExceptionClassifier.GetFailureDescription(ex);
-
-                                if (isTransient)
-                                {
-                                    _logger.LogError(ex,
-                                        "Failed to reconnect to MQTT broker: {Description}.",
-                                        description);
-                                }
-                                else
-                                {
-                                    _logger.LogError(ex,
-                                        "Permanent connection failure detected: {Description}. " +
-                                        "Reconnection will be retried, but this likely requires configuration changes.",
-                                        description);
-                                }
-
-                                // Record failure in circuit breaker
-                                if (_circuitBreaker is not null && _circuitBreaker.RecordFailure())
-                                {
-                                    _logger.LogWarning(
-                                        "Circuit breaker tripped after {Threshold} consecutive failures. " +
-                                        "Pausing reconnection attempts for {Cooldown}s.",
-                                        _configuration.CircuitBreakerFailureThreshold,
-                                        (int)_configuration.CircuitBreakerCooldown.TotalSeconds);
-                                }
-
-                                // Exponential backoff with jitter
-                                var jitter = Random.Shared.NextDouble() * 0.1 + 0.95; // 0.95 to 1.05
-                                reconnectDelay = TimeSpan.FromMilliseconds(
-                                    Math.Min(reconnectDelay.TotalMilliseconds * 2 * jitter, maxDelay.TotalMilliseconds));
-                            }
+                            // Exponential backoff with jitter
+                            var jitter = Random.Shared.NextDouble() * 0.1 + 0.95; // 0.95 to 1.05
+                            reconnectDelay = TimeSpan.FromMilliseconds(
+                                Math.Min(reconnectDelay.TotalMilliseconds * 2 * jitter, maxDelay.TotalMilliseconds));
                         }
                     }
-                    finally
-                    {
-                        Interlocked.Exchange(ref _isReconnecting, 0);
-                    }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _isReconnecting, 0);
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -247,6 +279,11 @@ internal sealed class MqttConnectionMonitor : IAsyncDisposable
             }
             catch (Exception ex)
             {
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    _onError(ex);
+                }
+
                 _logger.LogError(ex, "Error in connection monitoring.");
             }
         }

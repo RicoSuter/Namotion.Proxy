@@ -96,17 +96,16 @@ Three sharp edges:
 - If you already registered `T` yourself, `AddSubject<T>()` applies neither the context nor `configure`.
 - When the resolved context has no hosting handler, because `WithHostedServices()` was never called on it or because `contextResolver` returned null, there is nothing to hand the subject to. `AddSubject<T>()` then starts an `IHostedService` subject itself at host start and stops that same instance at host shutdown. It never disposes it.
 
-`configure` always runs before the attach `AddSubject` itself performs. Whether the subject is already attached at that point depends on the constructor, and the difference is observable:
+`configure` always runs before the attach `AddSubject` performs, and construction and `configure` both run inside a [startup scope](#configuration-before-startup), so the subject is fully configured before anything can start it whichever constructor it has. What still differs between the shapes is whether those assignments are intercepted:
 
-- **`T` has no constructor taking a context.** The attach `AddSubject` performs is the only one, so `configure` runs against an unattached subject and it is fully configured before anything can start it. Those assignments are not intercepted and not tracked, because the subject has no context yet. This is the deliberate trade: running `configure` after the attach would race the start the attach appends.
-- **Construction attaches the subject**, which is what the generated context constructor does. `configure` then runs against an attached subject. Its assignments are intercepted and tracked, and they race the queued start exactly as they do for a hand written `new MySubject(context) { Name = "x" }`.
-- **`T` declares a context parameter and never attaches with it**, which is the documented `MySubject(IInterceptorSubjectContext? context = null)` shape. Nothing attached during construction, so the attach `AddSubject` performs is again the only one and `configure` precedes it, and its assignments are not intercepted and not tracked either. This shape behaves exactly like the first case despite declaring the parameter.
+- **`T` has no constructor taking a context**, or it declares the documented `MySubject(IInterceptorSubjectContext? context = null)` parameter and never attaches with it. Nothing is attached while `configure` runs, so its assignments are not intercepted and not tracked.
+- **Construction attaches the subject**, which is what the generated context constructor does. `configure` runs against an attached subject, so its assignments are intercepted and tracked.
 
 #### What it costs at host startup
 
-`AddSubject<T>()` registers one hosted activation per type, and when `T` implements `IHostedService` that activation waits for the subject to start before host startup moves on. The generic host starts hosted services one after another by default, so those waits do not overlap and the cost is linear in the number of such registrations. The handler's queued start also carries a fixed short delay, so each registration costs roughly 50 ms of host startup even when the service itself starts instantly, and sixteen such registrations cost sixteen of those. A registered type that is a plain subject waits for no start and adds nothing.
+`AddSubject<T>()` registers one hosted activation per type, and when `T` implements `IHostedService` that activation waits for the subject to start before host startup moves on. The generic host starts hosted services one after another by default, so those waits do not overlap and the cost is linear in the number of such registrations, at whatever each subject's own `StartAsync` takes. A registered type that is a plain subject waits for no start and adds nothing.
 
-Let the host start its services concurrently to get the waits overlapping again. The same registrations then pay one delay between them rather than one each:
+Let the host start its services concurrently to get the waits overlapping:
 
 ```csharp
 builder.Services.Configure<HostOptions>(options => options.ServicesStartConcurrently = true);
@@ -114,7 +113,7 @@ builder.Services.Configure<HostOptions>(options => options.ServicesStartConcurre
 
 `AddSubject<T>()` deliberately does not set this for you. The option is host wide, so it changes the startup of every hosted service in the application, including ones registered by libraries that know nothing about this package, and that decision belongs to whoever owns the host.
 
-Subjects that reach the graph as part of an object tree do not pay this cost. Their starts are queued on independent chains and run concurrently, so 50 subjects attached together cost about as much as one.
+Subjects that reach the graph as part of an object tree do not pay this cost at all. Their starts are queued on independent chains and run concurrently, so 50 subjects attached together cost about as much as one.
 
 ### A service bound to a subject
 
@@ -284,9 +283,33 @@ This pattern fits when the subject's entire purpose is to run a background task 
 
 **A hand written `IHostedService` must honour `StopAsync`.** The handler passes `CancellationToken.None` to `StartAsync`, so a service that captured the `StartAsync` token as its only stop signal will never be cancelled. `BackgroundService` is unaffected, because it cancels its own execution token in `StopAsync`.
 
+## Configuration Before Startup
+
+A subject that takes the context in its constructor is attached during construction, which queues its service start. Object initializers, property assignments and deserializers all run afterwards, so the service can start against a subject that is not configured yet.
+
+Either build the subject detached, configure it and attach it once it is ready, or keep the context-taking constructor and wrap the work in a startup scope:
+
+```csharp
+using (context.DeferHostedServiceStartup())
+{
+    var person = new Person(context) { FirstName = "John", LastName = "Doe" };
+    person.AttachHostedService(() => new PersonBackgroundService(person));
+}
+```
+
+Attaching still takes effect immediately, so the subject joins the graph and is visible to the registry and to sources. Only the start waits for the block to exit, and leaving the block releases it even when configuration throws: the scope says when a subject is ready, never whether it is fit to run. Validating configuration stays with the service and its caller.
+
+Three rules have consequences:
+
+- Do not await a captured service's start inside its own block, because that start cannot run until the block exits.
+- A scope nobody disposes holds its starts until the host shuts down.
+- `DeferHostedServiceStartup()` returns null on a context without hosting support, and `using` accepts that.
+
+`AddSubject<T>()` and HomeBlaze's configuration loading already wrap their own construction this way, so nothing extra is needed there. The exact contract, including nesting, disposal order and what happens to a start still waiting when its subject leaves the graph, is in [Startup Scopes](design/hosting-service-ownership.md#startup-scopes).
+
 ## Deferred Starts and Startup Completion
 
-Attaching a hosted service queues its `StartAsync` rather than running it inline, so the service is not running when the attach returns. Any subsystem that treats "the graph has finished starting" as a completion point would otherwise pass that point while a queued start is still on its way in.
+Attaching a hosted service queues its `StartAsync` without waiting for it. Any subsystem that treats "the graph has finished starting" as a completion point would otherwise pass that point while a queued start is still on its way in.
 
 A subsystem says so by implementing `IStartupCompletionDeferrer` and registering it on the context. Before queueing a start, the hosting layer takes a hold on every deferrer reachable from the subject's context and releases it once the start has run, including when the start is skipped because the host is shutting down and when it throws. This applies to every start the handler queues, whether it came from an explicit attach or from a subject entering the graph, and to the awaiting and fire and forget attach paths alike: awaiting the start blocks the caller, but it does not block whatever else is deciding that startup is finished, so the gap still needs holding open.
 

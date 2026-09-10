@@ -134,7 +134,7 @@ builder.Services.AddWebSocketSubjectServer<Device>(configuration =>
     // Network settings
     configuration.Port = 8080;              // Default: 8080
     configuration.Path = "/ws";             // Default: "/ws"
-    configuration.BindAddress = "127.0.0.1"; // Default: null (all interfaces)
+    configuration.BindAddress = "127.0.0.1"; // Default: null (localhost)
 
     // Performance tuning
     configuration.BufferTime = TimeSpan.FromMilliseconds(8);  // Batch updates
@@ -146,7 +146,7 @@ builder.Services.AddWebSocketSubjectServer<Device>(configuration =>
     configuration.HelloTimeout = TimeSpan.FromSeconds(10);  // Default: 10s
 
     // Heartbeat / sequence numbers
-    configuration.HeartbeatInterval = TimeSpan.FromSeconds(30);  // Default: 30s (0 to disable)
+    configuration.HeartbeatInterval = TimeSpan.FromSeconds(30);  // Default: 30s (0 to disable, otherwise min 1s)
 
     // Broadcast
     configuration.BroadcastTimeout = TimeSpan.FromSeconds(10);  // Default: 10s
@@ -269,10 +269,10 @@ The server registers the connection for broadcasts **before** building and sendi
 
 1. **Register**: Connection is added to the broadcast list. Any concurrent property changes are **queued per-connection** along with their sequence numbers (not sent yet). The client does not receive any messages until the Welcome is sent.
 2. **Snapshot**: The server builds the complete state snapshot under `_applyUpdateLock`, the same lock used when applying client updates. This ensures the snapshot is a consistent cut: every update applied before the lock is included, every update applied after will be sent as a separate Update message.
-3. **Welcome**: The snapshot is sent to the client with the current sequence number. Immediately after (under the same send lock), queued updates are flushed — but only those with a sequence **greater than** the Welcome sequence are sent, since the snapshot already includes all earlier changes. After Welcome, any further broadcasts whose sequence is ≤ the Welcome sequence are also skipped. The client always sees Welcome as the first message, followed by only the updates that were not yet included in the snapshot.
+3. **Welcome**: The snapshot is sent to the client with the current sequence number. Immediately after (under the same send lock), queued updates are flushed, but only those with a sequence **greater than** the Welcome sequence are sent, since the snapshot already includes all earlier changes. After Welcome, any further broadcasts whose sequence is ≤ the Welcome sequence are also skipped. The client always sees Welcome as the first message, followed by only the updates that were not yet included in the snapshot.
 4. **Buffer replay**: The client applies the snapshot as a baseline, then replays all buffered updates (received between connection and snapshot application) to catch up to current state.
 
-The snapshot does not need to be fully up-to-date — it is just a baseline. The buffered updates are what guarantee correctness. After replay, the client is fully caught up and subsequent updates flow directly.
+The snapshot does not need to be fully up-to-date; it is just a baseline. The buffered updates are what guarantee correctness. After replay, the client is fully caught up and subsequent updates flow directly.
 
 ### Payload Structures
 
@@ -303,7 +303,7 @@ The snapshot does not need to be fully up-to-date — it is just a baseline. The
 }
 ```
 
-- `sequence`: Server's current sequence number (last broadcast batch). Does **not** increment the counter — it reflects the current value.
+- `sequence`: Server's current sequence number (last broadcast batch). Does **not** increment the counter; it reflects the current value.
 
 Example wire format: `[4, {"sequence": 42}]`
 
@@ -374,7 +374,7 @@ The server maintains a monotonically increasing sequence counter that is increme
 **Client behavior:**
 - On receiving an Update: the client reads the sequence from the `UpdatePayload`. If `sequence != expectedNextSequence`, the client logs a warning and exits the receive loop, triggering reconnection via the existing recovery flow.
 - On receiving a Heartbeat: if `heartbeat.sequence >= expectedNextSequence`, the server has sent updates the client never received. The client exits the receive loop and reconnects.
-- A heartbeat with `sequence < expectedNextSequence` means the client is fully caught up — no action needed.
+- A heartbeat with `sequence < expectedNextSequence` means the client is fully caught up; no action is needed.
 - A null or zero sequence is treated as "unassigned" for client-to-server messages which do not carry sequence numbers.
 
 **Recovery flow on gap detection:**
@@ -390,6 +390,8 @@ The server periodically sends Heartbeat messages to all connected clients. This 
 ```csharp
 configuration.HeartbeatInterval = TimeSpan.FromSeconds(30);  // Default
 configuration.HeartbeatInterval = TimeSpan.Zero;              // Disable heartbeats
+// Anything positive must be at least WebSocketServerConfiguration.MinimumHeartbeatInterval (1s):
+// a heartbeat is broadcast to every connected client, so a sub-second interval floods rather than probes.
 ```
 
 - The heartbeat loop runs as a parallel task alongside the change queue processor.
@@ -424,6 +426,31 @@ Tiered error handling preserves connections when possible:
 | Malformed JSON | - | Disconnect |
 | Version mismatch | Send Error in close frame | Disconnect |
 
+## Diagnostics
+
+Both built-in WebSocket connectors implement liveness monitoring and report through the shared model: the member tree, the three buffers, `LastError` stickiness and the read guarantees are described once in [Connector Diagnostics](connectors.md#connector-diagnostics). Before the first protocol-specific liveness observation, `IsOperational` can be `null`; after that observation, the connectors publish explicit `true` or `false` values. What follows is what is specific to WebSocket.
+
+**`IsOperational` for the standalone server means the listener is accepting connections.** It is set once Kestrel has started and drops first in the teardown, so a server that has stopped accepting connections never reports that it is still serving. It also drops and rises again on every internal restart, where the inherited `StartTime` marks the current run of the hosted service and does not move.
+
+**`IsOperational` for the client means the handshake completed and the receive loop is running.** It is set after the server's Welcome message has been accepted, so a socket that connected but failed version negotiation never counts as operational, and it drops on every way out of the receive loop: a close frame, a sequence or heartbeat gap, a socket error, a receive timeout, or teardown.
+
+Neither connector measures throughput, so `Throughput.IncomingPerSecond` and `Throughput.OutgoingPerSecond` are both `null` rather than `0.0`.
+
+The client's diagnostics are a plain `SourceDiagnostics` with no WebSocket specific additions. `OutboundRetries.Capacity` echoes `WriteRetryQueueSize`; at capacity 0 no writes are retained, but failed, terminally unconfirmed, and owned connect-window writes are still counted in `TotalDropped`. Writes made before the source claims their property remain unattributable; see [Known Limitations](connectors.md#known-limitations). The built-in client registers the `ClaimedPropertyCount` gauge, so it reports a measured value, including zero.
+
+The standalone server's diagnostics are a `WebSocketServerDiagnostics`, which adds two members:
+
+| Member | Meaning |
+|---|---|
+| `ConnectionCount` | Clients currently connected. |
+| `CurrentSequence` | The sequence number most recently assigned to an outgoing message. A monotonic position in the message stream rather than a count of events, which is why it carries no `Total` prefix. See [Sequence Numbers and Gap Detection](#sequence-numbers-and-gap-detection). |
+
+A server has no inbound buffer or retry queue, so only `OutboundChanges` applies there. It is registered while the change queue processor is running and its capacity is `null`, because that queue is unbounded.
+
+**Embedded mode has no connector diagnostics.** `WebSocketSubjectHandler` is not an `ISubjectConnector`, and the change processor it runs deliberately does not register into any server's metrics, so an embedded handler cannot wire itself into a standalone server's numbers. The handler exposes the same two transport numbers directly as `ConnectionCount` and `CurrentSequence`; resolve it with `serviceProvider.GetRequiredKeyedService<WebSocketSubjectHandler>("/ws")`, keyed by the path you registered.
+
+Both connector types are public but are registered under a private key, so pick them out of the registered hosted services with `serviceProvider.GetServices<IHostedService>().OfType<WebSocketSubjectServer>()` or `OfType<WebSocketSubjectClientSource>()`, or hold the instance if you constructed it yourself. The client is also reachable as an `ISubjectSource` through the source monitor's `SourceSubscription.Sources`, or through `property.TryGetSource(out var source)` on a property it owns.
+
 ## Thread Safety
 
 **Server side**: Incoming updates from multiple clients are applied in serialized order. Each message is fully applied before the next one starts, ensuring no interleaving of property writes from different clients. Individual property writes use last-write-wins semantics. Multiple clients can connect and receive broadcasts concurrently.
@@ -432,13 +459,13 @@ Tiered error handling preserves connections when possible:
 
 ## Lifecycle Management
 
-Unlike MQTT and OPC UA connectors which maintain per-property topic/node caches that require cleanup on subject detach (see [Subject Lifecycle Tracking](tracking.md#subject-lifecycle-tracking)), the WebSocket connector synchronizes the entire subject graph as a unit. There are no per-property caches to clean up — the server builds a fresh snapshot for each new client connection, and broadcast updates are derived from the change tracking layer. Connection-level resources (WebSocket, send lock, cancellation tokens) are cleaned up when a client disconnects or the server stops.
+Unlike MQTT and OPC UA connectors which maintain per-property topic/node caches that require cleanup on subject detach (see [Subject Lifecycle Tracking](tracking.md#subject-lifecycle-tracking)), the WebSocket connector synchronizes the entire subject graph as a unit. There are no per-property caches to clean up. The server builds a fresh snapshot for each new client connection, and broadcast updates are derived from the change tracking layer. Connection-level resources (WebSocket, send lock, cancellation tokens) are cleaned up when a client disconnects or the server stops.
 
 ## Known Limitations
 
 - **Snapshot lock during client connection**: When a new client connects, the server builds a full state snapshot under the same lock used for applying updates. This blocks incoming updates for the duration of the snapshot, which is proportional to graph size. This is acceptable because new-client connections are infrequent relative to the update rate, but could become a concern with very large subject graphs and frequent client reconnections.
 
-- **Broadcast timeout**: A slow client can delay broadcast completion for other clients. Broadcasts have a 10-second timeout to mitigate this — sends that haven't completed continue in the background, and zombie detection cleans up persistently slow connections. However, very slow clients may still cause temporary backpressure before being removed. This should be revisited if it becomes a bottleneck in high-throughput scenarios.
+- **Broadcast timeout**: A slow client can delay broadcast completion for other clients. Broadcasts have a 10-second timeout to mitigate this. Sends that haven't completed continue in the background, and zombie detection cleans up persistently slow connections. However, very slow clients may still cause temporary backpressure before being removed. This should be revisited if it becomes a bottleneck in high-throughput scenarios.
 
 ## Future Extensibility
 
@@ -449,7 +476,7 @@ The protocol is designed for future enhancements:
 - **Subscriptions**: Message types 7-8 reserved for subscribing to specific subjects/properties
 - **Message compression**: Per-message or per-frame compression to reduce bandwidth
 - **Authentication/authorization hooks**: Token-based auth during handshake or per-message access control
-- **Diagnostic counters**: Connection metrics, reconnection attempts, message throughput tracking
+- **Throughput counters**: Message throughput tracking
 
 ## Performance
 

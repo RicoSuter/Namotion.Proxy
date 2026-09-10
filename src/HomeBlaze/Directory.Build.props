@@ -1,6 +1,12 @@
 <Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
   <PropertyGroup>
-    <!-- Disable NuGet package generation for all HomeBlaze projects -->
     <IsPackable>false</IsPackable>
+
+    <!-- Keep the default 1.0.0 rather than inheriting the library version. Plugins are compiled
+         against these assemblies and bind by assembly version, so lowering it to 0.1.0 makes an
+         already published plugin fail to resolve HomeBlaze.Components.Abstractions at load time. -->
+    <Version>1.0.0</Version>
   </PropertyGroup>
 </Project>

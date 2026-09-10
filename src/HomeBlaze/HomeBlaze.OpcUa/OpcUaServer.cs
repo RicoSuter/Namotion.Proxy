@@ -23,7 +23,6 @@ namespace HomeBlaze.OpcUa;
 public partial class OpcUaServer : BackgroundService, IConfigurable, ITitleProvider, IIconProvider, IServerSubject
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan RootLoadPollInterval = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan RootLoadWaitTimeout = TimeSpan.FromSeconds(10);
 
     private readonly RootManager _rootManager;
@@ -295,8 +294,8 @@ public partial class OpcUaServer : BackgroundService, IConfigurable, ITitleProvi
         Status = ServiceStatus.Running;
 
         var diagnostics = server.Diagnostics;
-        IncomingChangesPerSecond = diagnostics.IncomingChangesPerSecond;
-        OutgoingChangesPerSecond = diagnostics.OutgoingChangesPerSecond;
+        IncomingChangesPerSecond = diagnostics.Throughput.IncomingPerSecond;
+        OutgoingChangesPerSecond = diagnostics.Throughput.OutgoingPerSecond;
         ActiveSessionCount = diagnostics.ActiveSessionCount;
     }
 
@@ -348,14 +347,15 @@ public partial class OpcUaServer : BackgroundService, IConfigurable, ITitleProvi
             // Awaited here rather than in the factory, which is a synchronous Func<T> and cannot await.
             // This is the awaited start path, reached from ExecuteAsync, the Start operation and
             // ApplyConfigurationAsync, and never through this subject's own StopAsync, so parking here
-            // cannot sit inside the handler's stop transition for this subject. The delay does not take
-            // the token, so a cancellation leaves through the check below rather than as an exception.
-            while (!_rootManager.IsLoaded && !cancellationToken.IsCancellationRequested)
+            // cannot sit inside the handler's stop transition for this subject.
+            try
             {
-                await Task.Delay(RootLoadPollInterval);
+                // WaitAsync does not observe the token when the task is already complete, so the
+                // caller's cancellation has to be checked in its own right.
+                cancellationToken.ThrowIfCancellationRequested();
+                await _rootManager.RootLoaded.WaitAsync(cancellationToken);
             }
-
-            if (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested || _rootManager.RootLoaded.IsCanceled)
             {
                 Status = ServiceStatus.Stopped;
                 return;

@@ -37,8 +37,22 @@ public sealed class WebSocketSubjectHandler
     
     public TimeSpan BufferTime => _configuration.BufferTime;
 
+    /// <summary>
+    /// Gets the number of currently connected WebSocket clients.
+    /// </summary>
+    /// <remarks>
+    /// For embedded mode. With the standalone server, read
+    /// <see cref="WebSocketServerDiagnostics.ConnectionCount"/> instead.
+    /// </remarks>
     public int ConnectionCount => Volatile.Read(ref _connectionCount);
 
+    /// <summary>
+    /// Gets the sequence number most recently assigned to an outgoing message.
+    /// </summary>
+    /// <remarks>
+    /// For embedded mode. With the standalone server, read
+    /// <see cref="WebSocketServerDiagnostics.CurrentSequence"/> instead.
+    /// </remarks>
     public long CurrentSequence => Volatile.Read(ref _sequence);
 
     public WebSocketSubjectHandler(
@@ -273,12 +287,32 @@ public sealed class WebSocketSubjectHandler
             cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Broadcasts a heartbeat to every connected client on
+    /// <see cref="WebSocketServerConfiguration.HeartbeatInterval"/>, and runs until
+    /// <paramref name="cancellationToken"/> is cancelled.
+    /// </summary>
+    /// <remarks>
+    /// The returned task never completes on its own, not even when heartbeats are disabled, because
+    /// callers race it against the change processor and treat either one finishing as a reason to
+    /// restart the server. Pass a token that is cancelled when the caller stops.
+    /// </remarks>
+    /// <param name="cancellationToken">Cancelled to end the loop.</param>
     public async Task RunHeartbeatLoopAsync(CancellationToken cancellationToken)
     {
         var interval = _configuration.HeartbeatInterval;
         if (interval <= TimeSpan.Zero)
         {
-            return; // Heartbeat disabled
+            // Heartbeats are disabled, but this must not complete, for the reason in the remarks above.
+            try
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+
+            return;
         }
 
         _logger.LogInformation("Heartbeat loop started (interval: {Interval})", interval);
@@ -363,6 +397,9 @@ public sealed class WebSocketSubjectHandler
     }
 
     public ChangeQueueProcessor CreateChangeQueueProcessor(ILogger logger) =>
+        CreateChangeQueueProcessor(logger, dropHandler: null);
+
+    internal ChangeQueueProcessor CreateChangeQueueProcessor(ILogger logger, Action<long>? dropHandler) =>
         new(source: this, Context,
             propertyFilter: propertyReference =>
                 propertyReference.TryGetRegisteredProperty() is { } property &&
@@ -372,7 +409,7 @@ public sealed class WebSocketSubjectHandler
             // this handler, so none of them is skipped here as our own echo and every superseding value
             // is broadcast on. Applying them under this handler would break it.
             ChangeDeliveryRule.SourceValuesAreSettled,
-            BufferTime, null, logger);
+            BufferTime, null, logger, dropHandler);
 
     public async ValueTask CloseAllConnectionsAsync()
     {

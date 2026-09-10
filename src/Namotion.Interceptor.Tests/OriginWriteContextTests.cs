@@ -34,6 +34,21 @@ public class OriginWriteContextTests
         }
     }
 
+    private sealed class ResolvingOriginProbe : IWriteInterceptor
+    {
+        public ChangeOriginKind? ResolvedKind { get; private set; }
+        public ChangeOriginKind? KindAfterResolution { get; private set; }
+
+        public void WriteProperty<TProperty>(
+            ref PropertyWriteContext<TProperty> context,
+            WriteInterceptionDelegate<TProperty> next)
+        {
+            ResolvedKind = context.GetFinalOrigin().Kind;
+            KindAfterResolution = context.Origin.Kind;
+            next(ref context);
+        }
+    }
+
     [Fact]
     public void WhenWriteIsSetFromSource_ThenOriginIsFromSourceBeforeAndAfterWrite()
     {
@@ -76,6 +91,31 @@ public class OriginWriteContextTests
         // Assert: attempted origin visible mid-chain, Local after finalization.
         Assert.Equal(ChangeOriginKind.FromSource, probe.KindBeforeWrite);
         Assert.Equal(ChangeOriginKind.Local, probe.KindAfterWrite);
+    }
+
+    [Fact]
+    public void WhenFinalOriginIsResolvedBeforeWrite_ThenTheAttemptedOriginRemainsAvailableToTheTerminal()
+    {
+        // Arrange
+        var probe = new ResolvingOriginProbe();
+        var context = InterceptorSubjectContext.Create();
+        context.AddService(probe);
+        var car = new Car(context);
+        var property = new PropertyReference(car, "Speed");
+
+        // Act
+        using (PendingOrigin.Set(property, ChangeOrigin.FromSource(new object()), 42))
+        {
+            car.Speed = 99;
+        }
+
+        // Assert
+        Assert.Equal(ChangeOriginKind.Local, probe.ResolvedKind);
+        Assert.Equal(ChangeOriginKind.FromSource, probe.KindAfterResolution);
+        Assert.True(property.TryGetWriteState(true, out var anyRevision, out _));
+        Assert.True(anyRevision > 0);
+        Assert.True(property.TryGetWriteState(false, out var localRevision, out _));
+        Assert.Equal(0, localRevision);
     }
 
     [Fact]

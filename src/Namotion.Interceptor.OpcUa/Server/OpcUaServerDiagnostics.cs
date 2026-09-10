@@ -1,57 +1,34 @@
+using Namotion.Interceptor.Connectors.Diagnostics;
+
 namespace Namotion.Interceptor.OpcUa.Server;
 
 /// <summary>
-/// Provides diagnostic information about the OPC UA server state.
-/// Thread-safe for reading current values.
+/// What the OPC UA server reports about its transport, on top of the shared connector diagnostics.
 /// </summary>
-public class OpcUaServerDiagnostics
+/// <remarks>
+/// A value of <c>true</c> means the server has started and is accepting client connections and
+/// <c>false</c> means it is not, either because the server reported that or because it has stopped.
+/// It reads <c>null</c> only while the server runs before its first liveness report.
+/// <see cref="ConnectorDiagnostics.OperationalChangeTime"/> moves on every internal restart, where
+/// <see cref="ConnectorDiagnostics.StartTime"/> marks the hosted service's own start and does not.
+/// </remarks>
+public sealed class OpcUaServerDiagnostics : ConnectorDiagnostics
 {
-    private readonly OpcUaSubjectServer _service;
+    private readonly OpcUaSubjectServer _server;
 
-    internal OpcUaServerDiagnostics(OpcUaSubjectServer service)
+    internal OpcUaServerDiagnostics(OpcUaSubjectServer server, ConnectorMetrics metrics)
+        : base(metrics)
     {
-        _service = service;
+        _server = server;
     }
-
-    /// <summary>
-    /// Gets a value indicating whether the server is currently running and accepting connections.
-    /// </summary>
-    public bool IsRunning => _service.IsRunning;
 
     /// <summary>
     /// Gets the number of currently active client sessions.
     /// </summary>
-    public int ActiveSessionCount => _service.ActiveSessionCount;
+    public int ActiveSessionCount => _server.ActiveSessionCount;
 
     /// <summary>
-    /// Gets the time when the server started, or null if not running.
+    /// Gets the number of consecutive startup failures, reset on a successful start.
     /// </summary>
-    public DateTimeOffset? StartTime => _service.StartTime;
-
-    /// <summary>
-    /// Gets the server uptime, or null if not running.
-    /// </summary>
-    public TimeSpan? Uptime => _service.StartTime.HasValue
-        ? DateTimeOffset.UtcNow - _service.StartTime.Value
-        : null;
-
-    /// <summary>
-    /// Gets the most recent error that occurred, or null if no errors.
-    /// </summary>
-    public Exception? LastError => _service.LastError;
-
-    /// <summary>
-    /// Gets the number of consecutive startup failures.
-    /// </summary>
-    public int ConsecutiveFailures => _service.ConsecutiveFailures;
-
-    /// <summary>
-    /// Gets the average incoming changes per second over the last 60 seconds (client writes to server).
-    /// </summary>
-    public double IncomingChangesPerSecond => _service.IncomingThroughput.CurrentRate;
-
-    /// <summary>
-    /// Gets the average outgoing changes per second over the last 60 seconds (subject changes pushed to OPC UA nodes).
-    /// </summary>
-    public double OutgoingChangesPerSecond => _service.OutgoingThroughput.CurrentRate;
+    public int ConsecutiveFailures => _server.ConsecutiveFailures;
 }

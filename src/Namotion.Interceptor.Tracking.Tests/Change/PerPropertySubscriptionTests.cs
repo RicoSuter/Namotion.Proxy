@@ -1,3 +1,4 @@
+using Namotion.Interceptor.Testing;
 using System.Linq.Expressions;
 using Namotion.Interceptor.Tracking.Change;
 using Namotion.Interceptor.Tracking.Tests.Models;
@@ -17,7 +18,7 @@ public class PerPropertySubscriptionTests
         var person = new Person(context);
         var property = new PropertyReference(person, nameof(Person.FirstName));
         string? captured = null;
-        using var subscription = property.Subscribe((in SubjectPropertyChange c) => captured = c.GetNewValue<string?>());
+        using var subscription = property.SubscribeInline((in SubjectPropertyChange c) => captured = c.GetNewValue<string?>());
 
         // Act
         person.FirstName = "John";
@@ -34,7 +35,7 @@ public class PerPropertySubscriptionTests
         var person = new Person(context);
         var invoked = false;
         using var subscription = new PropertyReference(person, nameof(Person.FirstName))
-            .Subscribe((in SubjectPropertyChange _) => invoked = true);
+            .SubscribeInline((in SubjectPropertyChange _) => invoked = true);
 
         // Act
         person.LastName = "Doe";
@@ -51,7 +52,7 @@ public class PerPropertySubscriptionTests
         var person = new Person(context);
         var count = 0;
         var subscription = new PropertyReference(person, nameof(Person.FirstName))
-            .Subscribe((in SubjectPropertyChange _) => count++);
+            .SubscribeInline((in SubjectPropertyChange _) => count++);
 
         // Act
         person.FirstName = "John";
@@ -72,7 +73,7 @@ public class PerPropertySubscriptionTests
 
         // Act & Assert
         Assert.Throws<InvalidOperationException>(() =>
-            new PropertyReference(person, "DoesNotExist").Subscribe((in SubjectPropertyChange _) => { }));
+            new PropertyReference(person, "DoesNotExist").SubscribeInline((in SubjectPropertyChange _) => { }));
     }
 
     [Fact]
@@ -86,12 +87,12 @@ public class PerPropertySubscriptionTests
         // Act & Assert: rejected before install, so no silent never-firing subscription and no
         // permanently opened idle gate. The typed callback overload wraps before delegating, so
         // it needs its own guard and its own assertion here.
-        Assert.Throws<ArgumentNullException>(() => property.Subscribe((IPropertyChangeObserver)null!));
-        Assert.Throws<ArgumentNullException>(() => property.Subscribe((PropertyChangeCallback)null!));
-        Assert.Throws<ArgumentNullException>(() => person.SubscribeToProperty(x => x.FirstName, (IPropertyChangeObserver)null!));
-        Assert.Throws<ArgumentNullException>(() => person.SubscribeToProperty(x => x.FirstName, (PropertyChangeCallback)null!));
-        Assert.Throws<ArgumentNullException>(() => ((Person)null!).SubscribeToProperty(x => x.FirstName, (in SubjectPropertyChange _) => { }));
-        Assert.Throws<ArgumentNullException>(() => person.SubscribeToProperty((Expression<Func<Person, string?>>)null!, (in SubjectPropertyChange _) => { }));
+        Assert.Throws<ArgumentNullException>(() => property.SubscribeInline((IPropertyChangeObserver)null!));
+        Assert.Throws<ArgumentNullException>(() => property.SubscribeInline((PropertyChangeCallback)null!));
+        Assert.Throws<ArgumentNullException>(() => person.SubscribeToPropertyInline(x => x.FirstName, (IPropertyChangeObserver)null!));
+        Assert.Throws<ArgumentNullException>(() => person.SubscribeToPropertyInline(x => x.FirstName, (PropertyChangeCallback)null!));
+        Assert.Throws<ArgumentNullException>(() => ((Person)null!).SubscribeToPropertyInline(x => x.FirstName, (in SubjectPropertyChange _) => { }));
+        Assert.Throws<ArgumentNullException>(() => person.SubscribeToPropertyInline((Expression<Func<Person, string?>>)null!, (in SubjectPropertyChange _) => { }));
         Assert.Equal(0, PropertyChangeSubscriptions.ReadSubscriptionCount());
     }
 
@@ -106,7 +107,7 @@ public class PerPropertySubscriptionTests
 
         // Act & Assert: fails loud instead of livelocking, and the count increment is rolled back.
         Assert.Throws<InvalidOperationException>(() =>
-            property.Subscribe((in SubjectPropertyChange _) => { }));
+            property.SubscribeInline((in SubjectPropertyChange _) => { }));
         Assert.Equal(0, PropertyChangeSubscriptions.ReadSubscriptionCount());
     }
 
@@ -122,12 +123,14 @@ public class PerPropertySubscriptionTests
         var person = new Person(context);
         var received = new List<(string? OldValue, string? NewValue)>();
 
-        var writer = Task.Run(() => person.FirstName = "John");
+        // The write parks in the interceptor chain, so it must not wait for a pool thread.
+        var writer = DedicatedThreadTestHelpers.RunOnDedicatedThreadAsync(
+            () => { person.FirstName = "John"; });
         Assert.True(blocker.EnteredInnerChain.Wait(TimeSpan.FromSeconds(10)));
 
         // Act: install while the write is in flight (post-gate, pre-commit), then release the commit.
         using var subscription = new PropertyReference(person, nameof(Person.FirstName))
-            .Subscribe((in SubjectPropertyChange change) =>
+            .SubscribeInline((in SubjectPropertyChange change) =>
                 received.Add((change.GetOldValue<string?>(), change.GetNewValue<string?>())));
         blocker.ProceedWithCommit.Set();
         await writer.WaitAsync(TimeSpan.FromSeconds(10));
@@ -151,7 +154,7 @@ public class PerPropertySubscriptionTests
         // Act: a write that committed before the install is not delivered; the documented recovery
         // is reading the property after Subscribe returns.
         using var subscription = new PropertyReference(person, nameof(Person.FirstName))
-            .Subscribe((in SubjectPropertyChange _) => hits++);
+            .SubscribeInline((in SubjectPropertyChange _) => hits++);
 
         // Assert
         Assert.Equal(0, hits);

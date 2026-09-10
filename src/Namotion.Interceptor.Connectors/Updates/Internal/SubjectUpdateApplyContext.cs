@@ -10,6 +10,7 @@ namespace Namotion.Interceptor.Connectors.Updates.Internal;
 internal sealed class SubjectUpdateApplyContext
 {
     private readonly HashSet<string> _processedSubjectIds = [];
+    private List<(RegisteredSubjectProperty Property, Exception Exception)>? _failures;
 
     public Dictionary<string, Dictionary<string, SubjectPropertyUpdate>> Subjects { get; private set; } = null!;
     public ISubjectFactory SubjectFactory { get; private set; } = null!;
@@ -66,11 +67,22 @@ internal sealed class SubjectUpdateApplyContext
         => _processedSubjectIds.Add(subjectId);
 
     /// <summary>
+    /// Records a property that could not be applied. The batch continues; the collected failures are
+    /// thrown once by the caller when the whole update has been walked.
+    /// </summary>
+    public void RecordFailure(RegisteredSubjectProperty property, Exception exception)
+        => (_failures ??= []).Add((property, exception));
+
+    /// <summary>The failures recorded so far, or <c>null</c> when every property applied.</summary>
+    public List<(RegisteredSubjectProperty Property, Exception Exception)>? Failures => _failures;
+
+    /// <summary>
     /// Clears the context for reuse. Call before returning to pool.
     /// </summary>
     public void Clear()
     {
         _processedSubjectIds.Clear();
+        _failures = null;
         Subjects = null!;
         SubjectFactory = null!;
         Origin = default;

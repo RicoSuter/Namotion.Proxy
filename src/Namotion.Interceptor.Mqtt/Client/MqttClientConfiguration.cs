@@ -140,7 +140,7 @@ public class MqttClientConfiguration
     /// Set to 0 to disable write buffering.
     /// </summary>
     public int WriteRetryQueueSize { get; init; } = 1000;
-    
+
     /// <summary>
     /// Gets or sets the value converter for serialization/deserialization. Default is JSON.
     /// </summary>

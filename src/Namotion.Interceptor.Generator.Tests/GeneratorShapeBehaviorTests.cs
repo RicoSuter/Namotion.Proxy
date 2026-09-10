@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Namotion.Interceptor.Attributes;
 using Namotion.Interceptor.Generator.Tests.Models;
 using Namotion.Interceptor.Interceptors;
@@ -110,6 +111,50 @@ public partial class SealedOverrideBase
 public partial class SealedOverrideSubject : SealedOverrideBase
 {
     public sealed override partial string Label { get; set; }
+}
+
+#endregion
+
+#region Case RM: a required partial property initialized by a [SetsRequiredMembers] constructor
+
+[InterceptorSubject]
+public partial class RequiredMemberSubject
+{
+    public required partial string Name { get; set; }
+
+    [SetsRequiredMembers]
+    public RequiredMemberSubject()
+    {
+        Name = "default";
+    }
+}
+
+#endregion
+
+#region Case RM3: a subject chain whose root constructor sets required members
+
+[InterceptorSubject]
+public partial class RequiredMemberBaseSubject
+{
+    public required partial string Id { get; set; }
+
+    [SetsRequiredMembers]
+    public RequiredMemberBaseSubject()
+    {
+        Id = "base-default";
+    }
+}
+
+[InterceptorSubject]
+public partial class RequiredMemberMiddleSubject : RequiredMemberBaseSubject
+{
+    public partial string Name { get; set; }
+}
+
+[InterceptorSubject]
+public partial class RequiredMemberLeafSubject : RequiredMemberMiddleSubject
+{
+    public partial string Label { get; set; }
 }
 
 #endregion
@@ -397,4 +442,38 @@ public class GeneratorShapeBehaviorTests
         Assert.Equal(["Label"], firedEvents);
     }
 
+    [Fact]
+    public void WhenChainedConstructorSetsRequiredMembers_ThenTheContextConstructorNeedsNoInitializer()
+    {
+        // Arrange (case RM)
+        var context = InterceptorSubjectContext.Create();
+
+        // Act: the required member is satisfied by the chained constructor, so this call compiles
+        // without an object initializer.
+        var subject = new RequiredMemberSubject(context);
+
+        // Assert
+        Assert.Equal("default", subject.Name);
+    }
+
+    [Fact]
+    public void WhenBaseConstructorSetsRequiredMembers_ThenTheDerivedConstructorsNeedNoInitializer()
+    {
+        // Arrange (case RM3): the generated constructors of the middle subject and of the leaf below
+        // it chain implicitly up to the base constructor, so all four inherit its claim and none of
+        // these calls needs an object initializer.
+        var context = InterceptorSubjectContext.Create();
+
+        // Act
+        var middleSubject = new RequiredMemberMiddleSubject();
+        var middleContextSubject = new RequiredMemberMiddleSubject(context);
+        var leafSubject = new RequiredMemberLeafSubject();
+        var leafContextSubject = new RequiredMemberLeafSubject(context);
+
+        // Assert
+        Assert.Equal("base-default", middleSubject.Id);
+        Assert.Equal("base-default", middleContextSubject.Id);
+        Assert.Equal("base-default", leafSubject.Id);
+        Assert.Equal("base-default", leafContextSubject.Id);
+    }
 }

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using HomeBlaze.Components.Abstractions.TimeZones;
 
 namespace HomeBlaze.Services;
 
@@ -24,13 +25,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<SubjectFactory>();
         services.AddSingleton<ConfigurableSubjectSerializer>();
         services.AddSingleton<RootManager>();
-        services.AddSingleton(serviceProvider =>
-        {
-            var resolver = new SubjectPathResolver(serviceProvider.GetRequiredService<RootManager>());
-            context.AddService(resolver);
-            return resolver;
-        });
+        // The root accessor is deferred so constructing the resolver does not pull in RootManager,
+        // which depends on the resolver.
+        services.AddSingleton(sp => new SubjectPathResolver(() => sp.GetRequiredService<RootManager>().Root));
         services.AddSingleton<DeveloperModeService>();
+        services.AddScoped<ITimeZoneDisplay, TimeZoneDisplayService>();
         services.AddHostedService(sp => sp.GetRequiredService<RootManager>());
 
         return services;

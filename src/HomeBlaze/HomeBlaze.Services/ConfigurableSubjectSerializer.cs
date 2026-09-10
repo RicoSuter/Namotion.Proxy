@@ -6,6 +6,7 @@ using HomeBlaze.Abstractions.Attributes;
 using HomeBlaze.Services.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Namotion.Interceptor;
+using Namotion.Interceptor.Hosting;
 using Namotion.Interceptor.Registry;
 
 namespace HomeBlaze.Services;
@@ -79,6 +80,7 @@ public class ConfigurableSubjectSerializer
             return null;
         }
 
+        using var startup = _serviceProvider.GetService<IInterceptorSubjectContext>()?.DeferHostedServiceStartup();
         // Create instance using ActivatorUtilities for DI-aware construction
         var subject = ActivatorUtilities.CreateInstance(_serviceProvider, type) as IConfigurable;
         if (subject == null)
@@ -86,8 +88,6 @@ public class ConfigurableSubjectSerializer
             return null;
         }
 
-        // Populate configuration properties from JSON using reflection
-        // (can't use UpdateConfiguration because subject isn't registered in a context yet)
         PopulateConfigurationProperties(subject, type, root);
         return subject;
     }

@@ -94,7 +94,7 @@ An earlier implementation posted every start and stop to a single `BufferBlock` 
 - **Self deadlock across the whole handler.** The loop awaited each action to completion before taking the next, so any action that awaited another action, which the awaitable attach and detach paths do, wedged the loop for every service in the context. Per target chains do not remove that cycle, they contain it to one chain (see [Residual Hazards](#residual-hazards)).
 - **Shutdown dropped queued work.** Shutdown cancelled the loop's token first, so anything still queued never ran and any caller awaiting it waited forever. A host disposed without ever having started returned early and left every queued action and every awaiter hanging.
 - **Ordering dependence on dependency injection registration order.** The loop only began draining when the handler's own `StartAsync` ran, and hosted services start in registration order, so a hosted service registered ahead of `WithHostedServices` that awaited an attach hung host startup. `HostedServiceGate` and `EnsureStarted` replace that, pinned by `AddSubjectTests.WhenAddSubjectIsRegisteredBeforeWithHostedServices_ThenStartupDoesNotHang`.
-- **Cost proportional to the number of subjects.** Every start paid the 50 ms delay in series, so N subjects cost N times 50 ms of host startup.
+- **Cost proportional to the number of subjects.** Every start paid the delay the start body then carried in series, so N subjects cost N times 50 ms of host startup.
 
 Per target serialization keeps the only ordering property that was ever needed, that one target's own transitions never overlap, and buys the one cross target ordering genuinely required with a completion signal rather than with a global executor.
 
@@ -333,7 +333,7 @@ The count is per handler and not per target, so the drain waits for every transi
 
 ### Why the count is re-read rather than signalled
 
-A completion source was tried and rejected. It has to cope with the count already being zero when the drain starts, with a transient zero before the drain's own stops land, and with a store-load reordering on both sides that `Volatile.Write` does not close. Two of those were demonstrated, one of them hanging shutdown outright. Re-reading has none of the cases because it re-reads. The cost is one poll interval per round, once per process, on a path that already spends 50 ms inside every transition it is waiting for.
+A completion source was tried and rejected. It has to cope with the count already being zero when the drain starts, with a transient zero before the drain's own stops land, and with a store-load reordering on both sides that `Volatile.Write` does not close. Two of those were demonstrated, one of them hanging shutdown outright. Re-reading has none of the cases because it re-reads. The cost is one poll interval per round, once per process, on a path that already spends 50 ms inside every stop it is waiting for.
 
 **The second wait is why the barrier holds.** The count is read, not held, so an append landing after the count first reached zero would otherwise be outside the barrier despite having gone through the same increment. Past step 6 a context detach appends nothing for this handler, because it reads `Owner` and finds a stranger, so one more round is the last that path can need. `DetachHostedService`, which appends without an ownership check, is not covered by it, and that residual is recorded below.
 
@@ -405,18 +405,28 @@ It reads the target and never creates one, and never takes ownership; the commen
 
 ## The 50 ms Delay
 
-Both the start and the stop body delay 50 ms before touching the instance. It covers a caller side hazard: the generated context constructor attaches the subject last, so `new Car(context) { Name = "x" }`, deserialization, and `AddSubject`'s `configure` on the generated context constructor path all assign after the attach has fired and after the start has been appended.
+The stop body delays 50 ms before touching the instance. The start body used to as well, and no longer does: it waits for a startup scope instead, which is the same hazard answered rather than guessed at.
 
-The delay is a mitigation, not a synchronization, and removing it is a separate problem: it needs a "subject fully constructed" signal, which touches the generator. What protects against the hazard is the gap between a target's own attach event and its own start, and that is 50 ms whether the delay sits in a shared loop or in each target's own transition, so moving it into the transition lost nothing. Both delays pass `CancellationToken.None`, so shutdown waits each one out per target.
+The hazard is caller side. The generated context constructor attaches the subject last, so `new Car(context) { Name = "x" }`, deserialization, and `AddSubject`'s `configure` on that constructor path all assign after the attach has fired and after the start has been appended. A scope is the constructing flow saying when it has finished, so a start captured in one waits for the answer. `AddSubject` and HomeBlaze's `ConfigurableSubjectSerializer` and `RootManager` all open one; a consumer writing `new Car(context) { Name = "x" }` by hand gets no protection unless they open one too, which [`docs/hosting.md`](../hosting.md#configuration-before-startup) states.
 
-### Where the cost is constant, and where it is linear
+What remains on the stop side is a mitigation with no mechanism behind it, kept because removing it is a behaviour change of its own rather than part of the scope's arrival. It passes `CancellationToken.None`, so shutdown waits it out per target.
 
-Per target chains stop the delay serializing across targets, but that only removes the linear cost on the path where nothing waits for the starts one at a time. The two paths differ in shape:
+## Startup Scopes
 
-- **Subjects entering the graph.** Each start is appended to its own target's chain and nothing awaits them in turn, so the delays overlap: a set of subjects entering the graph together pays one delay rather than one each, and the cost is constant in how many of them there are. Under the shared loop it was linear, because every start waited out the delay of the start ahead of it. `HostedServiceStartupShapeTests.WhenManySubjectsEnterTheGraphTogether_ThenTheirStartsOverlap` pins it without measuring time at all, and its remarks record the timing based version that was tried first and why it was wrong.
-- **`AddSubject<T>`.** Still linear. `AddSubject<T>` registers one `SubjectActivation<T>` per type through `AddHostedService`, the activation awaits `WaitForStartAsync` when `T` is an `IHostedService`, and the generic host starts hosted services one after another by default, so each activation's 50 ms is over before the next one begins. The cost is linear in the number of registered types that implement `IHostedService`, at one delay each. A registered type that is a plain subject awaits no start and adds nothing. Nothing pins this path, because what it measures is the generic host's own sequential start rather than anything this package decides.
+`HostedServiceStartupScope` is ambient per context, held in an `AsyncLocal` on the handler and handed out by `IInterceptorSubjectContext.DeferHostedServiceStartup()`, which returns null when the context has no handler. The contract:
 
-`AddSubject` does not fix its own path, and that is deliberate: the switch that fixes it, `HostOptions.ServicesStartConcurrently`, is host wide and belongs to the application author. Stated for consumers in [`AddSubject<T>()`](../hosting.md#addsubjectt).
+- **Capture is per execution flow, at append time.** `TryTakeOwnershipAndStart` reads the ambient scope in the appending flow, beside the startup holds and for the same reason: the body runs later, and on the fire and forget paths in a flow that has already moved on.
+- **A captured start waits for its own scope and every scope enclosing it**, which `HostedServiceStartupScope.WaitAsync` walks. Disposal releases; there is nothing to call on success and no way to fail through the scope.
+- **The wait sits after every guard in the start body and before the fault is cleared**, and each guard is re-read after it. A scope holds a start for as long as its flow stays open, so the subject can leave the graph, ownership can move, and a competing start can install an instance in the meantime. A start that finds any of that declines, which leaves the outcome the same as the old handler's cancel on detach, reached later: nothing is created.
+- **The drain releases the wait too**, through `HostedServiceGate.WaitForDrainingAsync`. A start parked on a scope is already counted in flight, so a scope nobody disposes would otherwise hold the drain's barrier for the whole shutdown deadline. Pinned by `WhenTheDrainBeginsWhileAScopeIsOpen_ThenItReleasesTheParkedStartInsteadOfWaitingForIt`, which fails by timing out when the draining term is removed.
+- **Disposal order is the caller's discipline, not enforced.** Reverse creation order in the creating flow is what nested `using` blocks do. Repeated disposal, disposal from another flow and out of order disposal none of them throw, and none of them strand a start: what is undefined afterwards is only which later attaches the scope still covers. Pinned by `WhenAScopeIsDisposedIrregularly_ThenCapturedAndLaterServicesCanStart`.
+- **Nothing resets the ambient scope inside a transition body.** A body runs with the execution context of the flow that appended it, so a nested attach reads the scope that flow opened, which is the scope it belongs to. A handler with one shared consumer loop had to reset it, because every body there ran in the flow that started the host.
+
+### What arrived with the scope and what it replaced
+
+The scope and its `DeferHostedServiceStartup` entry point predate this design and are unchanged by it. What this design replaced is where the waiting happens: a shared consumer loop scanned queued actions for readiness and tracked a cancellation source per deferred start so a detach could cancel one. Per target chains need none of that. The start body is already serialized against its own target's stops, so parking in it is enough, and the detach that used to cancel now lands as a stop behind the parked start on the same chain.
+
+One consequence is worth stating plainly: a detach no longer completes a deferred start's cancellation immediately. `DetachHostedServiceAsync` awaited while the scope is still open therefore waits for the scope, where it used to return as soon as the start was cancelled. Not awaiting inside an open scope is already the rule for attaches.
 
 ## Residual Hazards
 

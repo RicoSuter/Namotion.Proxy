@@ -173,7 +173,9 @@ public class PropertyChangeInterceptorTests
         var person = new Person(context);
         using var existing = context.CreatePropertyChangeQueueSubscription();
 
-        var writer = Task.Run(() => person.FirstName = "John");
+        // The write parks in the interceptor chain, so it must not wait for a pool thread.
+        var writer = DedicatedThreadTestHelpers.RunOnDedicatedThreadAsync(
+            () => { person.FirstName = "John"; });
         Assert.True(blocker.EnteredInnerChain.Wait(TimeSpan.FromSeconds(10)));
 
         // Act: subscribe while the write is in flight, then release the commit.
@@ -203,7 +205,9 @@ public class PropertyChangeInterceptorTests
         using var existing = observable
             .Subscribe(change => first = change);
 
-        var writer = Task.Run(() => person.FirstName = "John");
+        // The write parks in the interceptor chain, so it must not wait for a pool thread.
+        var writer = DedicatedThreadTestHelpers.RunOnDedicatedThreadAsync(
+            () => { person.FirstName = "John"; });
         Assert.True(blocker.EnteredInnerChain.Wait(TimeSpan.FromSeconds(10)));
 
         // Act: a second observer joins the same observable mid-write. Its subscription must reach

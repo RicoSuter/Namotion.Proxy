@@ -23,14 +23,7 @@ public class FluentStorageContainerTests
         services.AddSingleton<SubjectFactory>();
         services.AddSingleton<ConfigurableSubjectSerializer>();
         services.AddSingleton<RootManager>();
-        services.AddSingleton(serviceProvider =>
-        {
-            // Mirrors AddHomeBlazeServices: the resolver is an ILifecycleHandler, and since it no
-            // longer registers itself from its constructor the factory has to put it on the context.
-            var resolver = new SubjectPathResolver(serviceProvider.GetRequiredService<RootManager>());
-            context.AddService(resolver);
-            return resolver;
-        });
+        services.AddSingleton(sp => new SubjectPathResolver(() => sp.GetRequiredService<RootManager>().Root));
         services.AddSingleton<MarkdownContentParser>();
 
         var serviceProvider = services.BuildServiceProvider();

@@ -777,4 +777,204 @@ namespace Repro
         Assert.Contains(skipped, diagnostic => diagnostic.GetMessage().Contains("PullWithoutInterceptor"));
         Assert.Contains(skipped, diagnostic => diagnostic.GetMessage().Contains("MixWithoutInterceptor"));
     }
+
+    [Fact]
+    public void WhenTheOnlyDeclaredConstructorIsStatic_ThenBothConstructorsAreGenerated()
+    {
+        // Arrange: a static constructor is not an instance constructor, so nothing can chain to it
+        // and the subject still needs a generated parameterless one.
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    [InterceptorSubject]
+    public partial class Machine
+    {
+        public static readonly string Fallback;
+
+        static Machine()
+        {
+            Fallback = ""fallback"";
+        }
+
+        public partial string Name { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.RunExpectingNoWarnings(source);
+
+        // Assert
+        Assert.Contains("public Machine()", generated.SingleSource());
+        Assert.Contains("public Machine(IInterceptorSubjectContext context) : this()", generated.SingleSource());
+    }
+
+    [Fact]
+    public void WhenChainedConstructorSetsRequiredMembers_ThenGeneratedContextConstructorRepeatsTheAttribute()
+    {
+        // Arrange (case RM): the generated context constructor chains to the declared parameterless
+        // one with ": this()", and C# rejects that chain with CS9039 unless the chaining constructor
+        // repeats [SetsRequiredMembers].
+        const string source = @"
+using System.Diagnostics.CodeAnalysis;
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    [InterceptorSubject]
+    public partial class Machine
+    {
+        public required partial string Name { get; set; }
+
+        [SetsRequiredMembers]
+        public Machine()
+        {
+            Name = ""default"";
+        }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.RunExpectingNoWarnings(source);
+
+        // Assert
+        Assert.Contains(
+            "        [global::System.Diagnostics.CodeAnalysis.SetsRequiredMembers]" + Environment.NewLine +
+            "        public Machine(IInterceptorSubjectContext context) : this()",
+            generated.SingleSource());
+    }
+
+    [Fact]
+    public void WhenBaseConstructorSetsRequiredMembers_ThenEveryDerivedGeneratedConstructorRepeatsTheAttribute()
+    {
+        // Arrange (case RM3): each generated parameterless constructor chains implicitly to its base
+        // one, and CS9039 applies to that chain too. The leaf sits two levels below the attributed
+        // constructor: while it is extracted, the attributed constructor the generator emits for the
+        // middle subject does not exist yet, so the middle type only shows an implicit, unattributed
+        // one and the base has to be found through it.
+        const string source = @"
+using System.Diagnostics.CodeAnalysis;
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    [InterceptorSubject]
+    public partial class BaseMachine
+    {
+        public required partial string Id { get; set; }
+
+        [SetsRequiredMembers]
+        public BaseMachine()
+        {
+            Id = ""base-default"";
+        }
+    }
+
+    [InterceptorSubject]
+    public partial class MiddleMachine : BaseMachine
+    {
+        public partial string Name { get; set; }
+    }
+
+    [InterceptorSubject]
+    public partial class LeafMachine : MiddleMachine
+    {
+        public partial string Label { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.RunExpectingNoWarnings(source);
+
+        // Assert
+        var generatedSources = generated.AllSources();
+        Assert.Contains(
+            "        [global::System.Diagnostics.CodeAnalysis.SetsRequiredMembers]" + Environment.NewLine +
+            "        public MiddleMachine()",
+            generatedSources);
+        Assert.Contains(
+            "        [global::System.Diagnostics.CodeAnalysis.SetsRequiredMembers]" + Environment.NewLine +
+            "        public MiddleMachine(IInterceptorSubjectContext context) : this()",
+            generatedSources);
+        Assert.Contains(
+            "        [global::System.Diagnostics.CodeAnalysis.SetsRequiredMembers]" + Environment.NewLine +
+            "        public LeafMachine()",
+            generatedSources);
+        Assert.Contains(
+            "        [global::System.Diagnostics.CodeAnalysis.SetsRequiredMembers]" + Environment.NewLine +
+            "        public LeafMachine(IInterceptorSubjectContext context) : this()",
+            generatedSources);
+    }
+
+    [Fact]
+    public void WhenDerivedSubjectDeclaresItsOwnRequiredMember_ThenGeneratedConstructorsOmitTheAttribute()
+    {
+        // Arrange: the base constructor sets the base's required member, but nothing sets the one the
+        // derived subject adds. A generated constructor carrying the attribute would turn the CS9039
+        // this shape has always produced into a member that is silently null after 'new DerivedMachine()'.
+        const string source = @"
+using System.Diagnostics.CodeAnalysis;
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    [InterceptorSubject]
+    public partial class BaseMachine
+    {
+        public required partial string Id { get; set; }
+
+        [SetsRequiredMembers]
+        public BaseMachine()
+        {
+            Id = ""base-default"";
+        }
+    }
+
+    [InterceptorSubject]
+    public partial class DerivedMachine : BaseMachine
+    {
+        public required partial string Name { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert: the derived subject keeps the compile error and has to declare the initializing
+        // constructor itself.
+        var derivedSource = generated.Sources
+            .Single(generatedSource => generatedSource.HintName == "Repro.DerivedMachine.g.cs")
+            .SourceText
+            .ToString();
+        Assert.DoesNotContain("SetsRequiredMembers", derivedSource);
+        Assert.Contains(generated.CompilationErrors, diagnostic => diagnostic.Id == "CS9039");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("public Machine() { }")]
+    public void WhenNoChainedConstructorSetsRequiredMembers_ThenGeneratedContextConstructorOmitsTheAttribute(
+        string constructorDeclaration)
+    {
+        // Arrange (case RM2): both a generated and a plain declared parameterless constructor leave
+        // the required member uninitialized, for the generator-emitted constructor as much as for
+        // the caller.
+        var source = $@"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{{
+    [InterceptorSubject]
+    public partial class Machine
+    {{
+        public required partial string Name {{ get; set; }}
+
+        {constructorDeclaration}
+    }}
+}}";
+
+        // Act
+        var generated = GeneratorTestHost.RunExpectingNoWarnings(source);
+
+        // Assert: claiming the attribute here would tell the compiler the required member is
+        // initialized when nothing initializes it, and every caller would lose the diagnostic.
+        Assert.DoesNotContain("SetsRequiredMembers", generated.SingleSource());
+        Assert.Contains("public Machine(IInterceptorSubjectContext context) : this()", generated.SingleSource());
+    }
 }

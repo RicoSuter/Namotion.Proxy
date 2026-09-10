@@ -75,7 +75,7 @@ public class SequenceNumberTests
             context => new TestRoot(context),
             port: portLease.Port);
 
-        Assert.Equal(0L, server.Server!.CurrentSequence);
+        Assert.Equal(0L, server.Server!.Diagnostics.CurrentSequence);
 
         // Connect a client so broadcasts actually go through
         using var ws = new ClientWebSocket();
@@ -91,10 +91,10 @@ public class SequenceNumberTests
 
         // Assert
         await AsyncTestHelpers.WaitUntilAsync(
-            () => server.Server.CurrentSequence > 0,
+            () => server.Server.Diagnostics.CurrentSequence > 0,
             message: "Sequence should increment after broadcasting to connected clients");
 
-        _output.WriteLine($"Sequence after update: {server.Server.CurrentSequence}");
+        _output.WriteLine($"Sequence after update: {server.Server.Diagnostics.CurrentSequence}");
 
         try
         {
@@ -129,16 +129,16 @@ public class SequenceNumberTests
         // Act - Trigger multiple updates, waiting for each broadcast to complete
         server.Root!.Name = "Update1";
         await AsyncTestHelpers.WaitUntilAsync(
-            () => server.Server!.CurrentSequence > 0,
+            () => server.Server!.Diagnostics.CurrentSequence > 0,
             timeout: TimeSpan.FromSeconds(5),
             message: "First update should be broadcast");
-        var sequenceAfterFirst = server.Server!.CurrentSequence;
+        var sequenceAfterFirst = server.Server!.Diagnostics.CurrentSequence;
         server.Root!.Name = "Update2";
         await AsyncTestHelpers.WaitUntilAsync(
-            () => server.Server!.CurrentSequence > sequenceAfterFirst,
+            () => server.Server!.Diagnostics.CurrentSequence > sequenceAfterFirst,
             timeout: TimeSpan.FromSeconds(5),
             message: "Second update should be broadcast");
-        var sequenceAfterSecond = server.Server!.CurrentSequence;
+        var sequenceAfterSecond = server.Server!.Diagnostics.CurrentSequence;
         server.Root!.Name = "Update3";
 
         // Assert - Read updates and verify monotonic sequences
@@ -372,7 +372,7 @@ public class SequenceNumberTests
             // Act - Trigger some updates
             server.Root!.Name = "A";
             await AsyncTestHelpers.WaitUntilAsync(
-                () => server.Server!.CurrentSequence > firstHeartbeatSequence,
+                () => server.Server!.Diagnostics.CurrentSequence > firstHeartbeatSequence,
                 timeout: TimeSpan.FromSeconds(5),
                 message: "First update should be broadcast");
             server.Root!.Name = "B";
@@ -441,7 +441,7 @@ public class SequenceNumberTests
         // Act - Trigger updates
         server.Root!.Name = "BroadcastTest";
         await AsyncTestHelpers.WaitUntilAsync(
-            () => server.Server!.CurrentSequence > 0,
+            () => server.Server!.Diagnostics.CurrentSequence > 0,
             timeout: TimeSpan.FromSeconds(5),
             message: "Update should be broadcast");
 
@@ -495,13 +495,13 @@ public class SequenceNumberTests
         // Act - Trigger updates while first client is still connected (so broadcast increments sequence)
         server.Root!.Name = "A";
         await AsyncTestHelpers.WaitUntilAsync(
-            () => server.Server!.CurrentSequence > 0,
+            () => server.Server!.Diagnostics.CurrentSequence > 0,
             timeout: TimeSpan.FromSeconds(5),
             message: "First update should be broadcast");
-        var sequenceAfterA = server.Server!.CurrentSequence;
+        var sequenceAfterA = server.Server!.Diagnostics.CurrentSequence;
         server.Root!.Name = "B";
         await AsyncTestHelpers.WaitUntilAsync(
-            () => server.Server!.CurrentSequence > sequenceAfterA,
+            () => server.Server!.Diagnostics.CurrentSequence > sequenceAfterA,
             timeout: TimeSpan.FromSeconds(5),
             message: "Second update should be broadcast");
 
@@ -546,10 +546,10 @@ public class SequenceNumberTests
         // Act - Multiple updates - client should track sequences correctly
         for (var i = 1; i <= 10; i++)
         {
-            var previousSequence = server.Server!.CurrentSequence;
+            var previousSequence = server.Server!.Diagnostics.CurrentSequence;
             server.Root!.Name = $"Update{i}";
             await AsyncTestHelpers.WaitUntilAsync(
-                () => server.Server!.CurrentSequence > previousSequence,
+                () => server.Server!.Diagnostics.CurrentSequence > previousSequence,
                 timeout: TimeSpan.FromSeconds(5),
                 message: $"Update {i} should be broadcast");
         }

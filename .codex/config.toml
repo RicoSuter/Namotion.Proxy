@@ -1,0 +1,18 @@
+# Node does not use the macOS keychain, so it rejects the ASP.NET dev certificate even once that has
+# been trusted for browsers. Point NODE_EXTRA_CA_CERTS at an exported copy rather than disabling
+# verification: NODE_TLS_REJECT_UNAUTHORIZED=0 turns off certificate checking for every process npx
+# spawns, not just this one.
+#
+#   dotnet dev-certs https --export-path ~/.aspnet/https/aspnetcore-localhost.pem --format PEM
+[mcp_servers.homeblaze]
+command = "npx"
+args = ["-y", "mcp-remote", "https://localhost:7298/mcp"]
+
+[mcp_servers.homeblaze.env]
+NODE_EXTRA_CA_CERTS = "${HOME}/.aspnet/https/aspnetcore-localhost.pem"
+
+[mcp_servers.homeblaze.tools.browse]
+approval_mode = "approve"
+
+[mcp_servers.homeblaze.tools.search]
+approval_mode = "approve"

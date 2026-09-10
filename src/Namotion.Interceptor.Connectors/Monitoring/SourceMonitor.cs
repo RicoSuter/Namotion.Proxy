@@ -346,9 +346,8 @@ public class SourceMonitor : ILifecycleHandler, IStartupCompletionDeferrer
     /// State and LastSynchronizedAt are read lock-free per source, so the verdict is a walk-consistent
     /// snapshot rather than an atomic instant: a source visited early can stop before the walk ends,
     /// leaving the result one grade better than the truth. That is indistinguishable from completing
-    /// an instant earlier. It cannot err the other way for a SubjectSourceBase, whose Stopped can
-    /// never carry a stale null timestamp, since that transition takes the state lock after the one
-    /// that stamped the ticks.
+    /// an instant earlier. It cannot err the other way for a SubjectSourceBase, which publishes its
+    /// state and its LastSynchronizedAt as one snapshot.
     /// </remarks>
     private bool IsBranchSynchronized(IInterceptorSubject anchor, out SourceSynchronizationResult result)
     {
@@ -373,8 +372,7 @@ public class SourceMonitor : ILifecycleHandler, IStartupCompletionDeferrer
             var state = source.State;
 
             // Returns before any timestamp is read, which is what keeps an implementation that
-            // reports Synchronized without stamping one from being read as a failure. It also hides
-            // TransitionStateTo's window between publishing Synchronized and stamping the ticks.
+            // reports Synchronized without stamping one from being read as a failure.
             if (state == SourceState.Synchronized)
             {
                 continue;

@@ -1,3 +1,4 @@
+using Namotion.Interceptor.Testing;
 using System.Reactive.Concurrency;
 using Namotion.Interceptor.Tracking.Change;
 using Namotion.Interceptor.Tracking.Tests.Models;
@@ -50,7 +51,9 @@ public class PropertyChangeRevisionTests
         var interceptor = context.GetService<PropertyChangeInterceptor>();
         var person = new Person(context);
 
-        var writer = Task.Run(() => person.FirstName = "John");
+        // The write parks in the interceptor chain, so it must not wait for a pool thread.
+        var writer = DedicatedThreadTestHelpers.RunOnDedicatedThreadAsync(
+            () => { person.FirstName = "John"; });
         Assert.True(blocker.EnteredInnerChain.Wait(TimeSpan.FromSeconds(10)));
 
         // Guards that the write really took the idle branch, so this test covers the late dispatch

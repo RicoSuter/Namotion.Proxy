@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using Namotion.Interceptor.Attributes;
 using Namotion.Interceptor.Interceptors;
@@ -29,15 +30,38 @@ public sealed class SubjectTransactionInterceptor : IReadInterceptor, IWriteInte
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public TProperty ReadProperty<TProperty>(ref PropertyReadContext<TProperty> context, ReadInterceptionDelegate<TProperty> next)
     {
-        // Fast path: Skip transaction check when no transaction is active (avoids AsyncLocal read)
         if (!SubjectTransaction.HasActiveTransaction)
         {
             return next(ref context);
         }
 
         var transaction = SubjectTransaction.Current;
-        if (transaction is { IsCommitting: false } &&
-            transaction.TryGetPendingValue<TProperty>(context.Property, out var pendingValue))
+        if (transaction is null || transaction.IsDisposed || transaction.IsCommitted)
+        {
+            return next(ref context);
+        }
+
+        if (transaction.IsCommitting)
+        {
+            if (transaction.IsCommitModelAccessAuthorized)
+            {
+                return next(ref context);
+            }
+
+            if (transaction.IsInactiveUnderLockOrThrowIfCommitting())
+            {
+                return next(ref context);
+            }
+        }
+
+        // Recorder-active reads are the landed-model view. This access linearizes at the non-committing
+        // observation above; do not hold the transaction lock while a user getter executes.
+        if (DerivedPropertyChangeHandler.IsRecordingDerivedProperty)
+        {
+            return next(ref context);
+        }
+
+        if (transaction.TryGetPendingValue<TProperty>(context.Property, out var pendingValue))
         {
             return pendingValue;
         }
@@ -49,7 +73,6 @@ public sealed class SubjectTransactionInterceptor : IReadInterceptor, IWriteInte
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next)
     {
-        // Fast path: Skip transaction check when no transaction is active (avoids AsyncLocal read)
         if (!SubjectTransaction.HasActiveTransaction)
         {
             next(ref context);
@@ -57,35 +80,80 @@ public sealed class SubjectTransactionInterceptor : IReadInterceptor, IWriteInte
         }
 
         var transaction = SubjectTransaction.Current;
-        if (transaction is { IsCommitting: false } && !context.Property.Metadata.IsDerived)
+        if (transaction is null || transaction.IsDisposed || transaction.IsCommitted)
         {
-            // Validate context binding
-            var subjectInterceptor = context.Property.Subject.Context.TryGetService<SubjectTransactionInterceptor>();
-            if (subjectInterceptor != transaction.Interceptor)
-            {
-                throw new InvalidOperationException(
-                    $"Cannot modify property '{context.Property.Metadata.Name}': Transaction is bound to a different context.");
-            }
-
-            // Capture is a terminal outcome for the chain: the downstream write (and its origin
-            // finalization) never runs. Finalize here so a stamped origin whose captured value was
-            // transformed (e.g. an OnChanging clamp) demotes to Local, matching what the terminal
-            // write would have produced. Otherwise the stale FromSource survives commit replay and
-            // the corrected value is echo-suppressed, leaving the source diverged.
-            context.FinalizeOrigin();
-
-            transaction.CaptureChange(
-                context.Property,
-                context.Origin,
-                context.WriteTimestampForPublishing,
-                SubjectChangeContext.Current.ReceivedTimestamp,
-                context.CurrentValue,
-                context.NewValue);
-
-            return; // Captured, interceptor chain stops here
+            next(ref context);
+            return;
         }
 
-        next(ref context); // No transaction, derived, or committing: Normal flow
+        if (transaction.IsCommitting)
+        {
+            if (transaction.IsCommitModelAccessAuthorized)
+            {
+                next(ref context);
+                return;
+            }
+
+            if (transaction.IsInactiveUnderLockOrThrowIfCommitting())
+            {
+                next(ref context);
+                return;
+            }
+        }
+
+        // Settable-derived writes are immediate and outside the transaction. This access linearizes at the
+        // non-committing observation above; do not hold the transaction lock while a user setter executes.
+        if (context.Property.Metadata.IsDerived)
+        {
+            next(ref context);
+            return;
+        }
+
+        var subjectInterceptors = context.Property.Subject.Context
+            .GetServices<SubjectTransactionInterceptor>();
+        var isBoundToThisContext = subjectInterceptors.Length == 1
+            ? ReferenceEquals(subjectInterceptors[0], transaction.Interceptor)
+            : ContainsByReference(subjectInterceptors, transaction.Interceptor);
+
+        if (!isBoundToThisContext)
+        {
+            throw new InvalidOperationException(
+                $"Cannot modify property '{context.Property.Metadata.Name}': Transaction is bound to a different context.");
+        }
+
+        // Origin comparison can run user equality code, so resolve it before taking the transaction lock.
+        var resolvedOrigin = context.GetFinalOrigin();
+        var changedTimestamp = context.WriteTimestampForPublishing;
+        var receivedTimestamp = SubjectChangeContext.Current.ReceivedTimestamp;
+
+        if (transaction.TryCaptureChange(
+                context.Property,
+                resolvedOrigin,
+                changedTimestamp,
+                receivedTimestamp,
+                context.CurrentValue,
+                context.NewValue))
+        {
+            return;
+        }
+
+        next(ref context);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool ContainsByReference(
+        ImmutableArray<SubjectTransactionInterceptor> interceptors,
+        SubjectTransactionInterceptor target)
+    {
+        for (var index = 0; index < interceptors.Length; index++)
+        {
+            if (ReferenceEquals(interceptors[index], target))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private sealed class LockReleaser(SemaphoreSlim semaphore) : IDisposable

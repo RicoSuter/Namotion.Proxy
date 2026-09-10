@@ -6,6 +6,8 @@ namespace Namotion.Interceptor.Tracking.Tests.Change;
 [Collection(PerPropertySubscriptionCollection.Name)]
 public class CurrentValueTests
 {
+    public CurrentValueTests() => PropertyChangeSubscriptions.ResetForTests();
+
     [Fact]
     public void WhenNothingWrittenSinceTheChange_ThenGetCurrentValueEqualsGetNewValue()
     {
@@ -14,7 +16,7 @@ public class CurrentValueTests
         var person = new Person(context);
         SubjectPropertyChange captured = default;
         using var subscription = new PropertyReference(person, nameof(Person.FirstName))
-            .Subscribe((in SubjectPropertyChange change) => captured = change);
+            .SubscribeInline((in SubjectPropertyChange change) => captured = change);
 
         // Act
         person.FirstName = "Rico";
@@ -32,7 +34,7 @@ public class CurrentValueTests
         var person = new Person(context);
         SubjectPropertyChange captured = default;
         using var subscription = new PropertyReference(person, nameof(Person.FirstName))
-            .Subscribe((in SubjectPropertyChange change) =>
+            .SubscribeInline((in SubjectPropertyChange change) =>
             {
                 if (captured.Property.Subject is null) captured = change;
             });
@@ -54,7 +56,7 @@ public class CurrentValueTests
         var person = new Person(context);
         SubjectPropertyChange captured = default;
         using var subscription = new PropertyReference(person, nameof(Person.FirstName))
-            .Subscribe((in SubjectPropertyChange change) =>
+            .SubscribeInline((in SubjectPropertyChange change) =>
             {
                 if (captured.Property.Subject is null) captured = change;
             });
@@ -75,7 +77,7 @@ public class CurrentValueTests
         var person = new Person(context);
         SubjectPropertyChange captured = default;
         using var subscription = new PropertyReference(person, nameof(Person.FirstName))
-            .Subscribe((in SubjectPropertyChange change) =>
+            .SubscribeInline((in SubjectPropertyChange change) =>
             {
                 if (captured.Property.Subject is null) captured = change;
             });
@@ -94,7 +96,7 @@ public class CurrentValueTests
         var person = new Person(context);
         SubjectPropertyChange captured = default;
         using var subscription = new PropertyReference(person, nameof(Person.FirstName))
-            .Subscribe((in SubjectPropertyChange change) =>
+            .SubscribeInline((in SubjectPropertyChange change) =>
             {
                 if (captured.Property.Subject is null) captured = change;
             });

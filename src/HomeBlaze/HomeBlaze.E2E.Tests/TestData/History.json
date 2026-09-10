@@ -1,0 +1,7 @@
+{
+  "$type": "HomeBlaze.History.InMemory.InMemoryHistoryStoreSubject",
+  "isEnabled": true,
+  "bufferTimeMilliseconds": 50,
+  "maxAgeSeconds": 3600,
+  "maxPointsPerProperty": 5000
+}

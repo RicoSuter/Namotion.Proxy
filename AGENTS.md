@@ -53,15 +53,16 @@ Always read [Benchmarking](docs/benchmarking.md) before running or interpreting 
 
 ### Project Structure
 ```
-src/
-├── Namotion.Interceptor/           # Core library with base interfaces
-├── Namotion.Interceptor.Generator/ # Source generator for [InterceptorSubject]
-├── Namotion.Interceptor.{Feature}/ # Extension libraries (Tracking, Registry, etc.)
-├── Extensions/                     # Integration packages (AspNetCore, Blazor, etc.)
-├── Samples/                        # Example applications
-└── Tests/                          # Unit test projects
-docs/                               # Feature and connector documentation
-├── design/                         # Internal design documents
+src/                                  # Projects are flat here, grouped by name rather than by folder
+├── Namotion.Interceptor/             # Core library with base interfaces
+├── Namotion.Interceptor.Generator/   # Source generator for [InterceptorSubject]
+├── Namotion.Interceptor.{Feature}/   # Libraries: Tracking, Registry, Connectors, OpcUa, AspNetCore, ...
+├── Namotion.Interceptor.{X}.Tests/   # Test project per library
+├── Namotion.Interceptor.{X}Sample*/  # Example applications
+├── Namotion.Interceptor.Benchmark/   # BenchmarkDotNet project
+└── HomeBlaze/                        # HomeBlaze application and its device libraries
+docs/                                 # Feature and connector documentation
+└── design/                           # Internal design documents
 ```
 
 ## Language Requirements
@@ -100,6 +101,7 @@ The library uses a fluent configuration API:
 - **Target Frameworks**: .NET Standard 2.0 (core), .NET 9.0 (extensions)
 - **Package Version**: released on NuGet, breaking changes are fine when justified but need user approval
 - **CI/CD**: GitHub Actions with xUnit testing, coverage reporting, and NuGet publishing
+- **Native AOT**: full compatibility where possible is the target (#516). New code prefers static alternatives to runtime code generation and reflection, and existing sites are fixed when a change already touches them.
 
 ## Key Dependencies
 
@@ -130,10 +132,20 @@ The library has specialized support for:
 
 - **Avoid abbreviations** in variable and parameter names unless the name is very long. Use descriptive names (e.g., `attribute` not `attr`).
 - **No em dashes** in docs, READMEs, or PR descriptions. Restructure into plain sentences instead.
+- **No hard wrapping** in markdown. Keep a paragraph on one line instead of breaking at a column.
+- **Inline comments: the why a reader cannot derive.** Length is earned by preventing a plausible wrong edit, such as a lock discipline, a pooled buffer that must not be read after release, or an ordering constraint. It is not earned by defending a decision against alternatives, which belongs in the pull request or `docs/design/`. Never restate the line below.
+- **XML docs state the contract**, not the reasoning. `<remarks>` is for a caveat a caller must act on.
+- **One canonical location per concept**, cross-referenced. Three copies drift.
 
 ## Git Rules
 
 - Never include AI attribution in commit messages, PR descriptions, or GitHub comments. This covers agent names ("Claude", "Codex", "Copilot"), `Co-Authored-By` trailers, and "Generated with" footers.
+
+## Pull Requests
+
+- Fill in [the pull request template](.github/pull_request_template.md). `gh pr create --body-file` bypasses it, so open the file rather than waiting to be shown it.
+- Prefix the title with `fix:`, `feat:`, `perf:`, `docs:`, `refactor:`, `test:` or `chore:`.
+- Apply an `area:` and a `type:` label at creation with `gh pr create --label`, choosing from `gh label list`.
 
 ## Test Conventions
 

@@ -3,6 +3,10 @@
 [assembly: System.Runtime.Versioning.TargetFramework(".NETCoreApp,Version=v9.0", FrameworkDisplayName=".NET 9.0")]
 namespace Namotion.Interceptor.Hosting
 {
+    public sealed class HostedServiceStartupScope : System.IDisposable
+    {
+        public void Dispose() { }
+    }
     public interface IHostedServiceAttachment
     {
         Microsoft.Extensions.Hosting.IHostedService? Current { get; }
@@ -25,6 +29,7 @@ namespace Namotion.Interceptor.Hosting
     }
     public static class InterceptorSubjectContextExtensions
     {
+        public static Namotion.Interceptor.Hosting.HostedServiceStartupScope? DeferHostedServiceStartup(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
         public static Namotion.Interceptor.IInterceptorSubjectContext WithHostedServices(this Namotion.Interceptor.IInterceptorSubjectContext context, Microsoft.Extensions.DependencyInjection.IServiceCollection serviceCollection) { }
     }
     public static class SubjectServiceCollectionExtensions

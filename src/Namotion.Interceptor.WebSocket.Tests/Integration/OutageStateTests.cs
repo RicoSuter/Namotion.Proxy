@@ -43,7 +43,7 @@ public class OutageStateTests
 
         // The client source is constructed directly (not through WebSocketTestClient, which only
         // exposes IHostedService) so it can be held as its concrete type for IFaultInjectable and
-        // ISubjectSource.State.
+        // ISubjectSource.StateChanged.
         var context = InterceptorSubjectContext
             .Create()
             .WithFullPropertyTracking()
@@ -62,34 +62,55 @@ public class OutageStateTests
             },
             NullLogger<WebSocketSubjectClientSource>.Instance);
 
+        // Subscribed before anything can transition the source: the outage is asserted from the
+        // recorded transitions, because the Synchronizing window between the disconnect and the
+        // reconnect can be shorter than the interval at which a test can sample the current state.
+        var stateRecorder = SourceStateRecorder.SubscribeTo(source);
+
         try
         {
             await source.StartAsync(CancellationToken.None);
 
-            await AsyncTestHelpers.WaitUntilAsync(
-                () => source.State == SourceState.Synchronized,
-                timeout: TimeSpan.FromSeconds(30),
-                message: "Initial sync should complete");
-            var firstSynchronizedAt = source.LastSynchronizedAt;
+            await stateRecorder.WaitForStatesAsync(
+                TimeSpan.FromSeconds(30),
+                "Initial sync should complete.",
+                SourceState.Synchronized);
 
             // Act - Disconnect is the soft fault: it aborts the socket without stopping the
             // connector, matching a real network blip.
             await ((IFaultInjectable)source).InjectFaultAsync(FaultType.Disconnect, CancellationToken.None);
 
             // Assert
-            await AsyncTestHelpers.WaitUntilAsync(
-                () => source.State == SourceState.Synchronizing,
-                timeout: TimeSpan.FromSeconds(15),
-                message: "Source should report Synchronizing during the outage");
-            await AsyncTestHelpers.WaitUntilAsync(
-                () => source.State == SourceState.Synchronized,
-                timeout: TimeSpan.FromSeconds(30),
-                message: "Source should recover to Synchronized after reconnecting");
-            Assert.NotNull(firstSynchronizedAt);
-            Assert.True(source.LastSynchronizedAt > firstSynchronizedAt);
+            await stateRecorder.WaitForStatesAsync(
+                TimeSpan.FromSeconds(15),
+                "The disconnect should have been reported as an outage instead of the source staying Synchronized.",
+                SourceState.Synchronized, SourceState.Synchronizing);
+
+            var outage = await stateRecorder.WaitForStatesAsync(
+                TimeSpan.FromSeconds(30),
+                "Source should recover to Synchronized after reconnecting.",
+                SourceState.Synchronized, SourceState.Synchronizing, SourceState.Synchronized);
+
+            // Each transition carries the timestamp that ISubjectSource.StateChangeTime was set to,
+            // so these compare the moments themselves rather than whatever the property reads back as
+            // once the outage is over.
+            var firstSynchronizedAt = outage[0].Timestamp;
+            var outageDetectedAt = outage[1].Timestamp;
+            var recoveredAt = outage[2].Timestamp;
+
+            Assert.True(outageDetectedAt > firstSynchronizedAt,
+                "Losing synchronization should have moved StateChangeTime past the initial sync, but the " +
+                $"recorded transitions were: {stateRecorder}.");
+
+            // Against the outage moment, not the initial sync: the timestamp only ever advances, so
+            // comparing against firstSynchronizedAt again could not fail.
+            Assert.True(recoveredAt > outageDetectedAt,
+                "Recovering should have moved StateChangeTime past the moment the outage was detected, but the " +
+                $"recorded transitions were: {stateRecorder}.");
         }
         finally
         {
+            stateRecorder.Dispose();
             await source.StopAsync(CancellationToken.None);
         }
     }

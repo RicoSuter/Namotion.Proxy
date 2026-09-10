@@ -41,13 +41,13 @@ public partial class SampleDevice1 : BackgroundService, IConfigurable, ITitlePro
     [Configuration]
     public partial int PollingIntervalMs { get; set; }
 
-    [State]
+    [State(Unit = StateUnit.DegreeCelsius)]
     public partial double Temperature { get; internal set; }
 
     [State]
     public partial double Humidity { get; internal set; }
 
-    [State]
+    [State(Unit = StateUnit.Hectopascal)]
     public partial double Pressure { get; internal set; }
 
     [State]

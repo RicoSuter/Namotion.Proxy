@@ -61,7 +61,7 @@ public class OpcUaConcurrencyTests
             Assert.NotNull(server.Root);
             Assert.NotNull(client.Root);
             Assert.NotNull(client.Source);
-            Assert.True(client.Source.Diagnostics.IsConnected);
+            Assert.True(client.Source.Diagnostics.IsOperational);
             logger.Log("Initial connection established");
 
             // Background updates
@@ -95,7 +95,7 @@ public class OpcUaConcurrencyTests
             logger.Log("Stopping server...");
             await server.StopAsync();
             await AsyncTestHelpers.WaitUntilAsync(
-                () => !client.Source.Diagnostics.IsConnected,
+                () => client.Source.Diagnostics.IsOperational == false,
                 timeout: TimeSpan.FromSeconds(90),
                 message: "Client should detect disconnection");
             logger.Log("Client detected disconnection");
@@ -151,7 +151,7 @@ public class OpcUaConcurrencyTests
             Assert.NotNull(server.Server);
             Assert.NotNull(client.Source);
 
-            logger.Log($"Server sessions: {server.Server.Diagnostics.ActiveSessionCount}, Client connected: {client.Source.Diagnostics.IsConnected}");
+            logger.Log($"Server sessions: {server.Server.Diagnostics.ActiveSessionCount}, Client connected: {client.Source.Diagnostics.IsOperational}");
 
             // === Test 1: Diagnostics access during disposal ===
             logger.Log("=== Test 1: Diagnostics during disposal ===");
@@ -165,8 +165,8 @@ public class OpcUaConcurrencyTests
                     try
                     {
                         _ = server.Server.Diagnostics.ActiveSessionCount;
-                        _ = server.Server.Diagnostics.IsRunning;
-                        _ = client.Source.Diagnostics.IsConnected;
+                        _ = server.Server.Diagnostics.IsOperational;
+                        _ = client.Source.Diagnostics.IsOperational;
                         _ = client.Source.Diagnostics.MonitoredItemCount;
                     }
                     catch (Exception ex)

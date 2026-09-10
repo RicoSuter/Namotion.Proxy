@@ -185,6 +185,6 @@ public class SelfEchoReproTests
 
         // Assert: the mid-write value must not have been applied back to the subject.
         Assert.Equal("initial", child.Value);
-        Assert.Equal(0d, serverService.Diagnostics.IncomingChangesPerSecond);
+        Assert.Equal(0d, serverService.Diagnostics.Throughput.IncomingPerSecond);
     }
 }

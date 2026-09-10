@@ -11,22 +11,33 @@ namespace Namotion.Interceptor.Hosting;
 [RunsAfter(typeof(ContextInheritanceHandler))]
 internal sealed class HostedServiceHandler : IHostedService, ILifecycleHandler
 {
-    // A workaround, not a design choice: the generated context constructor attaches the subject
-    // before the caller has assigned anything, so "new Car(context) { Name = "x" }" would otherwise
-    // start a service that reads a half built subject. Paid by the stop body as well as the start,
-    // which is why it is not named for the start.
-    // See docs/design/hosting-service-ownership.md#the-50-ms-delay.
+    // A workaround, not a design choice, and now the stop body's alone: the start waits for a startup
+    // scope instead. See docs/design/hosting-service-ownership.md#the-50-ms-delay.
     private const int TransitionDelayMilliseconds = 50;
 
     /// <summary>
     /// How long the drain waits between reads of the in flight count. Once per process, on a path that
-    /// already spends <see cref="TransitionDelayMilliseconds"/> inside every transition it waits for.
+    /// already spends <see cref="TransitionDelayMilliseconds"/> inside every stop it waits for.
     /// </summary>
     private const int DrainPollMilliseconds = 1;
 
     private readonly HostedServiceGate _gate = new();
     private readonly ConcurrentDictionary<HostedServiceTarget, IInterceptorSubject> _owned = new();
     private readonly ConcurrentDictionary<IInterceptorSubject, byte> _liveSubjects = new();
+
+    /// <summary>
+    /// The startup scope open in the flow that appends a start, or null. Ambient because the flow that
+    /// constructs a subject is the one that knows when it is configured, and the attach it triggers
+    /// runs inside a property write with nothing to pass a scope through.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not reset inside a transition body: a body runs with the execution context of the
+    /// flow that appended it, so a nested attach reads the scope that flow opened, which is the one it
+    /// belongs to. A handler with a shared consumer loop would have had to reset it.
+    /// </remarks>
+    private readonly AsyncLocal<HostedServiceStartupScope?> _startupScope = new();
+
+    internal HostedServiceStartupScope DeferStartup() => new(_startupScope);
 
     /// <summary>
     /// Transitions this handler appended that have not finished. Read by the drain rather than
@@ -245,10 +256,14 @@ internal sealed class HostedServiceHandler : IHostedService, ILifecycleHandler
         // queued. Taking the hold before the append leaves no window in which that can happen.
         var startupHolds = TakeStartupHolds(subject.Context);
 
+        // Read in the appending flow, which is the one that opened it. The body runs later and, on the
+        // paths where a caller does not await the attach, in a flow that has already moved on.
+        var startupScope = _startupScope.Value;
+
         var start = target.TryTakeOwnershipAndAppendAsync(
             this,
             subject,
-            () => RunStartAsync(subject, target, startupHolds),
+            () => RunStartAsync(subject, target, startupHolds, startupScope),
             out var ownershipTaken);
 
         if (start is null)
@@ -286,7 +301,11 @@ internal sealed class HostedServiceHandler : IHostedService, ILifecycleHandler
         return start;
     }
 
-    private async Task RunStartAsync(IInterceptorSubject subject, HostedServiceTarget target, IDisposable[] startupHolds)
+    private async Task RunStartAsync(
+        IInterceptorSubject subject,
+        HostedServiceTarget target,
+        IDisposable[] startupHolds,
+        HostedServiceStartupScope? startupScope)
     {
         try
         {
@@ -316,14 +335,17 @@ internal sealed class HostedServiceHandler : IHostedService, ILifecycleHandler
                 return;
             }
 
+            if (startupScope is not null && !await WaitForConfigurationAsync(subject, target, startupScope).ConfigureAwait(false))
+            {
+                return;
+            }
+
             // Cleared after every guard, never before: a start that is gated out or skipped must not
             // drop a fault that a caller has not read yet.
             target.SetFault(null);
 
             try
             {
-                await Task.Delay(TransitionDelayMilliseconds, CancellationToken.None).ConfigureAwait(false);
-
                 var instance = target.Subject ?? target.Factory!();
                 if (target.IsHandlerOwnedInstance && !target.TryRecordFactoryInstance(instance))
                 {
@@ -364,6 +386,35 @@ internal sealed class HostedServiceHandler : IHostedService, ILifecycleHandler
             // In a finally, so every way out releases.
             ReleaseStartupHolds(startupHolds);
         }
+    }
+
+    /// <summary>
+    /// Waits for the startup scope this start was captured in and reports whether it may still run.
+    /// </summary>
+    /// <remarks>
+    /// Every guard the caller read before this is re-read after it: a scope holds a start for as long
+    /// as its flow stays open, and the subject can leave the graph in that time.
+    /// <para>
+    /// The drain releases the wait as well as the scope does. A start parked here is counted in flight,
+    /// so a scope nobody disposes would otherwise hold the drain's barrier for the whole shutdown
+    /// deadline.
+    /// </para>
+    /// </remarks>
+    private async Task<bool> WaitForConfigurationAsync(
+        IInterceptorSubject subject, HostedServiceTarget target, HostedServiceStartupScope startupScope)
+    {
+        if (!startupScope.IsReady)
+        {
+            await Task.WhenAny(
+                    startupScope.WaitAsync(CancellationToken.None),
+                    _gate.WaitForDrainingAsync())
+                .ConfigureAwait(false);
+        }
+
+        return _gate.State == HostedServiceGateState.Running
+            && _liveSubjects.ContainsKey(subject)
+            && ReferenceEquals(target.Owner, this)
+            && target.Current is null;
     }
 
     /// <summary>

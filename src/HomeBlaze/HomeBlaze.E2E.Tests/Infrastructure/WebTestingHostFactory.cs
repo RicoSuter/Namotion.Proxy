@@ -1,11 +1,3 @@
-using HomeBlaze.Components;
-using HomeBlaze.Plugins;
-using HomeBlaze.Samples;
-using HomeBlaze.OpcUa;
-using HomeBlaze.OpcUa.Blazor;
-using HomeBlaze.Services;
-using HomeBlaze.Storage;
-using HomeBlaze.Storage.Blazor.Files;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -33,6 +25,20 @@ public class WebTestingHostFactory<TProgram> : WebApplicationFactory<TProgram>
         {
             EnsureServer();
             return _serverAddress!;
+        }
+    }
+
+    /// <summary>
+    /// The services of the Kestrel host that serves the tests. This is a different container from
+    /// <see cref="WebApplicationFactory{TProgram}.Services"/>, which belongs to the TestServer host
+    /// the base class requires and which no request ever reaches.
+    /// </summary>
+    public IServiceProvider ServerServices
+    {
+        get
+        {
+            EnsureServer();
+            return _kestrelHost!.Services;
         }
     }
 
@@ -73,27 +79,10 @@ public class WebTestingHostFactory<TProgram> : WebApplicationFactory<TProgram>
         // Build and start the Kestrel host
         _kestrelHost = builder.Build();
 
-        // Configure TypeProvider with essential assemblies for E2E tests
-        var typeProvider = _kestrelHost.Services.GetRequiredService<TypeProvider>();
-        typeProvider
-            .AddAssembly(typeof(FluentStorageContainer).Assembly)      // HomeBlaze.Storage
-            .AddAssembly(typeof(Motor).Assembly)                       // HomeBlaze.Samples (for test subjects)
-            .AddAssembly(typeof(PluginManager).Assembly);              // HomeBlaze.Plugins
-
-        // Load runtime plugins and register their assemblies.
-        // Use Task.Run to avoid deadlocking the synchronous CreateHost call.
-        var pluginLoader = _kestrelHost.Services.GetRequiredService<PluginLoader>();
-        var pluginResult = Task.Run(() => pluginLoader.LoadPluginsAsync(CancellationToken.None)).GetAwaiter().GetResult();
-        if (pluginResult != null)
-        {
-            foreach (var plugin in pluginResult.LoadedPlugins)
-            {
-                foreach (var assembly in plugin.Assemblies)
-                {
-                    typeProvider.AddAssembly(assembly);
-                }
-            }
-        }
+        // TypeProvider is deliberately not populated here. The entry point already registers every
+        // assembly this factory used to add, and loads the same plugins, against the same singleton.
+        // Doing it again from this thread while the entry point runs on its own put two writers into
+        // one provider at once, which is what made the E2E fixture fail to initialise.
 
         _kestrelHost.Start();
 

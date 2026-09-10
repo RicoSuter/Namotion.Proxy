@@ -19,6 +19,8 @@ public class WebSocketTestClient<TRoot> : IAsyncDisposable
 
     public TRoot? Root { get; private set; }
 
+    public IInterceptorSubjectContext? Context { get; private set; }
+
     public WebSocketTestClient(ITestOutputHelper output)
     {
         _output = output;
@@ -27,7 +29,8 @@ public class WebSocketTestClient<TRoot> : IAsyncDisposable
     public async Task StartAsync(
         Func<IInterceptorSubjectContext, TRoot> createRoot,
         Func<TRoot, bool>? isConnected = null,
-        int port = 18080)
+        int port = 18080,
+        Action<IInterceptorSubjectContext>? configureContext = null)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddLogging(logging =>
@@ -43,6 +46,9 @@ public class WebSocketTestClient<TRoot> : IAsyncDisposable
             .WithLifecycle()
             .WithHostedServices(builder.Services);
 
+        configureContext?.Invoke(context);
+
+        Context = context;
         Root = createRoot(context);
 
         builder.Services.AddSingleton(Root);

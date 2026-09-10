@@ -1,6 +1,8 @@
+using Namotion.Interceptor.Connectors.Diagnostics;
+
 namespace Namotion.Interceptor.OpcUa.Client;
 
-internal sealed class ReconnectionMetrics
+internal sealed class ReconnectionMetrics : IResettableMetrics
 {
     private long _totalAttempts;
     private long _successful;
@@ -49,5 +51,18 @@ internal sealed class ReconnectionMetrics
     public void RecordAbandoned()
     {
         Interlocked.Increment(ref _abandoned);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <see cref="LastConnectedAt"/> is deliberately preserved: it records a past event rather than
+    /// an amount accumulated during the run.
+    /// </remarks>
+    public void Reset()
+    {
+        Interlocked.Exchange(ref _totalAttempts, 0);
+        Interlocked.Exchange(ref _successful, 0);
+        Interlocked.Exchange(ref _failed, 0);
+        Interlocked.Exchange(ref _abandoned, 0);
     }
 }

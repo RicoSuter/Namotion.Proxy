@@ -49,8 +49,8 @@ public class OpcUaServerSelfWriteTests
             message: "the server should push the local write onto its node");
 
         // Assert: the write reached the node without being counted as traffic from a client.
-        // IncomingChangesPerSecond is documented as "client writes to server", and no client exists.
-        Assert.Equal(0d, serverService.Diagnostics.IncomingChangesPerSecond);
+        // Throughput.IncomingPerSecond counts what flows into the subject tree, and no client exists.
+        Assert.Equal(0d, serverService.Diagnostics.Throughput.IncomingPerSecond);
     }
 
     /// <summary>
@@ -79,13 +79,13 @@ public class OpcUaServerSelfWriteTests
             () => serverService.TryGetVariableNode(property, out _),
             message: "the child's variable node should exist");
 
-        Assert.Equal(0d, serverService.Diagnostics.IncomingChangesPerSecond);
+        Assert.Equal(0d, serverService.Diagnostics.Throughput.IncomingPerSecond);
 
         // Act: detaching runs the removal synchronously on this thread.
         server.Root.Child = null;
 
         // Assert
-        Assert.Equal(0d, serverService.Diagnostics.IncomingChangesPerSecond);
+        Assert.Equal(0d, serverService.Diagnostics.Throughput.IncomingPerSecond);
     }
 }
 

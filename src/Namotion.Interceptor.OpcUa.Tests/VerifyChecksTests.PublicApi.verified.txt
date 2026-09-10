@@ -134,26 +134,15 @@ namespace Namotion.Interceptor.OpcUa.Client
         public virtual System.Threading.Tasks.Task<Opc.Ua.Configuration.ApplicationInstance> CreateApplicationInstanceAsync() { }
         public void Validate() { }
     }
-    public class OpcUaClientDiagnostics
+    public sealed class OpcUaClientDiagnostics : Namotion.Interceptor.Connectors.Diagnostics.SourceDiagnostics
     {
-        public long AbandonedReconnections { get; }
-        public long FailedReconnections { get; }
-        public double IncomingChangesPerSecond { get; }
-        public bool IsConnected { get; }
         public bool IsReconnecting { get; }
-        public System.DateTimeOffset? LastConnectedAt { get; }
-        public System.Exception? LastError { get; }
         public int MonitoredItemCount { get; }
-        public double OutgoingChangesPerSecond { get; }
-        public int? PendingReadAfterWrites { get; }
-        public int PendingWriteCount { get; }
         public Namotion.Interceptor.OpcUa.Client.PollingDiagnostics? Polling { get; }
-        public int PollingItemCount { get; }
         public Namotion.Interceptor.OpcUa.Client.ReadAfterWriteDiagnostics? ReadAfterWrite { get; }
-        public string? SessionId { get; }
+        public Namotion.Interceptor.OpcUa.Client.ReconnectDiagnostics Reconnects { get; }
+        public Opc.Ua.NodeId? SessionId { get; }
         public int SubscriptionCount { get; }
-        public long SuccessfulReconnections { get; }
-        public long TotalReconnectionAttempts { get; }
     }
     public sealed class OpcUaCurrentSessionChangedEventArgs : System.EventArgs
     {
@@ -175,23 +164,32 @@ namespace Namotion.Interceptor.OpcUa.Client
         public int TotalWrites { get; }
         public int TransientFailureCount { get; }
     }
-    public class PollingDiagnostics
+    public sealed class PollingDiagnostics
     {
-        public long CircuitBreakerTrips { get; }
-        public long FailedReads { get; }
         public bool IsCircuitBreakerOpen { get; }
         public bool IsRunning { get; }
         public int ItemCount { get; }
-        public long SlowPolls { get; }
-        public long TotalReads { get; }
-        public long ValueChanges { get; }
+        public long TotalCircuitBreakerTrips { get; }
+        public long TotalFailedReads { get; }
+        public long TotalSlowPolls { get; }
+        public long TotalSuccessfulReads { get; }
+        public long TotalValueChanges { get; }
     }
-    public class ReadAfterWriteDiagnostics
+    public sealed class ReadAfterWriteDiagnostics
     {
-        public long Coalesced { get; }
-        public long Executed { get; }
-        public long Failed { get; }
-        public long Scheduled { get; }
+        public int PendingReads { get; }
+        public long TotalCoalescedReads { get; }
+        public long TotalExecutedReads { get; }
+        public long TotalFailedReads { get; }
+        public long TotalScheduledReads { get; }
+    }
+    public sealed class ReconnectDiagnostics
+    {
+        public System.DateTimeOffset? LastConnectionTime { get; }
+        public long TotalAbandoned { get; }
+        public long TotalAttempts { get; }
+        public long TotalFailed { get; }
+        public long TotalSucceeded { get; }
     }
 }
 namespace Namotion.Interceptor.OpcUa.Mapping
@@ -374,15 +372,9 @@ namespace Namotion.Interceptor.OpcUa.Server
         protected void LoadNodeSetFromEmbeddedResource<TAssemblyType>(string name, Opc.Ua.NodeStateCollection nodes, Opc.Ua.ISystemContext context) { }
         public virtual void LoadPredefinedNodes(Opc.Ua.NodeStateCollection collection, Opc.Ua.ISystemContext context) { }
     }
-    public class OpcUaServerDiagnostics
+    public sealed class OpcUaServerDiagnostics : Namotion.Interceptor.Connectors.Diagnostics.ConnectorDiagnostics
     {
         public int ActiveSessionCount { get; }
         public int ConsecutiveFailures { get; }
-        public double IncomingChangesPerSecond { get; }
-        public bool IsRunning { get; }
-        public System.Exception? LastError { get; }
-        public double OutgoingChangesPerSecond { get; }
-        public System.DateTimeOffset? StartTime { get; }
-        public System.TimeSpan? Uptime { get; }
     }
 }

@@ -9,21 +9,6 @@ namespace HomeBlaze.Services;
 public static class SubjectPathResolverExtensions
 {
     /// <summary>
-    /// Registers the SubjectPathResolver service.
-    /// Requires WithRegistry() and WithLifecycle() to be called first.
-    /// </summary>
-    public static IInterceptorSubjectContext WithPathResolver(this IInterceptorSubjectContext context)
-    {
-        return context
-            .WithLifecycle()
-            .WithService(() =>
-            {
-                var rootManager = context.GetService<RootManager>();
-                return new SubjectPathResolver(rootManager);
-            }, _ => true);
-    }
-
-    /// <summary>
     /// Resolves a property value from a path.
     /// Splits on last '/' to separate subject path from property name,
     /// resolves the subject, then gets the property value.

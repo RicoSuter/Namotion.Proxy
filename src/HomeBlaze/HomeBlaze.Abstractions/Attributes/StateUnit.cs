@@ -31,5 +31,6 @@ public enum StateUnit
     MeterPerSecond,
     Hectopascal,
     Degree,
-    UvIndex
+    UvIndex,
+    Byte
 }

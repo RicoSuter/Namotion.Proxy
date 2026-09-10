@@ -14,6 +14,7 @@ public static class RegisteredSubjectMethodExtensions
     public static IReadOnlyList<MethodMetadata> GetAllMethods(this RegisteredSubject subject)
     {
         return subject.Properties
+            .Where(CanContainMethodMetadata)
             .Select(p => p.GetValue())
             .OfType<MethodMetadata>()
             .OrderBy(m => m.Position)
@@ -26,6 +27,7 @@ public static class RegisteredSubjectMethodExtensions
     public static IReadOnlyList<MethodMetadata> GetOperationMethods(this RegisteredSubject subject)
     {
         return subject.Properties
+            .Where(CanContainMethodMetadata)
             .Select(p => p.GetValue())
             .OfType<MethodMetadata>()
             .Where(m => m.Kind == MethodKind.Operation)
@@ -39,10 +41,19 @@ public static class RegisteredSubjectMethodExtensions
     public static IReadOnlyList<MethodMetadata> GetQueryMethods(this RegisteredSubject subject)
     {
         return subject.Properties
+            .Where(CanContainMethodMetadata)
             .Select(p => p.GetValue())
             .OfType<MethodMetadata>()
             .Where(m => m.Kind == MethodKind.Query)
             .OrderBy(m => m.Position)
             .ToList();
+    }
+
+    private static bool CanContainMethodMetadata(RegisteredSubjectProperty property)
+    {
+        // A metadata subclass may implement an interface not implemented by MethodMetadata itself.
+        return property.Type.IsInterface ||
+            property.Type.IsAssignableFrom(typeof(MethodMetadata)) ||
+            typeof(MethodMetadata).IsAssignableFrom(property.Type);
     }
 }

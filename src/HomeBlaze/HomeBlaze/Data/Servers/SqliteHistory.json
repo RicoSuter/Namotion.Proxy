@@ -1,0 +1,11 @@
+{
+  "$type": "HomeBlaze.History.Sqlite.SqliteHistoryStoreSubject",
+  "priority": 50,
+  "maxAgeDays": 365,
+  "flushIntervalSeconds": 10,
+  "bufferTimeMilliseconds": 250,
+  "partitionInterval": "Weekly",
+  "databasePath": "",
+  "maxJsonSize": 8192,
+  "isEnabled": true
+}

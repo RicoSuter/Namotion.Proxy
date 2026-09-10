@@ -33,14 +33,23 @@ public sealed class TestSubjectSource : SubjectSourceBase
 
     public Func<SubjectPropertyWriter, CancellationToken, Task<IAsyncDisposable?>>? StartListeningOverride { get; init; }
 
+    public Exception? StartListeningFailure { get; init; }
+
     public Func<CancellationToken, Task<Action?>>? LoadInitialStateOverride { get; init; }
 
     public Func<ReadOnlyMemory<SubjectPropertyChange>, CancellationToken, ValueTask<WriteResult>>? WriteChangesOverride { get; init; }
 
     protected override Task<IAsyncDisposable?> StartListeningAsync(SubjectPropertyWriter propertyWriter, CancellationToken cancellationToken)
-        => StartListeningOverride is not null
+    {
+        if (StartListeningFailure is not null)
+        {
+            throw StartListeningFailure;
+        }
+
+        return StartListeningOverride is not null
             ? StartListeningOverride(propertyWriter, cancellationToken)
             : Task.FromResult<IAsyncDisposable?>(null);
+    }
 
     public override Task<Action?> LoadInitialStateAsync(CancellationToken cancellationToken)
         => LoadInitialStateOverride is not null

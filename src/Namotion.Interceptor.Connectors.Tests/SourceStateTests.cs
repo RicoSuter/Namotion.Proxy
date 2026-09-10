@@ -68,20 +68,67 @@ public class SourceStateTests
     }
 
     [Fact]
-    public void WhenTransitioningToSynchronized_ThenLastSynchronizedAtIsSetBeforeTheEventIsRaised()
+    public void WhenNeverTransitioned_ThenStateChangeTimeIsStampedAtConstruction()
+    {
+        // Arrange
+        var before = DateTimeOffset.UtcNow;
+
+        // Act
+        var source = new TestStateSource(new Person());
+
+        // Assert
+        Assert.Equal(SourceState.Synchronizing, source.State);
+        Assert.InRange(source.StateChangeTime, before, DateTimeOffset.UtcNow);
+    }
+
+    [Fact]
+    public void WhenTransitioningToSynchronized_ThenStateChangeTimeIsSetBeforeTheEventIsRaised()
     {
         // Arrange
         var source = new TestStateSource(new Person());
         DateTimeOffset? observedInHandler = null;
-        source.StateChanged += (_, _) => observedInHandler = source.LastSynchronizedAt;
+        source.StateChanged += (_, _) => observedInHandler = source.StateChangeTime;
 
         // Act
         source.ReportSynchronized();
 
         // Assert
         Assert.Equal(SourceState.Synchronized, source.State);
-        Assert.NotNull(source.LastSynchronizedAt);
-        Assert.Equal(source.LastSynchronizedAt, observedInHandler);
+        Assert.Equal(source.StateChangeTime, observedInHandler);
+    }
+
+    [Fact]
+    public void WhenSynchronizationIsLost_ThenStateChangeTimeMovesToTheLoss()
+    {
+        // Arrange
+        var source = new TestStateSource(new Person());
+        source.ReportSynchronized();
+        var synchronizedAt = source.StateChangeTime;
+
+        // Act
+        ClockTestHelpers.WaitForClockTick();
+        source.ReportSynchronizing();
+
+        // Assert
+        Assert.Equal(SourceState.Synchronizing, source.State);
+        Assert.True(source.StateChangeTime > synchronizedAt,
+            "The timestamp must move to the moment synchronization was lost, not stay at the last good one.");
+    }
+
+    [Fact]
+    public void WhenTheTransitionIsANoOp_ThenStateChangeTimeDoesNotMove()
+    {
+        // Arrange
+        var source = new TestStateSource(new Person());
+        source.ReportSynchronized();
+        var first = source.StateChangeTime;
+
+        // Act
+        ClockTestHelpers.WaitForClockTick();
+        source.ReportSynchronized();
+
+        // Assert
+        Assert.Equal(first, source.StateChangeTime);
     }
 
     [Fact]
@@ -93,16 +140,17 @@ public class SourceStateTests
         source.ReportStopped();
         var eventsAfterStop = 0;
         source.StateChanged += (_, _) => Interlocked.Increment(ref eventsAfterStop);
-        var timestampAtStop = source.LastSynchronizedAt;
+        var timestampAtStop = source.StateChangeTime;
 
         // Act
+        ClockTestHelpers.WaitForClockTick();
         source.ReportSynchronizing();
         source.ReportSynchronized();
 
         // Assert
         Assert.Equal(SourceState.Stopped, source.State);
         Assert.Equal(0, eventsAfterStop);
-        Assert.Equal(timestampAtStop, source.LastSynchronizedAt);
+        Assert.Equal(timestampAtStop, source.StateChangeTime);
     }
 
     [Fact]
@@ -127,10 +175,10 @@ public class SourceStateTests
     }
 
     [Fact]
-    public async Task WhenSynchronizedIsHammeredConcurrentlyWithStopped_ThenSynchronizedIsNeverPublishedAfterStoppedAndLastSynchronizedAtFreezes()
+    public async Task WhenSynchronizedIsHammeredConcurrentlyWithStopped_ThenSynchronizedIsNeverPublishedAfterStoppedAndBothTimestampsFreeze()
     {
         // Arrange
-        // TransitionTo serializes the state change, the LastSynchronizedAt write and the event raise
+        // TransitionTo serializes the state change, the StateChangeTime write and the event raise
         // inside one lock (see its own remarks), so this race is deterministic BY CONSTRUCTION given
         // that lock. There is therefore no way to force the two orderings this test forbids without
         // weakening the lock itself - this is a stress loop, not a test that hits a narrow timing
@@ -144,12 +192,14 @@ public class SourceStateTests
         {
             var source = new TestStateSource(new Person());
             var events = new ConcurrentQueue<SourceEvent>();
+            DateTimeOffset? stateChangeTimeWhenStopped = null;
             DateTimeOffset? lastSynchronizedAtWhenStopped = null;
             source.StateChanged += (_, sourceEvent) =>
             {
                 events.Enqueue(sourceEvent);
                 if (sourceEvent.NewState == SourceState.Stopped)
                 {
+                    stateChangeTimeWhenStopped = source.StateChangeTime;
                     lastSynchronizedAtWhenStopped = source.LastSynchronizedAt;
                 }
             };
@@ -183,9 +233,11 @@ public class SourceStateTests
                 Assert.NotEqual(SourceState.Synchronized, ordered[afterStop].NewState);
             }
 
-            // Stopped is terminal, so LastSynchronizedAt observed synchronously inside the handler at
-            // the moment Stopped was published must equal its value after every racing thread has
-            // finished: nothing can still be updating it once Stopped has been raised.
+            // Stopped is terminal, so both timestamps observed inside the handler at the moment
+            // Stopped was published must equal their values after every racing thread has finished.
+            // Not asserted non-null: the stopping thread can win the barrier before the hammer ever
+            // reaches Synchronized, so a null here is a legal outcome of the race.
+            Assert.Equal(stateChangeTimeWhenStopped, source.StateChangeTime);
             Assert.Equal(lastSynchronizedAtWhenStopped, source.LastSynchronizedAt);
         }
     }

@@ -2,6 +2,8 @@
 
 The `Namotion.Interceptor.OpcUa` package provides integration between Namotion.Interceptor and OPC UA (Open Platform Communications Unified Architecture), enabling bidirectional synchronization between C# objects and industrial automation systems. It supports both client and server modes.
 
+Both built-in OPC UA connectors implement liveness monitoring. Before their first protocol-specific liveness observation, `IsOperational` can be `null`; after that observation, they publish explicit `true` or `false` values. The client registers the `ClaimedPropertyCount` gauge, so its count is measured, including zero.
+
 - [OPC UA Client](connectors-opcua-client.md) - Configuration, authentication, monitoring, resilience, extensibility
 - [OPC UA Server](connectors-opcua-server.md) - Configuration, security, companion specs, diagnostics
 - [OPC UA Mapping](connectors-opcua-mapping.md) - Attributes, fluent configuration, companion spec patterns
@@ -45,7 +47,7 @@ machine.Speed = 100; // Writes to OPC UA server
 
 // Access diagnostics via DI (unnamed singleton)
 var source = serviceProvider.GetRequiredService<IOpcUaSubjectClientSource>();
-Console.WriteLine(source.Diagnostics.IsConnected);
+Console.WriteLine(source.Diagnostics.IsOperational);
 ```
 
 See [OPC UA Client](connectors-opcua-client.md) for configuration, authentication, monitoring, resilience, and extensibility, and [Source Monitoring](connectors-monitoring.md) for waiting until the model is in sync rather than merely connected.
@@ -73,7 +75,7 @@ await host.StartAsync();
 
 // Access diagnostics via DI (unnamed singleton)
 var server = serviceProvider.GetRequiredService<IOpcUaSubjectServer>();
-Console.WriteLine(server.Diagnostics.IsRunning);
+Console.WriteLine(server.Diagnostics.IsOperational);
 ```
 
 See [OPC UA Server](connectors-opcua-server.md) for configuration, security, companion specifications, and diagnostics.

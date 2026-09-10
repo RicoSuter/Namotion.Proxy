@@ -3,6 +3,7 @@ using System.Collections.Immutable;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using Namotion.Interceptor.Tracking.Change;
+using Namotion.Interceptor.Connectors.Diagnostics;
 using Namotion.Interceptor.Connectors.Monitoring;
 using Namotion.Interceptor.Connectors.Tests.Models;
 using Namotion.Interceptor.Testing;
@@ -200,8 +201,11 @@ public class SourceSubscriptionHandoffTests
     {
         // Arrange
         // The handoff is a few nanoseconds wide inside a running drain, so it is exercised directly:
-        // deleting the whole re-check loop leaves every other test in the suite green.
+        // deleting the whole re-check loop leaves every other test in the suite green. The flag is set
+        // because that is the state a drain calls this in, and the release it performs is half of what
+        // is under test.
         var subscription = CreateSubscription();
+        MarkDraining(subscription);
 
         // Act
         var keepDraining = subscription.TryReacquireForPendingEvents();
@@ -218,7 +222,13 @@ public class SourceSubscriptionHandoffTests
         // This is the stranded-event case: a producer that enqueued while _draining was still 1
         // declined to schedule a new drain, so this thread must notice the queue is non-empty and
         // take the flag straight back. Without the re-check the event is never delivered.
+        //
+        // The flag has to be set before the enqueue, and that is the whole scenario rather than test
+        // scaffolding: it is what makes the producer decline. Enqueueing with it clear instead has
+        // Enqueue schedule a real drain, which empties the queue from the thread pool and races this
+        // thread, so the assertion below could only hold while the pool was too busy to run it.
         var subscription = CreateSubscription();
+        MarkDraining(subscription);
         subscription.Enqueue(CreateEvent());
 
         // Act
@@ -232,11 +242,18 @@ public class SourceSubscriptionHandoffTests
     private static SourceSubscription CreateSubscription() =>
         new(_ => { }, ImmutableArray<ISubjectSource>.Empty, _ => { }, new SourceMonitor());
 
-    private static int GetDrainingFlag(SourceSubscription subscription)
-    {
-        var field = typeof(SourceSubscription).GetField("_draining", BindingFlags.NonPublic | BindingFlags.Instance)!;
-        return (int)field.GetValue(subscription)!;
-    }
+    private static readonly FieldInfo DrainingField =
+        typeof(SourceSubscription).GetField("_draining", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+    private static int GetDrainingFlag(SourceSubscription subscription) =>
+        (int)DrainingField.GetValue(subscription)!;
+
+    /// <summary>
+    /// Puts the subscription in the state the handoff runs in, a drain already in progress, which is
+    /// the precondition both tests describe and neither could reach through the public surface.
+    /// </summary>
+    private static void MarkDraining(SourceSubscription subscription) =>
+        DrainingField.SetValue(subscription, 1);
 
     private static SourceEvent CreateEvent() => new(
         SourceEventKind.SourceRegistered, new HandoffTestSource(), null,
@@ -247,8 +264,10 @@ public class SourceSubscriptionHandoffTests
         public IInterceptorSubject RootSubject => throw new NotSupportedException();
         public int WriteBatchSize => 0;
         public SourceState State => SourceState.Synchronizing;
+        public DateTimeOffset StateChangeTime { get; } = DateTimeOffset.UtcNow;
         public DateTimeOffset? LastSynchronizedAt => null;
-        public int PendingWriteCount => 0;
+        public SourceDiagnostics Diagnostics { get; } = new(new SourceMetrics());
+        ConnectorDiagnostics ISubjectConnector.Diagnostics => Diagnostics;
 
         public event EventHandler<SourceEvent>? StateChanged
         {

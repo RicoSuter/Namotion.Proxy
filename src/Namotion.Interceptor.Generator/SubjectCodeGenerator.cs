@@ -51,14 +51,13 @@ internal static class SubjectCodeGenerator
     /// </summary>
     public static string GetFileName(SubjectMetadata metadata)
     {
-        var containingTypesPath = metadata.ContainingTypes.Length > 0
-            ? string.Join(".", metadata.ContainingTypes.Select(t => t.Name)) + "."
-            : "";
-        var namespacePrefix = metadata.NamespaceName is null
-            ? ""
-            : metadata.NamespaceName + ".";
-
-        return $"{namespacePrefix}{containingTypesPath}{metadata.ClassName}.g.cs";
+        // From the symbol name, not from the emitted names: those keep their source spelling, and
+        // AddSource rejects the '@' of a keyword escape, the backslash of a \uXXXX escape, and the
+        // comment or line break a namespace name can hold, failing the whole subject with NI0004
+        // and emitting nothing. The symbol name is that name normalised, so only two decorations go.
+        return metadata.FullTypeName
+            .Replace("global::", "")
+            .Replace("@", "") + ".g.cs";
     }
 
     private static void EmitFileHeader(StringBuilder builder)
@@ -271,11 +270,25 @@ internal static class SubjectCodeGenerator
         builder.AppendLine();
     }
 
+    /// <summary>
+    /// Fully qualified rather than imported, so generated files of subjects without the attribute stay
+    /// byte-identical, and rooted at global:: so the name still reaches a consumer-declared polyfill
+    /// when the subject's own namespace shadows System.
+    /// </summary>
+    private static void EmitSetsRequiredMembersAttribute(StringBuilder builder, SubjectMetadata metadata)
+    {
+        if (metadata.ParameterlessConstructorSetsRequiredMembers)
+        {
+            builder.AppendLine("        [global::System.Diagnostics.CodeAnalysis.SetsRequiredMembers]");
+        }
+    }
+
     private static void EmitConstructors(StringBuilder builder, SubjectMetadata metadata)
     {
         // Generate parameterless constructor only if no constructor exists
         if (metadata.NeedsGeneratedParameterlessConstructor)
         {
+            EmitSetsRequiredMembersAttribute(builder, metadata);
             builder.AppendLine($"        public {metadata.ClassName}()");
             builder.AppendLine("        {");
             builder.AppendLine("        }");
@@ -285,6 +298,7 @@ internal static class SubjectCodeGenerator
         // Generate constructor with context parameter if we have or will have a parameterless constructor
         if (metadata.HasOrWillHaveParameterlessConstructor)
         {
+            EmitSetsRequiredMembersAttribute(builder, metadata);
             builder.AppendLine($"        public {metadata.ClassName}(IInterceptorSubjectContext context) : this()");
             builder.AppendLine("        {");
             builder.AppendLine("            ((IInterceptorSubject)this).Context.AddFallbackContext(context);");

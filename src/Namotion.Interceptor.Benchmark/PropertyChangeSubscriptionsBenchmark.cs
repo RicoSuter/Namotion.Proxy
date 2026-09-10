@@ -24,6 +24,9 @@ namespace Namotion.Interceptor.Benchmark;
 public class PropertyChangeSubscriptionsBenchmark
 {
     private const string WriteValue = "benchmark-value";
+    private static readonly TimeSpan ScheduledDeliveryTimeout = TimeSpan.FromSeconds(30);
+
+    private readonly object _scheduledDeliveryGate = new();
 
     private IInterceptorSubjectContext _context;
     private Car _car;
@@ -31,6 +34,9 @@ public class PropertyChangeSubscriptionsBenchmark
     private PropertyChangeQueueSubscription? _queueSubscription;
     private IDisposable? _observableSubscription;
     private IDisposable? _perPropertySubscription;
+    private ScheduledPropertySubscription? _scheduledSubscription;
+    private AutoResetEvent? _scheduledDeliveryCompleted;
+    private bool _scheduledDeliverySignalDisposed;
 
     // A reference-typed value (not a string, not inline-sized): its change takes the two-holder
     // BoxedValueHolder path, so the build-once merge shows up as halved allocations under both channels.
@@ -82,7 +88,29 @@ public class PropertyChangeSubscriptionsBenchmark
     public void SetupListenerOnWrittenProperty()
     {
         _car = CreateCarInFreshContext();
-        _perPropertySubscription = _car.SubscribeToProperty(x => x.Name, (in SubjectPropertyChange _) => { });
+        _perPropertySubscription = _car.SubscribeToPropertyInline(x => x.Name, (in SubjectPropertyChange _) => { });
+    }
+
+    [GlobalSetup(Target = nameof(WriteAndWaitForScheduledListenerOnSameProperty))]
+    public void SetupScheduledListenerOnWrittenProperty()
+    {
+        _car = CreateCarInFreshContext();
+        var deliveryCompleted = new AutoResetEvent(false);
+        _scheduledDeliveryCompleted = deliveryCompleted;
+        _scheduledDeliverySignalDisposed = false;
+        _scheduledSubscription = new PropertyReference(_car, nameof(Car.Name))
+            .Subscribe(
+                (in SubjectPropertyChange _) =>
+                {
+                    lock (_scheduledDeliveryGate)
+                    {
+                        if (!_scheduledDeliverySignalDisposed)
+                        {
+                            deliveryCompleted.Set();
+                        }
+                    }
+                },
+                Scheduler.Default);
     }
 
     // listener-elsewhere: a per-property listener on a DIFFERENT property, so the live count is nonzero
@@ -92,7 +120,7 @@ public class PropertyChangeSubscriptionsBenchmark
     {
         _car = CreateCarInFreshContext();
         _perPropertySubscription = new PropertyReference(_car, nameof(Car.Name_MaxLength_Unit))
-            .Subscribe((in SubjectPropertyChange _) => { });
+            .SubscribeInline((in SubjectPropertyChange _) => { });
     }
 
     // observable-subscribed-then-fully-unsubscribed: subscribe an observer then dispose it, so the gate
@@ -175,6 +203,19 @@ public class PropertyChangeSubscriptionsBenchmark
         _car.Name = WriteValue;
     }
 
+    // Measures the write plus one completed scheduled delivery. Waiting for each callback prevents
+    // an active-run backlog from accumulating across benchmark invocations.
+    [Benchmark]
+    public void WriteAndWaitForScheduledListenerOnSameProperty()
+    {
+        _car.Name = WriteValue;
+        // PendingCount can reach zero before the callback finishes, so wait for the observer's signal.
+        if (!_scheduledDeliveryCompleted!.WaitOne(ScheduledDeliveryTimeout))
+        {
+            throw new TimeoutException("The scheduled property change was not delivered before the diagnostic timeout.");
+        }
+    }
+
     [Benchmark]
     public void WriteWithListenerOnOtherProperty()
     {
@@ -190,6 +231,14 @@ public class PropertyChangeSubscriptionsBenchmark
     [GlobalCleanup]
     public void Cleanup()
     {
+        _scheduledSubscription?.Dispose();
+        lock (_scheduledDeliveryGate)
+        {
+            _scheduledDeliverySignalDisposed = true;
+            _scheduledDeliveryCompleted?.Dispose();
+            _scheduledDeliveryCompleted = null;
+        }
+
         _drainCancellation?.Cancel();
         _drainThread?.Join();
         _drainCancellation?.Dispose();

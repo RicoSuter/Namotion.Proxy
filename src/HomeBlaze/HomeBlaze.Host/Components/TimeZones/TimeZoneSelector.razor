@@ -1,0 +1,158 @@
+@using HomeBlaze.Host.TimeZones
+@using MudBlazor
+@using Microsoft.JSInterop
+@using Microsoft.Extensions.Logging
+@using HomeBlaze.Components.Abstractions.TimeZones
+@implements IDisposable
+
+@inject ITimeZoneDisplay TimeZone
+@inject TimeZoneInterop Interop
+@inject ILogger<TimeZoneSelector> Logger
+
+<MudMenu @ref="_menu" Icon="@Icons.Material.Filled.Schedule" Color="Color.Inherit"
+         title="@CurrentLabel" AriaLabel="Select timezone" MaxHeight="500">
+    <div style="min-width: 320px;">
+        <div style="position: sticky; top: 0; z-index: 1; background-color: var(--mud-palette-surface);">
+            <MudTextField @bind-Value="_search" Placeholder="Search timezone" Immediate="true"
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                          Class="px-3 py-2" />
+        </div>
+        <MudList T="string" Dense="true">
+            <MudListItem T="string" OnClick="@SelectAutomaticAsync">
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                    <span><b>Automatic</b> (this browser)</span>
+                    @if (TimeZone.Preference.IsAutomatic)
+                    {
+                        <MudIcon Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Primary" />
+                    }
+                </div>
+            </MudListItem>
+            @foreach (var option in FilteredZones())
+            {
+                <MudListItem T="string" OnClick="@(() => SelectZoneAsync(option.Id))">
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <span>@option.DisplayName</span>
+                        @if (IsZoneSelected(option.Id))
+                        {
+                            <MudIcon Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Primary" />
+                        }
+                    </div>
+                </MudListItem>
+            }
+        </MudList>
+    </div>
+</MudMenu>
+
+@code {
+    private static readonly IReadOnlyList<TimeZoneOption> Zones = TimeZoneCatalog.GetZones();
+    private MudMenu? _menu;
+    private string _search = string.Empty;
+
+    private string CurrentLabel => TimeZone.IsResolved
+        ? (TimeZone.Preference.IsAutomatic ? $"Automatic ({SelectedZoneId})" : SelectedZoneId)
+        : "Timezone";
+
+    /// <summary>
+    /// The IANA id of the active zone. Never <c>TimeZoneInfo.Id</c>, which is the platform id: on
+    /// Windows, resolving "Europe/Berlin" yields "W. Europe Standard Time", so comparing that against
+    /// the IANA-keyed catalog never matches. The result is no check mark on any entry and the resolved
+    /// zone duplicated at the top of the list on every render.
+    /// </summary>
+    private string SelectedZoneId =>
+        TimeZone.Preference.ZoneId
+        ?? (TimeZone.Zone is { } zone ? TimeZoneCatalog.CreateOption(zone)?.Id ?? zone.Id : string.Empty);
+
+    protected override void OnInitialized() => TimeZone.Changed += OnTimeZoneChanged;
+
+    private void OnTimeZoneChanged() => InvokeAsync(StateHasChanged);
+
+    private bool IsZoneSelected(string id) =>
+        !TimeZone.Preference.IsAutomatic && TimeZone.IsResolved &&
+        string.Equals(SelectedZoneId, id, StringComparison.OrdinalIgnoreCase);
+
+    private IEnumerable<TimeZoneOption> AllZones()
+    {
+        // The catalog is built from the OS's canonical zones, so a sibling zone the browser reports
+        // (for example Europe/Zurich, which collapses into Europe/Berlin on Windows) may be missing.
+        // Make the currently resolved zone selectable by adding it when the catalog lacks it.
+        var selected = SelectedZoneId;
+        if (TimeZone.Zone is { } zone
+            && !string.IsNullOrEmpty(selected)
+            && !Zones.Any(option => string.Equals(option.Id, selected, StringComparison.OrdinalIgnoreCase))
+            && TimeZoneCatalog.CreateOption(zone) is { } current)
+        {
+            return Zones.Prepend(current);
+        }
+
+        return Zones;
+    }
+
+    private IEnumerable<TimeZoneOption> FilteredZones() =>
+        string.IsNullOrWhiteSpace(_search)
+            ? AllZones()
+            : AllZones().Where(zone => zone.DisplayName.Contains(_search, StringComparison.OrdinalIgnoreCase));
+
+    private async Task SelectAutomaticAsync()
+    {
+        try
+        {
+            // Detection can come back empty, and resolving that pins UTC. Keeping the previous zone
+            // matches what the initializer already does with the same input.
+            var browserZone = await Interop.GetBrowserTimeZoneAsync();
+            if (!string.IsNullOrWhiteSpace(browserZone))
+            {
+                TimeZone.SetResolved(TimeZonePreference.Automatic, TimeZoneResolver.Resolve(browserZone));
+                await Interop.SetPreferenceCookieAsync(TimeZonePreference.Automatic.ToCookieValue());
+            }
+
+            await CloseMenuAsync();
+        }
+        catch (Exception exception) when (IsInteropFailure(exception))
+        {
+            LogInteropFailure(exception);
+        }
+    }
+
+    private async Task SelectZoneAsync(string id)
+    {
+        try
+        {
+            // Applied before it is persisted, so a failed cookie write still leaves the picked zone in
+            // effect for this session rather than discarding the choice entirely.
+            var preference = TimeZonePreference.Specific(id);
+            TimeZone.SetResolved(preference, TimeZoneResolver.Resolve(id));
+            await Interop.SetPreferenceCookieAsync(preference.ToCookieValue());
+            await CloseMenuAsync();
+        }
+        catch (Exception exception) when (IsInteropFailure(exception))
+        {
+            LogInteropFailure(exception);
+        }
+    }
+
+    // The same reasoning as TimeZoneInitializer: a time zone that did not persist is cosmetic, while an
+    // exception out of a click handler tears the circuit down and replaces the application with an error
+    // page. OperationCanceledException is in the set because that is how the interop call timeout
+    // surfaces; it derives from neither JSException nor JSDisconnectedException.
+    private static bool IsInteropFailure(Exception exception) =>
+        exception is JSDisconnectedException or OperationCanceledException or JSException;
+
+    private void LogInteropFailure(Exception exception)
+    {
+        if (exception is JSException)
+        {
+            Logger.LogWarning(exception, "Could not persist the selected time zone.");
+        }
+    }
+
+    private async Task CloseMenuAsync()
+    {
+        _search = string.Empty;
+        if (_menu is not null)
+        {
+            await _menu.CloseMenuAsync();
+        }
+    }
+
+    public void Dispose() => TimeZone.Changed -= OnTimeZoneChanged;
+}

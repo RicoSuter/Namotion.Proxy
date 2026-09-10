@@ -28,9 +28,10 @@ namespace Namotion.Interceptor.Mqtt.Tests;
 /// here are mock- or mapper-level). This test builds the smallest one that exercises a real
 /// broker: MqttSubjectServer hosts the embedded broker, MqttSubjectClientSource connects to it,
 /// both constructed directly (not through DI) so the client can be held as its concrete type
-/// for IFaultInjectable and ISubjectSource.State.
+/// for IFaultInjectable and ISubjectSource.StateChanged.
 /// </remarks>
 [Trait("Category", "Integration")]
+[Collection(MqttNetworkIntegrationCollection.Name)]
 public partial class OutageStateTests
 {
     [InterceptorSubject]
@@ -101,15 +102,20 @@ public partial class OutageStateTests
             },
             NullLogger<MqttSubjectClientSource>.Instance);
 
+        // Subscribed before anything can transition the source: the outage is asserted from the
+        // recorded transitions, because the Synchronizing window between the disconnect and the
+        // reconnect can be shorter than the interval at which a test can sample the current state.
+        var stateRecorder = SourceStateRecorder.SubscribeTo(source);
+
         try
         {
             await server.StartAsync(CancellationToken.None);
             await source.StartAsync(CancellationToken.None);
 
-            await AsyncTestHelpers.WaitUntilAsync(
-                () => source.State == SourceState.Synchronized,
-                timeout: TimeSpan.FromSeconds(30),
-                message: "Initial subscription should complete");
+            await stateRecorder.WaitForStatesAsync(
+                TimeSpan.FromSeconds(30),
+                "Initial subscription should complete.",
+                SourceState.Synchronized);
 
             // Act - Disconnect is the soft fault: it breaks the broker connection without
             // stopping the connector, matching a real network blip.
@@ -118,17 +124,19 @@ public partial class OutageStateTests
             // Assert - MQTT's Synchronized means subscriptions are (re-)established, not that
             // retained values have been received: MQTT provides no end-of-retained signal, so
             // asserting anything about received property values here would be dishonest.
-            await AsyncTestHelpers.WaitUntilAsync(
-                () => source.State == SourceState.Synchronizing,
-                timeout: TimeSpan.FromSeconds(15),
-                message: "Source should report Synchronizing during the outage");
-            await AsyncTestHelpers.WaitUntilAsync(
-                () => source.State == SourceState.Synchronized,
-                timeout: TimeSpan.FromSeconds(30),
-                message: "Source should recover to Synchronized after reconnecting");
+            await stateRecorder.WaitForStatesAsync(
+                TimeSpan.FromSeconds(15),
+                "The disconnect should have been reported as an outage instead of the source staying Synchronized.",
+                SourceState.Synchronized, SourceState.Synchronizing);
+
+            await stateRecorder.WaitForStatesAsync(
+                TimeSpan.FromSeconds(30),
+                "Source should recover to Synchronized after reconnecting.",
+                SourceState.Synchronized, SourceState.Synchronizing, SourceState.Synchronized);
         }
         finally
         {
+            stateRecorder.Dispose();
             await source.StopAsync(CancellationToken.None);
             await server.StopAsync(CancellationToken.None);
         }

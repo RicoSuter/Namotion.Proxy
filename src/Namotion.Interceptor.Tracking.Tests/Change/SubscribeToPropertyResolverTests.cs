@@ -15,7 +15,7 @@ public class SubscribeToPropertyResolverTests
         var context = InterceptorSubjectContext.Create().WithPropertyChangeSubscriptions();
         var person = new Person(context);
         string? captured = null;
-        using var subscription = person.SubscribeToProperty(p => p.FirstName, (in SubjectPropertyChange c) => captured = c.GetNewValue<string?>());
+        using var subscription = person.SubscribeToPropertyInline(p => p.FirstName, (in SubjectPropertyChange c) => captured = c.GetNewValue<string?>());
 
         // Act
         person.FirstName = "John";
@@ -33,7 +33,7 @@ public class SubscribeToPropertyResolverTests
 
         // Act & Assert
         Assert.Throws<ArgumentException>(() =>
-            person.SubscribeToProperty(p => p.Mother!.FirstName, (in SubjectPropertyChange _) => { }));
+            person.SubscribeToPropertyInline(p => p.Mother!.FirstName, (in SubjectPropertyChange _) => { }));
     }
 
     [Fact]
@@ -45,7 +45,7 @@ public class SubscribeToPropertyResolverTests
 
         // Act & Assert
         Assert.Throws<ArgumentException>(() =>
-            person.SubscribeToProperty(p => p.ToString(), (in SubjectPropertyChange _) => { }));
+            person.SubscribeToPropertyInline(p => p.ToString(), (in SubjectPropertyChange _) => { }));
     }
 
     [Fact]
@@ -56,7 +56,7 @@ public class SubscribeToPropertyResolverTests
         var person = new Person(context);
 
         // Act
-        using var subscription = person.SubscribeToProperty(p => p.FullName, (in SubjectPropertyChange _) => { });
+        using var subscription = person.SubscribeToPropertyInline(p => p.FullName, (in SubjectPropertyChange _) => { });
 
         // Assert
         Assert.NotNull(subscription);
@@ -73,7 +73,7 @@ public class SubscribeToPropertyResolverTests
 
         // Act & Assert
         Assert.Throws<ArgumentException>(() =>
-            person.SubscribeToProperty(_ => other.FirstName, (in SubjectPropertyChange _) => { }));
+            person.SubscribeToPropertyInline(_ => other.FirstName, (in SubjectPropertyChange _) => { }));
     }
 
     [Fact]
@@ -85,7 +85,7 @@ public class SubscribeToPropertyResolverTests
 
         // Act & Assert
         Assert.Throws<ArgumentException>(() =>
-            person.SubscribeToProperty(_ => DateTime.Now, (in SubjectPropertyChange _) => { }));
+            person.SubscribeToPropertyInline(_ => DateTime.Now, (in SubjectPropertyChange _) => { }));
     }
 
     [Fact]
@@ -98,7 +98,7 @@ public class SubscribeToPropertyResolverTests
 
         // Act & Assert
         Assert.Throws<ArgumentException>(() =>
-            person.SubscribeToProperty(_ => DateTime.MinValue, (in SubjectPropertyChange _) => { }));
+            person.SubscribeToPropertyInline(_ => DateTime.MinValue, (in SubjectPropertyChange _) => { }));
     }
 
     [Fact]
@@ -110,6 +110,6 @@ public class SubscribeToPropertyResolverTests
 
         // Act & Assert
         Assert.Throws<ArgumentException>(() =>
-            holder.SubscribeToProperty(p => p.PlainProperty, (in SubjectPropertyChange _) => { }));
+            holder.SubscribeToPropertyInline(p => p.PlainProperty, (in SubjectPropertyChange _) => { }));
     }
 }

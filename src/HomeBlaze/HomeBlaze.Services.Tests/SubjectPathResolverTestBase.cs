@@ -29,11 +29,11 @@ public abstract class SubjectPathResolverTestBase
             .WithFullPropertyTracking()
             .WithRegistry();
 
-        RootManager = new RootManager(typeRegistry, serializer, Context, null);
+        // The resolver reads the root lazily, so it can be built before the manager that owns it.
+        RootManager? rootManager = null;
+        Resolver = new SubjectPathResolver(() => rootManager!.Root);
+        RootManager = rootManager = new RootManager(typeRegistry, serializer, Context, Resolver, null);
 
         Context.WithService(() => RootManager);
-        Context.WithPathResolver();
-
-        Resolver = Context.GetService<SubjectPathResolver>();
     }
 }

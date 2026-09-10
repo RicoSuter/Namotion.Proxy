@@ -1,3 +1,4 @@
+using Namotion.Interceptor.Connectors.Diagnostics;
 using Namotion.Interceptor.Connectors.Monitoring;
 using Namotion.Interceptor.Connectors.Tests.Models;
 using Namotion.Interceptor.Registry;
@@ -581,7 +582,11 @@ public class SourceWaitResultTests
 
         public DateTimeOffset? LastSynchronizedAt => null;
 
-        public int PendingWriteCount => 0;
+        public DateTimeOffset StateChangeTime { get; } = DateTimeOffset.UtcNow;
+
+        public SourceDiagnostics Diagnostics { get; } = new(new SourceMetrics());
+
+        ConnectorDiagnostics ISubjectConnector.Diagnostics => Diagnostics;
 
         public event EventHandler<SourceEvent>? StateChanged
         {

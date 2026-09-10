@@ -21,10 +21,15 @@
         <ProjectReference Include="..\Namotion.Devices.Philips.Hue\Namotion.Devices.Philips.Hue.csproj" />
         <ProjectReference Include="..\Namotion.Devices.Philips.Hue.HomeBlaze\Namotion.Devices.Philips.Hue.HomeBlaze.csproj" />
         <ProjectReference Include="..\HomeBlaze.AI\HomeBlaze.AI.csproj" />
+        <ProjectReference Include="..\HomeBlaze.History.Mcp\HomeBlaze.History.Mcp.csproj" />
         <ProjectReference Include="..\HomeBlaze.Host\HomeBlaze.Host.csproj" />
         <ProjectReference Include="..\HomeBlaze.Samples\HomeBlaze.Samples.csproj" />
         <ProjectReference Include="..\HomeBlaze.OpcUa\HomeBlaze.OpcUa.csproj" />
         <ProjectReference Include="..\HomeBlaze.OpcUa.Blazor\HomeBlaze.OpcUa.Blazor.csproj" />
+        <ProjectReference Include="..\HomeBlaze.History.InMemory\HomeBlaze.History.InMemory.csproj" />
+        <ProjectReference Include="..\HomeBlaze.History.InMemory.Blazor\HomeBlaze.History.InMemory.Blazor.csproj" />
+        <ProjectReference Include="..\HomeBlaze.History.Sqlite\HomeBlaze.History.Sqlite.csproj" />
+        <ProjectReference Include="..\HomeBlaze.History.Sqlite.Blazor\HomeBlaze.History.Sqlite.Blazor.csproj" />
         <ProjectReference Include="..\HomeBlaze.Plugins\HomeBlaze.Plugins.csproj" />
         <ProjectReference Include="..\MyCompany.SamplePlugin1.HomeBlaze\MyCompany.SamplePlugin1.HomeBlaze.csproj">
             <ReferenceOutputAssembly>false</ReferenceOutputAssembly>

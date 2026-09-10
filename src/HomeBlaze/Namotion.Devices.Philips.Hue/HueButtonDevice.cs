@@ -13,7 +13,7 @@ public partial class HueButtonDevice : HueDevice,
     IBatteryState,
     IDisposable
 {
-    internal DevicePower? DevicePowerResource { get; set; }
+    internal partial DevicePower? DevicePowerResource { get; set; }
 
     [Derived]
     public override string? IconName =>

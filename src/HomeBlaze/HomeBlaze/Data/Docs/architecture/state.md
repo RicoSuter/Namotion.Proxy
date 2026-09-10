@@ -33,7 +33,7 @@ Tracks the implementation status of building blocks described in [Architecture O
 |---|---|---|
 | Operations (`[Operation]`/`[Query]`) | Implemented | Metadata migrated to registry attributes (`MethodMetadata`). Discoverable and invocable via registry for all interceptor applications |
 | Cross-instance operation proxying (RPC) | Planned | WebSocket message types 5-6 |
-| Time-series history | Planned | `HomeBlaze.History.Abstractions` + sink model |
+| Time-series history | Implemented | InMemory and SQLite stores, cross-store merger, chart, and `get_property_history`; TimescaleDB planned |
 | Document store | Planned | Documents as subjects |
 | Dynamic metadata / annotations | Planned | User-created attributes stored in config JSON |
 

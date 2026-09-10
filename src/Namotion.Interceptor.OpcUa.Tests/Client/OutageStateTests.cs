@@ -72,12 +72,9 @@ public class OutageStateTests
 
             // Fast detection/recovery so the test observes the outage window without waiting minutes.
             // SubscriptionHealthCheckInterval is set well above KeepAliveInterval on purpose: the health
-            // check loop has its own independent dead-session detection (HandleDeadSessionAsync), which
-            // sets IsReconnecting via SetReconnecting(true) BEFORE StartBuffering() in ReconnectSessionAsync
-            // - the opposite order from OnKeepAlive's ReportConnectionLost-before-IsReconnecting. A wide
-            // margin makes it overwhelmingly unlikely for that independent path to race ahead of OnKeepAlive
-            // and win, which would make the IsReconnecting-timing assertion below flake for reasons unrelated
-            // to the fix under test.
+            // check loop has its own independent dead-session detection (HandleDeadSessionAsync), and a
+            // wide margin makes it overwhelmingly unlikely for that path to race ahead of OnKeepAlive and
+            // win, which would leave the SDK auto-reconnect window this test exists to cover unexercised.
             ReconnectInterval = TimeSpan.FromSeconds(1),
             ReconnectHandlerTimeout = TimeSpan.FromSeconds(5),
             MaxReconnectDuration = TimeSpan.FromSeconds(20),
@@ -94,15 +91,35 @@ public class OutageStateTests
 
         await using var source = new OpcUaSubjectClientSource(root, configuration, loggerFactory.CreateLogger<OpcUaSubjectClientSource>());
 
+        // How far reconnection had got when the source first reported the outage. Read inside the
+        // transition lock, which is what makes it answer "at that moment" rather than "by the time the
+        // test got around to looking". Subscribed ahead of the recorder so that a transition visible in
+        // the recording has already been counted here.
+        var reconnectsCompletedWhenOutageReported = -1L;
+        void CaptureReconnectProgress(object? sender, SourceEvent transition)
+        {
+            if (transition is { OldState: SourceState.Synchronized, NewState: SourceState.Synchronizing } &&
+                Volatile.Read(ref reconnectsCompletedWhenOutageReported) < 0)
+            {
+                Volatile.Write(ref reconnectsCompletedWhenOutageReported, source.Diagnostics.Reconnects.TotalSucceeded);
+            }
+        }
+
+        source.StateChanged += CaptureReconnectProgress;
+
+        // Subscribed before anything can transition the source: the outage is asserted from the
+        // recorded transitions, because the Synchronizing window can be shorter than the interval at
+        // which a test can sample the current state.
+        var stateRecorder = SourceStateRecorder.SubscribeTo(source);
+
         try
         {
             await source.StartAsync(CancellationToken.None);
 
-            await AsyncTestHelpers.WaitUntilAsync(
-                () => source.State == SourceState.Synchronized,
-                timeout: TimeSpan.FromSeconds(60),
-                message: "Initial sync should complete");
-            var firstSynchronizedAt = source.LastSynchronizedAt;
+            await stateRecorder.WaitForStatesAsync(
+                TimeSpan.FromSeconds(60),
+                "Initial sync should complete.",
+                SourceState.Synchronized);
 
             // Act - Disconnect is the soft fault: it breaks the transport without stopping the
             // connector, which is exactly what a real network blip does. It kills the transport
@@ -111,28 +128,48 @@ public class OutageStateTests
             // test exists to cover.
             await ((IFaultInjectable)source).InjectFaultAsync(FaultType.Disconnect, CancellationToken.None);
 
-            // Assert - Diagnostics.IsReconnecting flips true inside OnKeepAlive's lock, right after
-            // ReportConnectionLost() (see SessionManager.OnKeepAlive). Asserting State==Synchronizing the
-            // moment IsReconnecting is observed true catches the state at the start of the SDK's own
-            // reconnect window. A weaker "wait for Synchronizing, then wait for Synchronized" pair would
-            // pass vacuously even without the fix: PerformFullStateSyncIfNeededAsync still buffers
-            // briefly once the SDK finishes reconnecting on its own, so Synchronizing would still flash by
-            // right before Synchronized regardless of whether OnKeepAlive reports the loss up front.
-            await AsyncTestHelpers.WaitUntilAsync(
-                () => source.Diagnostics.IsReconnecting,
-                timeout: TimeSpan.FromSeconds(30),
-                message: "SDK should begin auto-reconnecting after the transport is disconnected");
-            Assert.Equal(SourceState.Synchronizing, source.State);
+            // Assert
+            await stateRecorder.WaitForStatesAsync(
+                TimeSpan.FromSeconds(30),
+                "Losing the transport should have been reported as an outage instead of the source staying Synchronized.",
+                SourceState.Synchronized, SourceState.Synchronizing);
 
-            await AsyncTestHelpers.WaitUntilAsync(
-                () => source.State == SourceState.Synchronized,
-                timeout: TimeSpan.FromSeconds(60),
-                message: "Source should recover to Synchronized after the SDK reconnects");
-            Assert.NotNull(firstSynchronizedAt);
-            Assert.True(source.LastSynchronizedAt > firstSynchronizedAt);
+            // Without this, the pair of waits would pass vacuously even without the fix:
+            // PerformFullStateSyncIfNeededAsync buffers briefly once the SDK has finished reconnecting on
+            // its own, so Synchronizing would flash by right before Synchronized whether or not
+            // OnKeepAlive reported the loss up front. Only the report made at detection happens while no
+            // reconnection has completed yet.
+            var reconnectsCompleted = Volatile.Read(ref reconnectsCompletedWhenOutageReported);
+            Assert.True(reconnectsCompleted == 0,
+                $"The outage should have been reported when the connection was lost, but {reconnectsCompleted} " +
+                $"reconnection(s) had already completed by then. Recorded transitions: {stateRecorder}.");
+
+            var outage = await stateRecorder.WaitForStatesAsync(
+                TimeSpan.FromSeconds(60),
+                "Source should recover to Synchronized after the SDK reconnects.",
+                SourceState.Synchronized, SourceState.Synchronizing, SourceState.Synchronized);
+
+            // Each transition carries the timestamp that ISubjectSource.StateChangeTime was set to,
+            // so these compare the moments themselves rather than whatever the property reads back as
+            // once the outage is over.
+            var firstSynchronizedAt = outage[0].Timestamp;
+            var outageDetectedAt = outage[1].Timestamp;
+            var recoveredAt = outage[2].Timestamp;
+
+            Assert.True(outageDetectedAt > firstSynchronizedAt,
+                "Losing synchronization should have moved StateChangeTime past the initial sync, but the " +
+                $"recorded transitions were: {stateRecorder}.");
+
+            // Against the outage moment, not the initial sync: the timestamp only ever advances, so
+            // comparing against firstSynchronizedAt again could not fail.
+            Assert.True(recoveredAt > outageDetectedAt,
+                "Recovering should have moved StateChangeTime past the moment the outage was detected, but the " +
+                $"recorded transitions were: {stateRecorder}.");
         }
         finally
         {
+            stateRecorder.Dispose();
+            source.StateChanged -= CaptureReconnectProgress;
             await source.StopAsync(CancellationToken.None);
         }
     }

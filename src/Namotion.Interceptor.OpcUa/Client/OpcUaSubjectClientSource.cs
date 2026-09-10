@@ -3,6 +3,8 @@ using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
 using Namotion.Interceptor.Connectors;
 using Namotion.Interceptor.OpcUa.Client.Connection;
+using Namotion.Interceptor.OpcUa.Client.Polling;
+using Namotion.Interceptor.OpcUa.Client.ReadAfterWrite;
 using Namotion.Interceptor.OpcUa.Client.Resilience;
 using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Registry.Abstractions;
@@ -34,7 +36,6 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
 
     private volatile bool _isStarted;
     private long _reconnectStartedTimestamp; // 0 = not reconnecting, otherwise Stopwatch timestamp when reconnection started (for stall detection)
-    private Exception? _lastError;
 
     internal string OpcUaNodeIdKey { get; } = "OpcUaNodeId:" + Guid.NewGuid();
 
@@ -42,24 +43,66 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
     internal SourceOwnershipManager Ownership => _ownership;
 
     internal ReconnectionMetrics ReconnectionMetrics { get; } = new();
-    internal ThroughputCounter IncomingThroughput { get; } = new();
-    internal ThroughputCounter OutgoingThroughput { get; } = new();
-    internal Exception? LastError => Volatile.Read(ref _lastError);
 
-    internal void ClearLastError() => Volatile.Write(ref _lastError, null);
+    // Owned here rather than by SessionManager, which is rebuilt on every connect attempt including
+    // failed ones, so the totals they feed survive a reconnect storm.
+    internal PollingMetrics PollingMetrics { get; } = new();
+
+    internal ReadAfterWriteMetrics ReadAfterWriteMetrics { get; } = new();
+
+    internal ThroughputCounter IncomingThroughput => Metrics.Incoming!;
+    internal ThroughputCounter OutgoingThroughput => Metrics.Outgoing!;
 
     /// <summary>
     /// Forwards to the protected ReportConnectionLost transition seam for SessionManager, which
     /// holds this concrete source type but is not part of its inheritance hierarchy and so cannot
     /// call the protected member directly.
     /// </summary>
-    internal void NotifyConnectionLost() => ReportConnectionLost();
+    internal void NotifyConnectionLost()
+    {
+        Metrics.MarkNotOperational();
+        ReportConnectionLost();
+    }
+
+    /// <summary>
+    /// Forwards a healthy-session report from <c>SessionManager</c> and the health check loop, which
+    /// cannot reach the protected metrics directly. Same pattern as
+    /// <see cref="NotifyConnectionLost"/>.
+    /// </summary>
+    internal void NotifySessionHealthy() => Metrics.MarkOperational();
+
+    /// <summary>
+    /// Drops liveness alone, for the paths that observe a session which is no longer usable but must
+    /// not report a connection loss.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="NotifyConnectionLost"/> this leaves the state transition and the writer
+    /// generation bump to the caller, so a caller that does neither can leave the source reading
+    /// <see cref="Namotion.Interceptor.Connectors.Monitoring.SourceState.Synchronized"/> beside a
+    /// client reporting itself as not operational.
+    /// </remarks>
+    internal void NotifySessionNotHealthy() => Metrics.MarkNotOperational();
+
+    /// <summary>
+    /// Records a failure swallowed by source-owned background work, unless that work is only failing
+    /// because its lifetime is ending. Helper types use this instead of exposing the metrics writer.
+    /// </summary>
+    internal void ReportBackgroundError(Exception error) =>
+        ReportBackgroundError(error, default);
+
+    internal void ReportBackgroundError(Exception error, CancellationToken cancellationToken)
+    {
+        if (!cancellationToken.IsCancellationRequested && Volatile.Read(ref _disposed) == 0)
+        {
+            Metrics.ReportError(error);
+        }
+    }
 
     /// <inheritdoc />
     public override int WriteBatchSize => _writer?.WriteBatchSize ?? 0;
 
-    /// <inheritdoc />
-    public OpcUaClientDiagnostics Diagnostics { get; }
+    /// <inheritdoc cref="SubjectSourceBase.Diagnostics" />
+    public override OpcUaClientDiagnostics Diagnostics { get; }
 
     /// <inheritdoc />
     public ISession? CurrentSession => _sessionManager?.CurrentSession;
@@ -68,7 +111,14 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
     public event EventHandler<OpcUaCurrentSessionChangedEventArgs>? CurrentSessionChanged;
 
     public OpcUaSubjectClientSource(IInterceptorSubject subject, OpcUaClientConfiguration configuration, ILogger logger)
-        : base(subject.Context, logger, configuration.BufferTime, configuration.RetryTime, configuration.WriteRetryQueueSize)
+        : base(
+            subject.Context,
+            logger,
+            configuration.BufferTime,
+            configuration.RetryTime,
+            configuration.WriteRetryQueueSize,
+            new ThroughputCounter(),
+            new ThroughputCounter())
     {
         ArgumentNullException.ThrowIfNull(subject);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -95,9 +145,14 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
             onSubjectDetaching: OnSubjectDetaching);
 
         _subjectLoader = new OpcUaSubjectLoader(subject, configuration, _ownership, this, logger);
-        _subscriptionHealthMonitor = new SubscriptionHealthMonitor(logger);
+        _subscriptionHealthMonitor = new SubscriptionHealthMonitor(logger, ReportBackgroundError);
 
-        Diagnostics = new OpcUaClientDiagnostics(this);
+        Metrics.RegisterClaimedProperties(() => _ownership.Count);
+        Metrics.RegisterResettable(ReconnectionMetrics);
+        Metrics.RegisterResettable(PollingMetrics);
+        Metrics.RegisterResettable(ReadAfterWriteMetrics);
+
+        Diagnostics = new OpcUaClientDiagnostics(this, Metrics);
     }
 
     private void OnSubjectDetaching(IInterceptorSubject subject)
@@ -112,10 +167,15 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
     {
         Reset();
 
+        // Without this, a previous attempt that reached the health loop before its initial load
+        // failed would keep reporting as operational for the whole retry delay.
+        Metrics.MarkNotOperational();
+
         _propertyWriter = propertyWriter;
         _logger.LogInformation("Connecting to OPC UA server at {ServerUrl}.", _configuration.ServerUrl);
 
-        _sessionManager = new SessionManager(this, propertyWriter, _configuration, _logger);
+        _sessionManager = new SessionManager(
+            this, propertyWriter, _configuration, PollingMetrics, ReadAfterWriteMetrics, _logger);
         _writer = new OutboundWriter(_sessionManager, _configuration, OpcUaNodeIdKey, OutgoingThroughput, _logger);
 
         try
@@ -153,7 +213,6 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
             }
 
             _isStarted = true;
-            Volatile.Write(ref _lastError, null);
 
             var sessionManagerForLifetime = _sessionManager;
             return BackgroundTaskLifetime.Start(
@@ -164,16 +223,19 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
                 {
                     try { await sessionManagerForLifetime.DisposeAsync().ConfigureAwait(false); }
                     catch (Exception ex) { _logger.LogWarning(ex, "OPC UA session manager threw during listen-lifetime disposal."); }
+
+                    // Reached on every way out of this attempt, including a failure raised after this
+                    // method returned, which the retry loop records without touching liveness. Must
+                    // stay after the disposal that latches the manager's disposed flag: an
+                    // OnReconnectComplete still in flight would otherwise raise liveness again behind
+                    // this call, and that stale rise would stand for the whole retry delay.
+                    Metrics.MarkNotOperational();
                 });
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch
         {
-            await CleanupSessionManagerAsync().ConfigureAwait(false);
-            throw;
-        }
-        catch (Exception ex)
-        {
-            Volatile.Write(ref _lastError, ex);
+            // Not reported here: it rethrows into SubjectSourceBase.RunAsync, whose retry loop records
+            // the same exception, so reporting it here as well would only duplicate it.
             await CleanupSessionManagerAsync().ConfigureAwait(false);
             throw;
         }
@@ -349,6 +411,7 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
             }
             catch (Exception ex)
             {
+                ReportBackgroundError(ex, stoppingToken);
                 _logger.LogError(ex, "Error during health check or session restart. Retrying after delay.");
                 try { await Task.Delay(_configuration.SubscriptionHealthCheckInterval, stoppingToken).ConfigureAwait(false); }
                 catch (OperationCanceledException) { return; }
@@ -364,12 +427,18 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
 
         await sessionManager.PerformFullStateSyncIfNeededAsync(cancellationToken).ConfigureAwait(false);
 
+        // Re-read rather than taken from the caller's snapshot, because the full state sync above
+        // clears the session when it fails. Kept ahead of the network-touching steps below, so a
+        // throw in either cannot skip this tick's report and leave a client that is genuinely
+        // serving subscription data reporting itself as down.
+        sessionManager.ReportLivenessFromSessionState();
+
         if (sessionManager.SubscriptionManager.HasStoppedPublishing)
         {
             _logger.LogWarning(
                 "OPC UA subscription has stopped publishing. Starting manual reconnection to recover notification flow...");
             await ReconnectSessionAsync(cancellationToken).ConfigureAwait(false);
-            return true;
+            return sessionManager.IsConnected;
         }
 
         await _subscriptionHealthMonitor.CheckAndHealSubscriptionsAsync(
@@ -455,7 +524,7 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
         // which nullifies the session while we're still setting up subscriptions and loading state.
         // Report at detection, matching OnKeepAlive (see ReportConnectionLost remarks for why not
         // StartBuffering here).
-        ReportConnectionLost();
+        NotifyConnectionLost();
 
         sessionManager.SetReconnecting(true);
 
@@ -502,7 +571,6 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
             await propertyWriter.LoadInitialStateAndResumeAsync(token).ConfigureAwait(false);
 
             ReconnectionMetrics.RecordSuccess();
-            Volatile.Write(ref _lastError, null);
             _logger.LogInformation("Session restart complete (id={SessionId}).", session.SessionId);
         }
         catch (OperationCanceledException) when (reconnectCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
@@ -513,18 +581,31 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
             // Clear the session so health check can trigger a fresh reconnection attempt
             await sessionManager.ClearSessionAsync(cancellationToken).ConfigureAwait(false);
 
-            throw; // Re-throw to trigger retry in ExecuteAsync
+            return; // The health loop retries on its next tick.
         }
         catch (Exception ex)
         {
-            ReconnectionMetrics.RecordFailure();
-            Volatile.Write(ref _lastError, ex);
-            _logger.LogError(ex, "Failed to restart session. Will retry on next health check.");
+            // This token is the listen lifetime's, cancelled both when the source stops and when the
+            // base retry loop tears the attempt down, and either cancels the kill source with it. What
+            // lands here is then the cancellation a session, a lock wait or an initial load raises on
+            // the way down rather than a genuine fault. Counted as abandoned instead of failed, so it
+            // neither overwrites the sticky last error nor leaves an attempt without an outcome.
+            if (cancellationToken.IsCancellationRequested)
+            {
+                ReconnectionMetrics.RecordAbandoned();
+                _logger.LogInformation("Reconnection abandoned because the listen attempt is being torn down.");
+            }
+            else
+            {
+                ReconnectionMetrics.RecordFailure();
+                ReportBackgroundError(ex, cancellationToken);
+                _logger.LogError(ex, "Failed to restart session. Will retry on next health check.");
+            }
 
             // Clear the session so health check can trigger a new reconnection attempt
             await sessionManager.ClearSessionAsync(cancellationToken).ConfigureAwait(false);
 
-            throw; // Re-throw to trigger retry in ExecuteAsync
+            return; // The health loop retries on its next tick.
         }
         finally
         {
@@ -534,6 +615,10 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
             sessionManager.SetReconnecting(false);
             _reconnectCts = null;
         }
+
+        // Must stay after the finally cleared the reconnecting flag, so no reader sees the connector
+        // reported as operational and reconnecting at once.
+        sessionManager.ReportLivenessFromSessionState();
     }
 
     private async Task<ReferenceDescription?> TryGetRootNodeAsync(Session session, CancellationToken cancellationToken)
@@ -631,8 +716,13 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
             }
             else
             {
-                // No manual reconnection in progress — clear session directly.
+                // No manual reconnection in progress, so clear the session directly.
                 await sessionManager.ClearSessionAsync(CancellationToken.None).ConfigureAwait(false);
+
+                // After the clear rather than before it, because the clear waits for the reconnection
+                // lock and an SDK reconnect completing while it waits would raise liveness again on
+                // the very session the clear is about to take away.
+                Metrics.MarkNotOperational();
 
                 // If ReconnectSessionAsync started between our _reconnectCts check and ClearSessionAsync,
                 // cancel it to speed up recovery instead of waiting for it to fail naturally.
@@ -716,6 +806,8 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
         {
             return; // Already disposed
         }
+
+        await StopAsync(CancellationToken.None).ConfigureAwait(false);
 
         var sessionManager = _sessionManager;
         if (sessionManager is not null)

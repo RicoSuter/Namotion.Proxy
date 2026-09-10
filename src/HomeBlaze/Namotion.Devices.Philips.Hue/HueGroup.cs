@@ -5,6 +5,7 @@ using HomeBlaze.Abstractions.Devices.Light;
 using HueApi.Models;
 using HueApi.Models.Requests;
 using Namotion.Interceptor.Attributes;
+using static Namotion.Devices.Philips.Hue.HueCommandResult;
 
 namespace Namotion.Devices.Philips.Hue;
 
@@ -22,9 +23,9 @@ public partial class HueGroup :
     IIconProvider,
     ILastUpdatedProvider
 {
-    internal HueResource Group { get; set; }
+    internal partial HueResource Group { get; set; }
 
-    internal GroupedLight? GroupedLight { get; set; }
+    internal partial GroupedLight? GroupedLight { get; set; }
 
     public HueBridge Bridge { get; }
 
@@ -111,12 +112,7 @@ public partial class HueGroup :
                 .TurnOn();
 
             var client = Bridge.GetOrCreateClient();
-            var response = await client.GroupedLight.UpdateAsync(GroupedLight.Id, command);
-            if (!response.Errors.Any())
-            {
-                GroupedLight.On.IsOn = true;
-                LastUpdated = DateTimeOffset.Now;
-            }
+            ThrowOnError(await client.GroupedLight.UpdateAsync(GroupedLight.Id, command));
         }
     }
 
@@ -129,12 +125,7 @@ public partial class HueGroup :
                 .TurnOff();
 
             var client = Bridge.GetOrCreateClient();
-            var response = await client.GroupedLight.UpdateAsync(GroupedLight.Id, command);
-            if (!response.Errors.Any())
-            {
-                GroupedLight.On.IsOn = false;
-                LastUpdated = DateTimeOffset.Now;
-            }
+            ThrowOnError(await client.GroupedLight.UpdateAsync(GroupedLight.Id, command));
         }
     }
 
@@ -156,12 +147,7 @@ public partial class HueGroup :
                 .SetBrightness((double)(brightness * 100m));
 
             var client = Bridge.GetOrCreateClient();
-            var response = await client.GroupedLight.UpdateAsync(GroupedLight.Id, command);
-            if (!response.Errors.Any() && GroupedLight.Dimming is not null)
-            {
-                GroupedLight.Dimming.Brightness = (double)(brightness * 100m);
-                LastUpdated = DateTimeOffset.Now;
-            }
+            ThrowOnError(await client.GroupedLight.UpdateAsync(GroupedLight.Id, command));
 
             if (turnOffAfterChange)
             {

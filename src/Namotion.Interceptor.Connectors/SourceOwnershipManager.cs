@@ -23,6 +23,7 @@ public class SourceOwnershipManager : IDisposable
     private readonly LifecycleInterceptor _lifecycle;
 
     private int _disposed;
+    private int _count;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SourceOwnershipManager"/> class.
@@ -67,6 +68,15 @@ public class SourceOwnershipManager : IDisposable
     }
 
     /// <summary>
+    /// Gets how many properties this source currently owns.
+    /// </summary>
+    /// <remarks>
+    /// Maintained rather than derived from <see cref="Properties"/>, which copies the whole set on
+    /// every read. Recomputed at each mutation site, all of which already hold the lock.
+    /// </remarks>
+    public int Count => Volatile.Read(ref _count);
+
+    /// <summary>
     /// Claims source ownership for a property.
     /// </summary>
     /// <param name="property">The property to claim.</param>
@@ -84,6 +94,7 @@ public class SourceOwnershipManager : IDisposable
             }
 
             _properties.Add(property);
+            Volatile.Write(ref _count, _properties.Count);
             return true;
         }
     }
@@ -101,6 +112,8 @@ public class SourceOwnershipManager : IDisposable
                 _onReleasing?.Invoke(property);
                 property.RemoveSource(_source);
             }
+
+            Volatile.Write(ref _count, _properties.Count);
         }
     }
 
@@ -120,6 +133,8 @@ public class SourceOwnershipManager : IDisposable
                 _onReleasing?.Invoke(property);
                 property.RemoveSource(_source);
             }
+
+            Volatile.Write(ref _count, _properties.Count);
         }
     }
 
@@ -141,6 +156,7 @@ public class SourceOwnershipManager : IDisposable
                 property.RemoveSource(_source);
             }
             _properties.Clear();
+            Volatile.Write(ref _count, _properties.Count);
         }
     }
 }

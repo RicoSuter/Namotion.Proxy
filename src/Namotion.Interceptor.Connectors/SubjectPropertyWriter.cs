@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
+using Namotion.Interceptor.Connectors.Diagnostics;
 using Namotion.Interceptor.Connectors.Monitoring;
 
 namespace Namotion.Interceptor.Connectors;
@@ -17,6 +18,7 @@ public sealed class SubjectPropertyWriter
 {
     private readonly SubjectSourceBase _source;
     private readonly ILogger _logger;
+    private readonly QueueMetrics? _inboundBufferMetrics;
     private readonly Lock _lock = new();
 
     private List<Action>? _updates = [];
@@ -26,22 +28,47 @@ public sealed class SubjectPropertyWriter
     // StartBuffering happened in between, this call's snapshot is stale and must not be applied,
     // replayed, or certified as Synchronized - see LoadInitialStateAndResumeAsync.
     private int _generation;
+    private int _bufferedUpdateCount;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SubjectPropertyWriter"/> class.
     /// </summary>
     /// <param name="source">The source associated with this writer.</param>
     /// <param name="logger">The logger.</param>
+    /// <param name="inboundBufferMetrics">
+    /// Where this writer reports the depth of its buffer and the updates a superseded load throws
+    /// away, or <c>null</c> for a writer whose buffer nothing observes. The instance must have no live
+    /// registration: this constructor registers on it and never deregisters, so a derived source must
+    /// not pass the <c>SourceMetrics.InboundBuffer</c> that <see cref="SubjectSourceBase"/> has already
+    /// registered for the writer it owns.
+    /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// <paramref name="inboundBufferMetrics"/> already has a live registration.
+    /// </exception>
     /// <remarks>
     /// Typed to the concrete base rather than <see cref="ISubjectSource"/> because this writer
     /// drives the source's state transitions, which only <see cref="SubjectSourceBase"/> defines. A
     /// source implementing the interface directly owns its own write path and its own transitions.
     /// </remarks>
-    public SubjectPropertyWriter(SubjectSourceBase source, ILogger logger)
+    internal SubjectPropertyWriter(SubjectSourceBase source, ILogger logger, QueueMetrics? inboundBufferMetrics = null)
     {
         _source = source;
         _logger = logger;
+        _inboundBufferMetrics = inboundBufferMetrics;
+
+        // Never disposed: the writer and its buffer live as long as the source does.
+        _ = _inboundBufferMetrics?.Register(() => BufferedUpdateCount, capacity: null);
     }
+
+    /// <summary>
+    /// Gets how many inbound updates are currently buffered while the initial state loads.
+    /// </summary>
+    /// <remarks>
+    /// Maintained under the writer's own lock and read without taking it: a lock-taking getter would
+    /// close an ABBA cycle, since <see cref="StartBuffering"/> holds that lock while transitioning the
+    /// source's state, which reaches registered monitors synchronously.
+    /// </remarks>
+    internal int BufferedUpdateCount => Volatile.Read(ref _bufferedUpdateCount);
 
     /// <summary>
     /// Starts buffering updates instead of applying them directly.
@@ -52,7 +79,12 @@ public sealed class SubjectPropertyWriter
     {
         lock (_lock)
         {
+            // The replaced list is a superseded snapshot that must not be applied. Counted anyway,
+            // because it is the only signal of how often initial loads are being superseded.
+            _inboundBufferMetrics?.AddDropped(_updates?.Count ?? 0);
+
             _updates = [];
+            Volatile.Write(ref _bufferedUpdateCount, 0);
             _generation++;
 
             // Under _lock, paired with the generation change that governs it, so the transition
@@ -134,6 +166,7 @@ public sealed class SubjectPropertyWriter
 
                 // Must be after replay: Write() reads _updates without lock on the fast path.
                 _updates = null;
+                Volatile.Write(ref _bufferedUpdateCount, 0);
             }
 
             // Reported while still holding _lock, atomically with the generation check above, so a
@@ -165,6 +198,7 @@ public sealed class SubjectPropertyWriter
                 {
                     // Still initializing, buffer the update (cold path, allocations acceptable)
                     AddBeforeInitializationUpdate(updates, state, update);
+                    Volatile.Write(ref _bufferedUpdateCount, updates.Count);
                     return;
                 }
             }

@@ -83,6 +83,7 @@ internal sealed class SessionManager : IAsyncDisposable, IDisposable
         }
         catch (Exception ex)
         {
+            _source.ReportBackgroundError(ex, cancellationToken);
             _logger.LogError(ex, "Full state sync failed after SDK reconnection. Clearing session for manual reconnection.");
             await ClearSessionAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -92,6 +93,41 @@ internal sealed class SessionManager : IAsyncDisposable, IDisposable
     /// Gets a value indicating whether the session is currently reconnecting.
     /// </summary>
     public bool IsReconnecting => Volatile.Read(ref _isReconnecting) == 1;
+
+    /// <summary>
+    /// Gets a value indicating whether this manager has been disposed. The source keeps its field
+    /// pointing here afterwards, so everything reachable through it then describes a session that is
+    /// already gone.
+    /// </summary>
+    internal bool IsDisposed => Volatile.Read(ref _disposed) == 1;
+
+    /// <summary>
+    /// Reports the source's liveness from the current session state: raised when the session is
+    /// connected and not reconnecting, dropped otherwise.
+    /// </summary>
+    /// <remarks>
+    /// The read and the report are one step under <c>_reconnectingLock</c>, which
+    /// <see cref="OnKeepAlive"/>, <see cref="OnReconnectComplete"/> and <see cref="SetReconnecting"/>
+    /// also take, so a stale read cannot raise liveness after OnKeepAlive dropped it and leave the
+    /// client reporting itself as reconnecting and operational at once. That lock is not a leaf, so
+    /// the invariant an edit has to preserve is the reverse direction: nothing takes
+    /// <c>_reconnectingLock</c> while holding the property writer's lock, the source's state lock or
+    /// a source monitor's lock.
+    /// </remarks>
+    internal void ReportLivenessFromSessionState()
+    {
+        lock (_reconnectingLock)
+        {
+            if (IsConnected)
+            {
+                _source.NotifySessionHealthy();
+            }
+            else
+            {
+                _source.NotifySessionNotHealthy();
+            }
+        }
+    }
 
     /// <summary>
     /// Gets whether there are sessions waiting for async disposal by the health check loop.
@@ -105,9 +141,17 @@ internal sealed class SessionManager : IAsyncDisposable, IDisposable
     /// triggering OnReconnectComplete → AbandonCurrentSession while the manual
     /// reconnection is still in progress.
     /// </summary>
+    /// <remarks>
+    /// Takes <c>_reconnectingLock</c>, so callers must hold none of the locks named in the remarks on
+    /// <see cref="ReportLivenessFromSessionState"/>. The interlocked write stays because
+    /// <see cref="IsReconnecting"/> reads the flag without the lock.
+    /// </remarks>
     internal void SetReconnecting(bool value)
     {
-        Interlocked.Exchange(ref _isReconnecting, value ? 1 : 0);
+        lock (_reconnectingLock)
+        {
+            Interlocked.Exchange(ref _isReconnecting, value ? 1 : 0);
+        }
     }
 
     /// <summary>
@@ -128,9 +172,27 @@ internal sealed class SessionManager : IAsyncDisposable, IDisposable
     /// <summary>
     /// Gets the read-after-write manager for scheduling reads after writes.
     /// </summary>
-    internal ReadAfterWriteManager? ReadAfterWriteManager { get; private set; }
+    internal ReadAfterWriteManager? ReadAfterWriteManager { get; }
 
-    public SessionManager(OpcUaSubjectClientSource source, SubjectPropertyWriter propertyWriter, OpcUaClientConfiguration configuration, ILogger logger)
+    /// <summary>
+    /// Gets the diagnostics view over <see cref="PollingManager"/>, or <c>null</c> when the polling
+    /// fallback is off. Built once here so a diagnostics read does not allocate.
+    /// </summary>
+    internal PollingDiagnostics? PollingDiagnostics { get; }
+
+    /// <summary>
+    /// Gets the diagnostics view over <see cref="ReadAfterWriteManager"/>, or <c>null</c> when
+    /// read-after-write is off.
+    /// </summary>
+    internal ReadAfterWriteDiagnostics? ReadAfterWriteDiagnostics { get; }
+
+    public SessionManager(
+        OpcUaSubjectClientSource source,
+        SubjectPropertyWriter propertyWriter,
+        OpcUaClientConfiguration configuration,
+        PollingMetrics pollingMetrics,
+        ReadAfterWriteMetrics readAfterWriteMetrics,
+        ILogger logger)
     {
         _source = source;
         _propertyWriter = propertyWriter;
@@ -141,8 +203,15 @@ internal sealed class SessionManager : IAsyncDisposable, IDisposable
         if (_configuration.EnablePollingFallback)
         {
             PollingManager = new PollingManager(
-                source, sessionManager: this,
-                propertyWriter, _configuration, _logger);
+                source,
+                sessionProvider: () => CurrentSession,
+                propertyWriter,
+                _configuration,
+                pollingMetrics,
+                source.ReportBackgroundError,
+                _logger);
+
+            PollingDiagnostics = new PollingDiagnostics(PollingManager, pollingMetrics);
 
             PollingManager.Start();
         }
@@ -153,10 +222,21 @@ internal sealed class SessionManager : IAsyncDisposable, IDisposable
                 sessionProvider: () => CurrentSession,
                 source,
                 configuration,
+                readAfterWriteMetrics,
+                source.ReportBackgroundError,
                 logger);
+
+            ReadAfterWriteDiagnostics = new ReadAfterWriteDiagnostics(ReadAfterWriteManager, readAfterWriteMetrics);
         }
 
-        SubscriptionManager = new SubscriptionManager(source, propertyWriter, PollingManager, ReadAfterWriteManager, configuration, logger);
+        SubscriptionManager = new SubscriptionManager(
+            source,
+            propertyWriter,
+            PollingManager,
+            ReadAfterWriteManager,
+            configuration,
+            source.ReportBackgroundError,
+            logger);
     }
 
     /// <summary>
@@ -263,8 +343,8 @@ internal sealed class SessionManager : IAsyncDisposable, IDisposable
         _logger.LogInformation(
             "Created {SubscriptionCount} subscriptions with {Subscribed} " +
             "total monitored items ({Polled} via polling).",
-            SubscriptionManager.Subscriptions.Count,
-            SubscriptionManager.MonitoredItems.Count,
+            SubscriptionManager.SubscriptionCount,
+            SubscriptionManager.MonitoredItemCount,
             PollingManager?.PollingItemCount ?? 0);
     }
 
@@ -334,6 +414,10 @@ internal sealed class SessionManager : IAsyncDisposable, IDisposable
             {
                 // BeginReconnect threw - reset flag for immediate recovery instead of waiting 30s for stall detection
                 Interlocked.Exchange(ref _isReconnecting, 0);
+                if (Volatile.Read(ref _disposed) == 0)
+                {
+                    _source.ReportBackgroundError(ex);
+                }
                 _logger.LogError(ex, "BeginReconnect threw unexpected exception.");
             }
         }
@@ -378,6 +462,7 @@ internal sealed class SessionManager : IAsyncDisposable, IDisposable
                 }
 
                 var oldSession = Volatile.Read(ref _session);
+                var transferSucceeded = false;
 
                 if (!ReferenceEquals(oldSession, reconnectedSession))
                 {
@@ -410,7 +495,7 @@ internal sealed class SessionManager : IAsyncDisposable, IDisposable
                         Interlocked.Exchange(ref _needsFullStateSync, 1);
 
                         _source.ReconnectionMetrics.RecordSuccess();
-                        _source.ClearLastError();
+                        transferSucceeded = true;
 
                         _logger.LogInformation(
                             "OPC UA session reconnected: Transferred {Count} subscriptions. Full state sync pending.",
@@ -448,6 +533,16 @@ internal sealed class SessionManager : IAsyncDisposable, IDisposable
                 }
 
                 Interlocked.Exchange(ref _isReconnecting, 0);
+
+                // Notifications resume as soon as the transfer succeeds, and the only other rise on
+                // this path is the health check loop's, so without this the connector reports itself
+                // down for seconds while values update. Must stay after the reconnecting flag was
+                // cleared above, and is guarded by IsConnected rather than the branch's own knowledge
+                // because the session can have dropped again since.
+                if (transferSucceeded && IsConnected)
+                {
+                    _source.NotifySessionHealthy();
+                }
             }
         }
         finally
@@ -714,6 +809,14 @@ internal sealed class SessionManager : IAsyncDisposable, IDisposable
 
         lock (_reconnectingLock)
         {
+            // Disposing the SDK timer does not wait for an async reconnect already in progress, whose
+            // completion callback can still arrive later. Consume its outcome before disposing the
+            // handler; the disposed latch makes that callback return without classifying it again.
+            if (Interlocked.Exchange(ref _pendingSdkReconnection, 0) == 1)
+            {
+                _source.ReconnectionMetrics.RecordAbandoned();
+            }
+
             try { _reconnectHandler.Dispose(); } catch (Exception ex) { _logger.LogDebug(ex, "Error disposing reconnect handler."); }
         }
         if (ReadAfterWriteManager is not null)

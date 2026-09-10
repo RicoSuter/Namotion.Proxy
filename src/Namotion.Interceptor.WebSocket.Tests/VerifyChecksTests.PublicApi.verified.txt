@@ -1,0 +1,207 @@
+﻿[assembly: System.Reflection.AssemblyMetadata("RepositoryUrl", "https://github.com/RicoSuter/Namotion.Interceptor")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Namotion.Interceptor.WebSocket.Tests")]
+[assembly: System.Runtime.Versioning.TargetFramework(".NETCoreApp,Version=v9.0", FrameworkDisplayName=".NET 9.0")]
+namespace Namotion.Interceptor.WebSocket.Client
+{
+    public class WebSocketClientConfiguration
+    {
+        public WebSocketClientConfiguration() { }
+        public System.TimeSpan BufferTime { get; set; }
+        public System.TimeSpan CircuitBreakerCooldown { get; set; }
+        public int CircuitBreakerFailureThreshold { get; set; }
+        public System.TimeSpan ConnectTimeout { get; set; }
+        public long MaxMessageSize { get; set; }
+        public System.TimeSpan MaxReconnectDelay { get; set; }
+        public Namotion.Interceptor.Registry.Paths.PathProviderBase? PathProvider { get; set; }
+        public Namotion.Interceptor.Connectors.Updates.ISubjectUpdateProcessor[] Processors { get; set; }
+        public System.TimeSpan ReceiveTimeout { get; set; }
+        public System.TimeSpan ReconnectDelay { get; set; }
+        public System.TimeSpan RetryTime { get; set; }
+        public System.Uri? ServerUri { get; set; }
+        public Namotion.Interceptor.Connectors.ISubjectFactory? SubjectFactory { get; set; }
+        public int WriteBatchSize { get; set; }
+        public int WriteRetryQueueSize { get; set; }
+        public void Validate() { }
+    }
+    public sealed class WebSocketSubjectClientSource : Namotion.Interceptor.Connectors.SubjectSourceBase, Namotion.Interceptor.Connectors.IFaultInjectable, System.IAsyncDisposable
+    {
+        public WebSocketSubjectClientSource(Namotion.Interceptor.IInterceptorSubject subject, Namotion.Interceptor.WebSocket.Client.WebSocketClientConfiguration configuration, Microsoft.Extensions.Logging.ILogger<Namotion.Interceptor.WebSocket.Client.WebSocketSubjectClientSource> logger) { }
+        public override Namotion.Interceptor.IInterceptorSubject RootSubject { get; }
+        public override int WriteBatchSize { get; }
+        public System.Threading.Tasks.ValueTask DisposeAsync() { }
+        public override System.Threading.Tasks.Task<System.Action?> LoadInitialStateAsync(System.Threading.CancellationToken cancellationToken) { }
+        protected override System.Threading.Tasks.Task<System.IAsyncDisposable?> StartListeningAsync(Namotion.Interceptor.Connectors.SubjectPropertyWriter propertyWriter, System.Threading.CancellationToken cancellationToken) { }
+        public override System.Threading.Tasks.ValueTask<Namotion.Interceptor.Connectors.WriteResult> WriteChangesAsync(System.ReadOnlyMemory<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange> changes, System.Threading.CancellationToken cancellationToken) { }
+    }
+}
+namespace Namotion.Interceptor.WebSocket.Protocol
+{
+    public static class ErrorCode
+    {
+        public const int InternalError = 500;
+        public const int InvalidFormat = 200;
+        public const int ReadOnlyProperty = 101;
+        public const int UnknownProperty = 100;
+        public const int ValidationFailed = 102;
+        public const int VersionMismatch = 201;
+    }
+    public class ErrorPayload
+    {
+        public ErrorPayload() { }
+        public int Code { get; set; }
+        public System.Collections.Generic.IReadOnlyList<Namotion.Interceptor.WebSocket.Protocol.PropertyFailure>? Failures { get; set; }
+        public required string Message { get; set; }
+    }
+    public class HeartbeatPayload
+    {
+        public HeartbeatPayload() { }
+        public long Sequence { get; set; }
+    }
+    public class HelloPayload
+    {
+        public HelloPayload() { }
+        public Namotion.Interceptor.WebSocket.Protocol.WebSocketFormat Format { get; set; }
+        public int Version { get; set; }
+    }
+    public enum MessageType
+    {
+        Hello = 0,
+        Welcome = 1,
+        Update = 2,
+        Error = 3,
+        Heartbeat = 4,
+    }
+    public class PropertyFailure
+    {
+        public PropertyFailure() { }
+        public int Code { get; set; }
+        public required string Message { get; set; }
+        public required string Path { get; set; }
+    }
+    public class UpdatePayload : Namotion.Interceptor.Connectors.Updates.SubjectUpdate
+    {
+        public UpdatePayload() { }
+        [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        [System.Text.Json.Serialization.JsonPropertyName("sequence")]
+        public long? Sequence { get; set; }
+    }
+    public enum WebSocketFormat
+    {
+        Json = 0,
+        MessagePack = 1,
+    }
+    public static class WebSocketProtocol
+    {
+        public const int Version = 1;
+    }
+    public class WelcomePayload
+    {
+        public WelcomePayload() { }
+        public Namotion.Interceptor.WebSocket.Protocol.WebSocketFormat Format { get; set; }
+        public long Sequence { get; set; }
+        public Namotion.Interceptor.Connectors.Updates.SubjectUpdate? State { get; set; }
+        public int Version { get; set; }
+    }
+}
+namespace Namotion.Interceptor.WebSocket.Serialization
+{
+    public interface IWebSocketSerializer
+    {
+        Namotion.Interceptor.WebSocket.Protocol.WebSocketFormat Format { get; }
+        T Deserialize<T>(System.ReadOnlySpan<byte> bytes);
+        [return: System.Runtime.CompilerServices.TupleElementNames(new string[] {
+                "Type",
+                "PayloadStart",
+                "PayloadLength"})]
+        System.ValueTuple<Namotion.Interceptor.WebSocket.Protocol.MessageType, int, int> DeserializeMessageEnvelope(System.ReadOnlySpan<byte> bytes);
+        byte[] Serialize<T>(T value);
+        byte[] SerializeMessage<T>(Namotion.Interceptor.WebSocket.Protocol.MessageType messageType, T payload);
+        void SerializeMessageTo<T>(System.Buffers.IBufferWriter<byte> bufferWriter, Namotion.Interceptor.WebSocket.Protocol.MessageType messageType, T payload);
+    }
+    public sealed class JsonWebSocketSerializer : Namotion.Interceptor.WebSocket.Serialization.IWebSocketSerializer
+    {
+        public JsonWebSocketSerializer() { }
+        public Namotion.Interceptor.WebSocket.Protocol.WebSocketFormat Format { get; }
+        public static Namotion.Interceptor.WebSocket.Serialization.JsonWebSocketSerializer Instance { get; }
+        public T Deserialize<T>(System.ReadOnlySpan<byte> bytes) { }
+        [return: System.Runtime.CompilerServices.TupleElementNames(new string[] {
+                "Type",
+                "PayloadStart",
+                "PayloadLength"})]
+        public System.ValueTuple<Namotion.Interceptor.WebSocket.Protocol.MessageType, int, int> DeserializeMessageEnvelope(System.ReadOnlySpan<byte> bytes) { }
+        public byte[] Serialize<T>(T value) { }
+        public byte[] SerializeMessage<T>(Namotion.Interceptor.WebSocket.Protocol.MessageType messageType, T payload) { }
+        public void SerializeMessageTo<T>(System.Buffers.IBufferWriter<byte> bufferWriter, Namotion.Interceptor.WebSocket.Protocol.MessageType messageType, T payload) { }
+    }
+}
+namespace Namotion.Interceptor.WebSocket.Server
+{
+    public class WebSocketServerConfiguration
+    {
+        public static readonly System.TimeSpan MinimumHeartbeatInterval;
+        public WebSocketServerConfiguration() { }
+        public string? BindAddress { get; set; }
+        public System.TimeSpan BroadcastTimeout { get; set; }
+        public System.TimeSpan BufferTime { get; set; }
+        public System.TimeSpan HeartbeatInterval { get; set; }
+        public System.TimeSpan HelloTimeout { get; set; }
+        public int MaxConnections { get; set; }
+        public long MaxMessageSize { get; set; }
+        public string Path { get; set; }
+        public Namotion.Interceptor.Registry.Paths.PathProviderBase? PathProvider { get; set; }
+        public int Port { get; set; }
+        public Namotion.Interceptor.Connectors.Updates.ISubjectUpdateProcessor[] Processors { get; set; }
+        public System.TimeSpan SendLockTimeout { get; set; }
+        public Namotion.Interceptor.Connectors.ISubjectFactory? SubjectFactory { get; set; }
+        public int WriteBatchSize { get; set; }
+        public void Validate() { }
+    }
+    public sealed class WebSocketServerDiagnostics : Namotion.Interceptor.Connectors.Diagnostics.ConnectorDiagnostics
+    {
+        public int ConnectionCount { get; }
+        public long CurrentSequence { get; }
+    }
+    public sealed class WebSocketSubjectChangeProcessor : Microsoft.Extensions.Hosting.BackgroundService
+    {
+        public WebSocketSubjectChangeProcessor(Namotion.Interceptor.WebSocket.Server.WebSocketSubjectHandler handler, Microsoft.Extensions.Logging.ILogger<Namotion.Interceptor.WebSocket.Server.WebSocketSubjectChangeProcessor> logger) { }
+        protected override System.Threading.Tasks.Task ExecuteAsync(System.Threading.CancellationToken stoppingToken) { }
+    }
+    public sealed class WebSocketSubjectHandler
+    {
+        public WebSocketSubjectHandler(Namotion.Interceptor.IInterceptorSubject subject, Namotion.Interceptor.WebSocket.Server.WebSocketServerConfiguration configuration, Microsoft.Extensions.Logging.ILogger logger) { }
+        public System.TimeSpan BufferTime { get; }
+        public int ConnectionCount { get; }
+        public Namotion.Interceptor.IInterceptorSubjectContext Context { get; }
+        public long CurrentSequence { get; }
+        public System.Threading.Tasks.ValueTask BroadcastChangesAsync(System.ReadOnlyMemory<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange> changes, System.Threading.CancellationToken cancellationToken) { }
+        public System.Threading.Tasks.ValueTask CloseAllConnectionsAsync() { }
+        public Namotion.Interceptor.Connectors.ChangeQueueProcessor CreateChangeQueueProcessor(Microsoft.Extensions.Logging.ILogger logger) { }
+        public System.Threading.Tasks.Task HandleClientAsync(System.Net.WebSockets.WebSocket webSocket, System.Threading.CancellationToken stoppingToken) { }
+        public System.Threading.Tasks.Task RunHeartbeatLoopAsync(System.Threading.CancellationToken cancellationToken) { }
+    }
+    public sealed class WebSocketSubjectServer : Namotion.Interceptor.Connectors.SubjectConnectorBase, Namotion.Interceptor.Connectors.IFaultInjectable, System.IAsyncDisposable
+    {
+        public WebSocketSubjectServer(Namotion.Interceptor.IInterceptorSubject subject, Namotion.Interceptor.WebSocket.Server.WebSocketServerConfiguration configuration, Microsoft.Extensions.Logging.ILogger<Namotion.Interceptor.WebSocket.Server.WebSocketSubjectServer> logger) { }
+        [get: System.Runtime.CompilerServices.PreserveBaseOverrides]
+        public virtual Namotion.Interceptor.WebSocket.Server.WebSocketServerDiagnostics Diagnostics { get; }
+        public override Namotion.Interceptor.IInterceptorSubject RootSubject { get; }
+        public System.Threading.Tasks.ValueTask DisposeAsync() { }
+        protected override System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken stoppingToken) { }
+    }
+}
+namespace Namotion.Interceptor.WebSocket
+{
+    public static class WebSocketSubjectExtensions
+    {
+        public static Microsoft.Extensions.DependencyInjection.IServiceCollection AddWebSocketSubjectClientSource(this Microsoft.Extensions.DependencyInjection.IServiceCollection services, System.Func<System.IServiceProvider, Namotion.Interceptor.IInterceptorSubject> subjectSelector, System.Action<Namotion.Interceptor.WebSocket.Client.WebSocketClientConfiguration> configure) { }
+        public static Microsoft.Extensions.DependencyInjection.IServiceCollection AddWebSocketSubjectClientSource<TSubject>(this Microsoft.Extensions.DependencyInjection.IServiceCollection services, System.Action<Namotion.Interceptor.WebSocket.Client.WebSocketClientConfiguration> configure)
+            where TSubject : Namotion.Interceptor.IInterceptorSubject { }
+        public static Microsoft.Extensions.DependencyInjection.IServiceCollection AddWebSocketSubjectHandler(this Microsoft.Extensions.DependencyInjection.IServiceCollection services, string path, System.Func<System.IServiceProvider, Namotion.Interceptor.IInterceptorSubject> subjectSelector, System.Action<Namotion.Interceptor.WebSocket.Server.WebSocketServerConfiguration>? configure = null) { }
+        public static Microsoft.Extensions.DependencyInjection.IServiceCollection AddWebSocketSubjectHandler<TSubject>(this Microsoft.Extensions.DependencyInjection.IServiceCollection services, string path, System.Action<Namotion.Interceptor.WebSocket.Server.WebSocketServerConfiguration>? configure = null)
+            where TSubject : Namotion.Interceptor.IInterceptorSubject { }
+        public static Microsoft.Extensions.DependencyInjection.IServiceCollection AddWebSocketSubjectServer(this Microsoft.Extensions.DependencyInjection.IServiceCollection services, System.Func<System.IServiceProvider, Namotion.Interceptor.IInterceptorSubject> subjectSelector, System.Action<Namotion.Interceptor.WebSocket.Server.WebSocketServerConfiguration> configure) { }
+        public static Microsoft.Extensions.DependencyInjection.IServiceCollection AddWebSocketSubjectServer<TSubject>(this Microsoft.Extensions.DependencyInjection.IServiceCollection services, System.Action<Namotion.Interceptor.WebSocket.Server.WebSocketServerConfiguration> configure)
+            where TSubject : Namotion.Interceptor.IInterceptorSubject { }
+        public static Microsoft.AspNetCore.Routing.IEndpointRouteBuilder MapWebSocketSubjectHandler(this Microsoft.AspNetCore.Routing.IEndpointRouteBuilder endpoints, string path = "/ws") { }
+    }
+}

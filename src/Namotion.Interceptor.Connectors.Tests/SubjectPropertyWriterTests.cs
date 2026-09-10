@@ -301,6 +301,89 @@ public class SubjectPropertyWriterTests
         Assert.Equal(SourceState.Synchronizing, source.State);
     }
 
+    [Fact]
+    public void WhenBuffering_ThenBufferedUpdateCountTracksTheBuffer()
+    {
+        // Arrange
+        var writer = new SubjectPropertyWriter(CreateSource(), NullLogger.Instance);
+        writer.StartBuffering();
+
+        // Act
+        writer.Write(0, static _ => { });
+        writer.Write(1, static _ => { });
+
+        // Assert
+        Assert.Equal(2, writer.BufferedUpdateCount);
+    }
+
+    [Fact]
+    public void WhenBufferingRestarts_ThenBufferedUpdateCountResets()
+    {
+        // Arrange
+        var writer = new SubjectPropertyWriter(CreateSource(), NullLogger.Instance);
+        writer.StartBuffering();
+        writer.Write(0, static _ => { });
+        writer.Write(1, static _ => { });
+
+        // Act
+        writer.StartBuffering();
+
+        // Assert
+        Assert.Equal(0, writer.BufferedUpdateCount);
+    }
+
+    [Fact]
+    public async Task WhenTheBufferIsReplayed_ThenBufferedUpdateCountReturnsToZero()
+    {
+        // Arrange
+        var writer = new SubjectPropertyWriter(CreateSource(), NullLogger.Instance);
+        writer.StartBuffering();
+        writer.Write(0, static _ => { });
+
+        // Act
+        await writer.LoadInitialStateAndResumeAsync(CancellationToken.None);
+
+        // Assert
+        Assert.Equal(0, writer.BufferedUpdateCount);
+    }
+
+    [Fact]
+    public async Task WhenASupersededLoadIsDiscarded_ThenTheSurvivingBufferStaysCounted()
+    {
+        // Arrange: the superseded load returns before touching the buffer the newer cycle filled.
+        var context = InterceptorSubjectContext.Create();
+        var person = new Person(context);
+
+        var staleLoadEntered = new TaskCompletionSource();
+        var releaseStaleLoad = new TaskCompletionSource();
+
+        var source = new TestSubjectSource(person, context, NullLogger.Instance)
+        {
+            LoadInitialStateOverride = async _ =>
+            {
+                staleLoadEntered.TrySetResult();
+                await releaseStaleLoad.Task;
+                return (Action?)null;
+            },
+        };
+
+        var writer = new SubjectPropertyWriter(source, NullLogger.Instance);
+
+        // Act
+        writer.StartBuffering();
+        var staleTask = writer.LoadInitialStateAndResumeAsync(CancellationToken.None);
+        await staleLoadEntered.Task;
+
+        writer.StartBuffering();
+        writer.Write(0, static _ => { });
+
+        releaseStaleLoad.SetResult();
+        await staleTask;
+
+        // Assert
+        Assert.Equal(1, writer.BufferedUpdateCount);
+    }
+
     /// <summary>
     /// A minimal started-nowhere source for writer tests. The writer takes SubjectSourceBase rather
     /// than ISubjectSource because it drives the source's state transitions, so these cannot use a

@@ -1,6 +1,7 @@
 using Xunit;
 using Namotion.Interceptor;
 using Namotion.Interceptor.Connectors;
+using Namotion.Interceptor.Connectors.Diagnostics;
 using Namotion.Interceptor.ConnectorTester.Connectors;
 using Namotion.Interceptor.ConnectorTester.Model;
 using Namotion.Interceptor.Registry;
@@ -21,6 +22,7 @@ public class FaultTargetResolverTests
     private sealed class FakeConnector : ISubjectConnector, IFaultInjectable
     {
         public required IInterceptorSubject RootSubject { get; init; }
+        public ConnectorDiagnostics Diagnostics { get; } = new(new ConnectorMetrics());
         public Task InjectFaultAsync(FaultType faultType, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 

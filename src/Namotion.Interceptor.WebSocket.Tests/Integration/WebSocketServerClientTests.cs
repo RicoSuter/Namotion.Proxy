@@ -305,10 +305,10 @@ public class WebSocketServerClientTests
         await client1.StartAsync(context => new TestRoot(context), port: portLease.Port);
 
         await AsyncTestHelpers.WaitUntilAsync(
-            () => server.Server!.ConnectionCount == 1,
+            () => server.Server!.Diagnostics.ConnectionCount == 1,
             message: "First client should connect");
 
-        _output.WriteLine($"First client connected. ConnectionCount: {server.Server!.ConnectionCount}");
+        _output.WriteLine($"First client connected. ConnectionCount: {server.Server!.Diagnostics.ConnectionCount}");
 
         // Act - Second client connects but gets rejected -- enters reconnect loop
         await using var client2 = new WebSocketTestClient<TestRoot>(_output);
@@ -318,8 +318,8 @@ public class WebSocketServerClientTests
         await Task.Delay(500);
 
         // Assert - Server should still have only 1 active connection
-        _output.WriteLine($"After second client attempt. ConnectionCount: {server.Server.ConnectionCount}");
-        Assert.Equal(1, server.Server.ConnectionCount);
+        _output.WriteLine($"After second client attempt. ConnectionCount: {server.Server.Diagnostics.ConnectionCount}");
+        Assert.Equal(1, server.Server.Diagnostics.ConnectionCount);
     }
 
     [Fact]
@@ -334,10 +334,10 @@ public class WebSocketServerClientTests
         await client.StartAsync(context => new TestRoot(context), port: portLease.Port);
 
         await AsyncTestHelpers.WaitUntilAsync(
-            () => server.Server!.ConnectionCount == 1,
+            () => server.Server!.Diagnostics.ConnectionCount == 1,
             message: "Client should connect");
 
-        _output.WriteLine($"Client connected. ConnectionCount: {server.Server!.ConnectionCount}");
+        _output.WriteLine($"Client connected. ConnectionCount: {server.Server!.Diagnostics.ConnectionCount}");
 
         // Act - Abruptly stop client
         await client.StopAsync();
@@ -354,10 +354,10 @@ public class WebSocketServerClientTests
 
         // Assert - Wait for cleanup
         await AsyncTestHelpers.WaitUntilAsync(
-            () => server.Server.ConnectionCount == 0,
+            () => server.Server.Diagnostics.ConnectionCount == 0,
             timeout: TimeSpan.FromSeconds(10),
             message: "Server should clean up zombie connection");
 
-        _output.WriteLine($"After cleanup. ConnectionCount: {server.Server.ConnectionCount}");
+        _output.WriteLine($"After cleanup. ConnectionCount: {server.Server.Diagnostics.ConnectionCount}");
     }
 }

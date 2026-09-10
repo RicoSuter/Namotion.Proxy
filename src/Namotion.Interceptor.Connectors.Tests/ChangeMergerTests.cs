@@ -341,7 +341,7 @@ public class ChangeMergerTests
 
         // Warm up: the JIT, the property index capacity, the pooled buffer and the sticky written-out
         // mark are all one-time costs that would otherwise land inside the measurement.
-        for (var warmup = 0; warmup < 5; warmup++)
+        for (var warmup = 0; warmup < AllocationWarmupRounds; warmup++)
         {
             merger.Merge(changes, ChangeDeliveryRule.SourceValuesMayBeStale);
             merger.Reset();
@@ -574,7 +574,7 @@ public class ChangeMergerTests
         using var merger = new ChangeMerger();
         var changes = CreateWideBatch(changeCount: 4096, distinctProperties: 8);
 
-        for (var warmup = 0; warmup < 5; warmup++)
+        for (var warmup = 0; warmup < AllocationWarmupRounds; warmup++)
         {
             merger.Merge(changes);
             merger.Reset();
@@ -589,6 +589,13 @@ public class ChangeMergerTests
         // Assert
         Assert.Equal(0, allocated);
     }
+
+    // Deep enough that the measured call runs fully promoted code. Tier-0 has runtime work billed to
+    // the calling thread, and a five round warmup left the single measured call still in tier-0, which
+    // is what made these tests report a few thousand stray bytes under CI load. The count is kept
+    // congruent to the old one modulo the buffer's four batch trim cycle, so the measured call still
+    // lands off a re-rent exactly as it did at five rounds.
+    private const int AllocationWarmupRounds = 101;
 
     private const int PropertyIndexMaximum = 1024;
 
@@ -720,6 +727,45 @@ public class ChangeMergerTests
         var survivor = Assert.Single(merged);
         Assert.Equal(nameof(Person.LastName), survivor.Property.Name);
         Assert.Equal("Newer", survivor.GetNewValue<string>());
+    }
+
+    [Fact]
+    public void WhenAdmissionRejectsFilteredSurvivors_ThenMergeReturnsEmptyWithTheExactSurvivorCount()
+    {
+        // Arrange
+        using var merger = new ChangeMerger();
+
+        var subject = new Person(InterceptorSubjectContext.Create());
+        var firstName = new PropertyReference(subject, nameof(Person.FirstName));
+        var lastName = new PropertyReference(subject, nameof(Person.LastName));
+
+        subject.FirstName = "Stale";
+        Assert.True(firstName.TryGetWriteState(includeSourceCommitsInRevision: false, out var staleRevision, out _));
+        subject.FirstName = "Newest";
+
+        subject.LastName = "Current";
+        Assert.True(lastName.TryGetWriteState(includeSourceCommitsInRevision: false, out var currentRevision, out _));
+
+        var admissionCount = 0;
+        SubjectPropertyChange[] changes =
+        [
+            CreateChange(firstName, "Old", "Stale", staleRevision),
+            CreateChange(lastName, "Old", "Current", currentRevision)
+        ];
+
+        // Act
+        var merged = merger.Merge(
+            changes,
+            ChangeDeliveryRule.SourceValuesMayBeStale,
+            count =>
+            {
+                admissionCount = count;
+                return false;
+            });
+
+        // Assert
+        Assert.True(merged.IsEmpty);
+        Assert.Equal(1, admissionCount);
     }
 
     /// <summary>

@@ -1,0 +1,65 @@
+﻿[assembly: System.Reflection.AssemblyMetadata("RepositoryUrl", "https://github.com/RicoSuter/Namotion.Interceptor")]
+[assembly: System.Runtime.Versioning.TargetFramework(".NETCoreApp,Version=v10.0", FrameworkDisplayName=".NET 10.0")]
+namespace HomeBlaze.History.Blazor
+{
+    public static class PropertyHistoryChartModel
+    {
+        public const int MaxPoints = 1000;
+        public static readonly System.Collections.Generic.IReadOnlyList<HomeBlaze.History.Blazor.PropertyHistoryChartModel.ChartPeriod> Periods;
+        public static System.TimeSpan AutoBucket(System.TimeSpan range, System.TimeSpan? availableCoverage = default) { }
+        public static System.Collections.Generic.IReadOnlyList<HomeBlaze.History.Blazor.PropertyHistoryChartModel.StateSegment> BuildStateSegments(System.Collections.Generic.IReadOnlyList<HomeBlaze.History.Abstractions.HistoryPoint> points, HomeBlaze.History.Abstractions.HistoryPoint? valueAtStart, System.DateTimeOffset from, System.DateTimeOffset to, System.Collections.Generic.IReadOnlyList<HomeBlaze.History.Abstractions.HistoryCoverage> coverage, System.Func<HomeBlaze.History.Abstractions.HistoryPoint, string?> format) { }
+        public static string DescribeAggregation(string aggregation) { }
+        public static string DescribePeriod(HomeBlaze.History.Blazor.PropertyHistoryChartModel.ChartPeriod period, System.TimeSpan? resolvedBucket) { }
+        public static string FormatBucket(System.TimeSpan bucket) { }
+        public static string? FormatDiscreteValue(HomeBlaze.History.Abstractions.HistoryPoint point, System.Type propertyType) { }
+        public static System.Collections.Generic.IReadOnlyList<string> GateAggregations(HomeBlaze.History.Abstractions.ValueColumn column, bool isCumulative, System.Collections.Generic.IReadOnlySet<string> storeUnion, bool isDiscrete = false) { }
+        public static bool IsDiscrete(System.Type propertyType, bool isDiscreteState) { }
+        public static System.TimeSpan? ResolveBucket(HomeBlaze.History.Blazor.PropertyHistoryChartModel.ChartPeriod period, System.TimeSpan range, System.TimeSpan? availableCoverage = default) { }
+        [return: System.Runtime.CompilerServices.TupleElementNames(new string[] {
+                "From",
+                "To"})]
+        public static System.ValueTuple<System.DateTimeOffset, System.DateTimeOffset> ResolveCustomRange(System.DateTime? customFrom, System.DateTime? customTo, System.DateTimeOffset now, System.Func<System.DateTime, System.DateTimeOffset> toUtc) { }
+        public static System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<HomeBlaze.History.Abstractions.HistoryPoint>> SplitIntoGapRuns(System.Collections.Generic.IReadOnlyList<HomeBlaze.History.Abstractions.HistoryPoint> points) { }
+        public readonly struct ChartPeriod : System.IEquatable<HomeBlaze.History.Blazor.PropertyHistoryChartModel.ChartPeriod>
+        {
+            public ChartPeriod(string Label, System.TimeSpan? Bucket, bool IsAuto) { }
+            public System.TimeSpan? Bucket { get; init; }
+            public bool IsAuto { get; init; }
+            public string Label { get; init; }
+        }
+        public readonly struct StateSegment : System.IEquatable<HomeBlaze.History.Blazor.PropertyHistoryChartModel.StateSegment>
+        {
+            public StateSegment(System.DateTimeOffset Start, System.DateTimeOffset End, string? Label, bool IsUnknown) { }
+            public System.TimeSpan Duration { get; }
+            public System.DateTimeOffset End { get; init; }
+            public bool IsUnknown { get; init; }
+            public string? Label { get; init; }
+            public System.DateTimeOffset Start { get; init; }
+        }
+    }
+    public class PropertyHistoryDialog : Microsoft.AspNetCore.Components.ComponentBase, System.IDisposable
+    {
+        public PropertyHistoryDialog() { }
+        [Microsoft.AspNetCore.Components.Parameter]
+        public string DisplayName { get; set; }
+        [Microsoft.AspNetCore.Components.Parameter]
+        public bool IsCumulative { get; set; }
+        [Microsoft.AspNetCore.Components.Parameter]
+        public bool IsDiscreteState { get; set; }
+        [Microsoft.AspNetCore.Components.Parameter]
+        public string PropertyPath { get; set; }
+        [Microsoft.AspNetCore.Components.Parameter]
+        public System.Type PropertyType { get; set; }
+        [Microsoft.AspNetCore.Components.Parameter]
+        public Namotion.Interceptor.Registry.Abstractions.ISubjectRegistry Registry { get; set; }
+        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder @__builder) { }
+        public void Dispose() { }
+        protected override System.Threading.Tasks.Task OnInitializedAsync() { }
+        public static System.Threading.Tasks.Task<MudBlazor.IDialogReference> ShowAsync(MudBlazor.IDialogService dialogService, Namotion.Interceptor.Registry.Abstractions.ISubjectRegistry registry, string propertyPath, string displayName, System.Type propertyType, bool isCumulative, string? unit = null, bool isDiscreteState = false) { }
+    }
+    public class _Imports
+    {
+        public _Imports() { }
+        protected void Execute() { }
+    }
+}

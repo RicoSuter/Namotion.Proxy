@@ -6,6 +6,7 @@ using HueApi.ColorConverters.Original.Extensions;
 using HueApi.Models;
 using HueApi.Models.Requests;
 using Namotion.Interceptor.Attributes;
+using static Namotion.Devices.Philips.Hue.HueCommandResult;
 
 namespace Namotion.Devices.Philips.Hue;
 
@@ -20,7 +21,7 @@ public partial class HueLightbulb : HueDevice,
     IColorTemperatureState, IColorTemperatureController,
     IPowerSensor
 {
-    internal Light LightResource { get; set; }
+    internal partial Light LightResource { get; set; }
 
     /// <summary>
     /// The light resource ID, used for room/zone child matching.
@@ -217,12 +218,7 @@ public partial class HueLightbulb : HueDevice,
             .TurnOn();
 
         var client = Bridge.GetOrCreateClient();
-        var response = await client.Light.UpdateAsync(LightResource.Id, command);
-        if (!response.Errors.Any())
-        {
-            LightResource.On.IsOn = true;
-            LastUpdated = DateTimeOffset.Now;
-        }
+        ThrowOnError(await client.Light.UpdateAsync(LightResource.Id, command));
     }
 
     [Operation]
@@ -232,12 +228,7 @@ public partial class HueLightbulb : HueDevice,
             .TurnOff();
 
         var client = Bridge.GetOrCreateClient();
-        var response = await client.Light.UpdateAsync(LightResource.Id, command);
-        if (!response.Errors.Any())
-        {
-            LightResource.On.IsOn = false;
-            LastUpdated = DateTimeOffset.Now;
-        }
+        ThrowOnError(await client.Light.UpdateAsync(LightResource.Id, command));
     }
 
     [Operation]
@@ -256,12 +247,7 @@ public partial class HueLightbulb : HueDevice,
             .SetBrightness((double)(brightness * 100m));
 
         var client = Bridge.GetOrCreateClient();
-        var response = await client.Light.UpdateAsync(LightResource.Id, command);
-        if (!response.Errors.Any() && LightResource.Dimming is not null)
-        {
-            LightResource.Dimming.Brightness = (double)(brightness * 100m);
-            LastUpdated = DateTimeOffset.Now;
-        }
+        ThrowOnError(await client.Light.UpdateAsync(LightResource.Id, command));
 
         if (turnOffAfterChange)
         {
@@ -278,12 +264,7 @@ public partial class HueLightbulb : HueDevice,
             .SetColor(rgbColor, Model ?? "LCT001");
 
         var client = Bridge.GetOrCreateClient();
-        var response = await client.Light.UpdateAsync(LightResource.Id, command);
-        if (!response.Errors.Any())
-        {
-            LightResource.Color = rgbColor.ToColor();
-            LastUpdated = DateTimeOffset.Now;
-        }
+        ThrowOnError(await client.Light.UpdateAsync(LightResource.Id, command));
     }
 
     [Operation]
@@ -305,12 +286,7 @@ public partial class HueLightbulb : HueDevice,
             };
 
             var client = Bridge.GetOrCreateClient();
-            var response = await client.Light.UpdateAsync(LightResource.Id, command);
-            if (!response.Errors.Any() && LightResource.ColorTemperature is not null)
-            {
-                LightResource.ColorTemperature.Mirek = newColorTemperature;
-                LastUpdated = DateTimeOffset.Now;
-            }
+            ThrowOnError(await client.Light.UpdateAsync(LightResource.Id, command));
         }
     }
 }

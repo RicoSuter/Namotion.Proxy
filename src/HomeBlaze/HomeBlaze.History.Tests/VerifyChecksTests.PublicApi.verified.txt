@@ -1,0 +1,27 @@
+﻿[assembly: System.Reflection.AssemblyMetadata("RepositoryUrl", "https://github.com/RicoSuter/Namotion.Interceptor")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("HomeBlaze.History.Tests")]
+[assembly: System.Runtime.Versioning.TargetFramework(".NETCoreApp,Version=v10.0", FrameworkDisplayName=".NET 10.0")]
+namespace HomeBlaze.History
+{
+    public sealed class HistoryChangeRecorder
+    {
+        public HistoryChangeRecorder(HomeBlaze.History.Abstractions.IHistoryRecorder engine, HomeBlaze.Abstractions.ISubjectPathResolver resolver) { }
+        public double IncomingChangesPerSecond { get; }
+        public double RecordedChangesPerSecond { get; }
+        public void Forget(Namotion.Interceptor.IInterceptorSubject subject) { }
+        public System.Threading.Tasks.ValueTask RecordBatch(System.ReadOnlyMemory<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange> changes) { }
+        public static bool IsEligible(Namotion.Interceptor.PropertyReference propertyReference) { }
+    }
+    public static class HistoryEligibility
+    {
+        public static bool HasHistory(this Namotion.Interceptor.Registry.Abstractions.RegisteredSubjectProperty property) { }
+    }
+    public static class HistoryStoreMerger
+    {
+        public static System.Threading.Tasks.Task<HomeBlaze.History.Abstractions.HistoryPoint?> GetValueAtAsync(this Namotion.Interceptor.Registry.Abstractions.ISubjectRegistry registry, string propertyPath, System.DateTimeOffset asOf, System.Threading.CancellationToken cancellationToken) { }
+        public static System.Threading.Tasks.Task<HomeBlaze.History.Abstractions.HistorySeries> QueryHistoryAsync(this Namotion.Interceptor.Registry.Abstractions.ISubjectRegistry registry, HomeBlaze.History.Abstractions.HistoryQuery query, System.Threading.CancellationToken cancellationToken) { }
+        public static System.Threading.Tasks.Task<HomeBlaze.History.Abstractions.HistorySeries> QueryHistoryAsync(this System.Collections.Generic.IEnumerable<HomeBlaze.History.Abstractions.IHistoryStore> stores, HomeBlaze.History.Abstractions.HistoryQuery query, System.Threading.CancellationToken cancellationToken) { }
+        public static System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<HomeBlaze.History.Abstractions.HistorySeries>> QueryHistoryAsync(this Namotion.Interceptor.Registry.Abstractions.ISubjectRegistry registry, System.Collections.Generic.IReadOnlyList<string> propertyPaths, System.DateTimeOffset from, System.DateTimeOffset to, System.TimeSpan? bucket, string aggregation, int maxPoints, System.Threading.CancellationToken cancellationToken) { }
+        public static System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<HomeBlaze.History.Abstractions.HistorySeries>> QueryHistoryAsync(this System.Collections.Generic.IEnumerable<HomeBlaze.History.Abstractions.IHistoryStore> stores, System.Collections.Generic.IReadOnlyList<string> propertyPaths, System.DateTimeOffset from, System.DateTimeOffset to, System.TimeSpan? bucket, string aggregation, int maxPoints, System.Threading.CancellationToken cancellationToken) { }
+    }
+}

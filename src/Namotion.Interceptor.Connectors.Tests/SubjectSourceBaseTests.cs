@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Namotion.Interceptor.Connectors.Monitoring;
@@ -16,6 +18,13 @@ namespace Namotion.Interceptor.Connectors.Tests;
 
 public class SubjectSourceBaseTests
 {
+    // Generous on purpose. These waits synchronize on a write actually reaching the handler, so the
+    // budget only has to outlast scheduling, not describe how long the write should take. A tight one
+    // fails whenever the whole solution runs in parallel and the thread pool is sized for a CI runner.
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan TeardownWaitTimeout =
+        ChangeQueueProcessor.TeardownFlushBound + TimeSpan.FromSeconds(5);
+
     [Fact]
     public async Task WhenStartingSourceAndPushingChanges_ThenUpdatesAreInCorrectOrder()
     {
@@ -91,14 +100,14 @@ public class SubjectSourceBaseTests
 
         // Located rather than sliced blind: without these the slices below throw a bare range exception
         // on the refactor this test exists to survive, which reads as a broken test rather than a moved one.
-        var executeAsyncIndex = source.IndexOf("protected sealed override async Task ExecuteAsync", StringComparison.Ordinal);
-        Assert.True(executeAsyncIndex >= 0, "ExecuteAsync not found; this scan needs updating");
+        var runAsyncIndex = source.IndexOf("protected sealed override async Task RunAsync", StringComparison.Ordinal);
+        Assert.True(runAsyncIndex >= 0, "RunAsync not found; this scan needs updating");
 
-        var executeAsync = source[executeAsyncIndex..];
-        var catchIndex = executeAsync.IndexOf("catch (Exception ex)", StringComparison.Ordinal);
+        var runAsync = source[runAsyncIndex..];
+        var catchIndex = runAsync.IndexOf("catch (Exception ex)", StringComparison.Ordinal);
         Assert.True(catchIndex >= 0, "the catch block was not found; this scan needs updating");
 
-        var catchBlock = executeAsync[catchIndex..];
+        var catchBlock = runAsync[catchIndex..];
         var finallyIndex = catchBlock.IndexOf("finally", StringComparison.Ordinal);
         Assert.True(finallyIndex >= 0, "no finally after the catch; this scan needs updating");
 
@@ -107,7 +116,7 @@ public class SubjectSourceBaseTests
     }
 
     [Fact]
-    public async Task WhenExecuteAsyncExitsViaCancellation_ThenTheFinallyTransitionsToStopped()
+    public async Task WhenRunAsyncExitsViaCancellation_ThenTheFinallyTransitionsToStopped()
     {
         // Arrange
         var context = InterceptorSubjectContext.Create().WithFullPropertyTracking().WithLifecycle();
@@ -367,7 +376,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert
@@ -401,7 +410,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert: the later capture wins, and it is delivered rather than ranked against the marker.
@@ -444,7 +453,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert: the later capture wins here too, and survives the reconcile's supersession check.
@@ -492,7 +501,6 @@ public class SubjectSourceBaseTests
         };
 
         new PropertyReference(subject, nameof(Person.FirstName)).SetSource(source);
-        new PropertyReference(subject, nameof(Person.LastName)).SetSource(source);
 
         // Act
         await source.StartAsync(CancellationToken.None);
@@ -500,12 +508,16 @@ public class SubjectSourceBaseTests
             () => Volatile.Read(ref initialStateApplied),
             message: "Expected initial state to be applied");
 
-        // Sentinel write after the snapshot: once it arrives at the source, any earlier flush
-        // containing the FirstName write would already have been delivered.
-        subject.LastName = "sentinel";
+        // Waited for by value rather than fenced behind a write to another property. The reconcile
+        // sends a change the model already holds straight to the source, while one the load moved the
+        // model off it restores locally and leaves to the connected processor, which delivers a buffer
+        // time later. A second property's arrival therefore proves nothing about this one, and as a
+        // fence it let the stop cancel the processor before it flushed.
         await AsyncTestHelpers.WaitUntilAsync(
-            () => receivedChanges.Any(c => c.Property.Name == nameof(Person.LastName)),
-            message: "Expected the sentinel write to reach the source");
+            () => receivedChanges.Any(c =>
+                c.Property.Name == nameof(Person.FirstName) &&
+                c.GetNewValue<string?>() == "stale-user-write"),
+            message: "Expected the write overwritten by the load to reach the source");
         await source.StopAsync(CancellationToken.None);
 
         // Assert: the user's write reaches the source rather than being discarded by the load.
@@ -629,7 +641,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert
@@ -649,7 +661,7 @@ public class SubjectSourceBaseTests
         var subject = new Person(context);
         var source = new TestSubjectSource(subject, context, NullLogger.Instance);
 
-        // Act & Assert - StartAsync surfaces the faulted ExecuteAsync task
+        // Act & Assert - StartAsync surfaces the faulted RunAsync task
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(
             () => source.StartAsync(CancellationToken.None));
         Assert.Contains("PropertyChangeInterceptor", exception.Message);
@@ -693,7 +705,7 @@ public class SubjectSourceBaseTests
         subject.FirstName = "Test";
 
         // Wait for the write to be attempted
-        await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await tcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - service processed the write (exception was logged, not thrown)
@@ -731,7 +743,7 @@ public class SubjectSourceBaseTests
         subject.FirstName = "Test";
 
         // Wait for the write to be attempted
-        await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await tcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - write was attempted (OperationCanceledException propagated up)
@@ -780,12 +792,12 @@ public class SubjectSourceBaseTests
         subject.FirstName = "First";
 
         // Wait for first write to be attempted before triggering second
-        await firstCallTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await firstCallTcs.Task.WaitAsync(TestTimeout);
 
         // Second change - will succeed and flush the queued item
         subject.FirstName = "Second";
 
-        await secondCallTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await secondCallTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - both writes were attempted (first failed and was retried)
@@ -822,7 +834,7 @@ public class SubjectSourceBaseTests
 
         subject.FirstName = "Test";
 
-        await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await tcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - OperationCanceledException was thrown (propagates up)
@@ -870,11 +882,11 @@ public class SubjectSourceBaseTests
         subject.FirstName = "First";
 
         // Wait for first write to be attempted before triggering second
-        await firstCallTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await firstCallTcs.Task.WaitAsync(TestTimeout);
 
         subject.FirstName = "Second";
 
-        await secondCallTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await secondCallTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - changes were enqueued and retried
@@ -929,13 +941,13 @@ public class SubjectSourceBaseTests
 
         // First change - will return WriteResult.Failure, should be enqueued for retry
         subject.FirstName = "FailedValue";
-        await firstCallTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await firstCallTcs.Task.WaitAsync(TestTimeout);
 
         // Second change - triggers retry queue flush (retrying first), then writes second
         subject.FirstName = "SecondValue";
 
         // Wait for retry flush + new write (3 total calls)
-        await thirdCallTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await thirdCallTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert
@@ -973,7 +985,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - change was re-applied locally and sent to server
@@ -1002,7 +1014,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - the local write is restored and sent rather than silently discarded
@@ -1032,7 +1044,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - re-applied
@@ -1060,7 +1072,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - the local write wins over the value the load brought in
@@ -1087,7 +1099,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - re-applied (reference equality)
@@ -1115,7 +1127,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - the local write wins over the collection the load brought in
@@ -1148,7 +1160,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert
@@ -1180,7 +1192,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - the load moved both properties, and both local writes are restored and sent
@@ -1211,7 +1223,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - null == null -> non-conflicting, re-applied
@@ -1239,7 +1251,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - the local write wins rather than being discarded as a conflict
@@ -1276,7 +1288,7 @@ public class SubjectSourceBaseTests
     }
 
     [Fact]
-    public async Task WhenRetryQueueDisabled_ThenInitializationSucceedsWithoutReapply()
+    public async Task WhenRetryCapacityIsZero_ThenInitializationSucceedsWithoutReapply()
     {
         // Arrange
         var context = InterceptorSubjectContext.Create()
@@ -1284,7 +1296,8 @@ public class SubjectSourceBaseTests
             .WithRegistry();
         var subject = new Person(context) { FirstName = "Original" };
 
-        // writeRetryQueueSize: 0 disables the queue
+        // Capacity zero retains no writes for retry.
+        var writeAttempts = 0;
         var source = new TestSubjectSource(subject, context, NullLogger.Instance,
             writeRetryQueueSize: 0)
         {
@@ -1292,7 +1305,11 @@ public class SubjectSourceBaseTests
             {
                 subject.FirstName = "ServerValue";
             }),
-            WriteChangesOverride = (_, _) => new ValueTask<WriteResult>(WriteResult.Success),
+            WriteChangesOverride = (_, _) =>
+            {
+                Interlocked.Increment(ref writeAttempts);
+                return new ValueTask<WriteResult>(WriteResult.Success);
+            },
         };
 
         new PropertyReference(subject, nameof(Person.FirstName)).SetSource(source);
@@ -1303,8 +1320,381 @@ public class SubjectSourceBaseTests
             message: "Expected initial state to be applied");
         await source.StopAsync(CancellationToken.None);
 
-        // Assert - service runs normally without retry queue
+        // Assert - the load applies and is never re-applied outbound: capacity zero retains no
+        // connect-window write, so the owned write is counted as dropped instead of being reconciled.
         Assert.Equal("ServerValue", subject.FirstName);
+        Assert.Equal(0, Volatile.Read(ref writeAttempts));
+        Assert.Equal(1, source.Diagnostics.OutboundRetries.TotalDropped);
+        Assert.Equal(0, source.Diagnostics.OutboundRetries.Depth);
+    }
+
+    [Fact]
+    public void WhenRetryCapacityIsNegative_ThenConstructionThrows()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create();
+        var subject = new Person(context);
+
+        // Act & Assert
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new TestSubjectSource(subject, context, NullLogger.Instance, writeRetryQueueSize: -1));
+        Assert.Equal("writeRetryQueueSize", exception.ParamName);
+    }
+
+    [Fact]
+    public async Task WhenTheSourceStopsWithRetryCapacityZero_ThenEveryOwnedWriteIsCounted()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create()
+            .WithFullPropertyTracking()
+            .WithRegistry();
+        var subject = new Person(context);
+        var loadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseLoad = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var source = new TestSubjectSource(
+            subject,
+            context,
+            NullLogger.Instance,
+            writeRetryQueueSize: 0)
+        {
+            LoadInitialStateOverride = async _ =>
+            {
+                loadStarted.TrySetResult();
+                await releaseLoad.Task.ConfigureAwait(false);
+                return null;
+            }
+        };
+        new PropertyReference(subject, nameof(Person.FirstName)).SetSource(source);
+
+        await source.StartAsync(CancellationToken.None);
+        await loadStarted.Task.WaitAsync(TestTimeout);
+        subject.FirstName = "owned-during-load";
+        releaseLoad.TrySetResult();
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => source.State == SourceState.Synchronized,
+            message: "The source did not finish its connect-window reconciliation.");
+
+        // Act
+        await source.StopAsync(CancellationToken.None).WaitAsync(TestTimeout);
+
+        // Assert
+        Assert.Equal(1, source.Diagnostics.OutboundRetries.TotalDropped);
+        Assert.Equal(0, source.Diagnostics.OutboundRetries.Capacity);
+        Assert.Equal(0, source.Diagnostics.OutboundRetries.Depth);
+    }
+
+    [Fact]
+    public async Task WhenACurrentWriteFailsAfterRetryRetirement_ThenItIsCountedOnlyByOutboundRetries()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create()
+            .WithFullPropertyTracking()
+            .WithRegistry();
+        var subject = new Person(context);
+        var warmupWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var currentWriteStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCurrentWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var currentWriteFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failCurrentWrite = false;
+        using var source = new TestSubjectSource(
+            subject,
+            context,
+            NullLogger.Instance,
+            bufferTime: TimeSpan.FromMilliseconds(8))
+        {
+            WriteChangesOverride = async (changes, _) =>
+            {
+                if (Volatile.Read(ref failCurrentWrite) &&
+                    changes.Span[0].Property.Name == nameof(Person.FirstName))
+                {
+                    currentWriteStarted.TrySetResult();
+                    await releaseCurrentWrite.Task.ConfigureAwait(false);
+                    currentWriteFinished.TrySetResult();
+                    return WriteResult.Failure(changes, new InvalidOperationException("late failure"));
+                }
+
+                warmupWritten.TrySetResult();
+                return WriteResult.Success;
+            }
+        };
+        new PropertyReference(subject, nameof(Person.FirstName)).SetSource(source);
+        new PropertyReference(subject, nameof(Person.LastName)).SetSource(source);
+
+        using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var watchdogRegistration = watchdog.Token.Register(() => releaseCurrentWrite.TrySetResult());
+        await source.StartAsync(CancellationToken.None);
+        var probeValue = 0;
+        await AsyncTestHelpers.WaitUntilAsync(() =>
+        {
+            subject.LastName = "probe" + probeValue++;
+            return source.Diagnostics.OutboundChanges.Depth > 0;
+        }, message: "The connected processor did not start buffering the warmup write.");
+        await warmupWritten.Task.WaitAsync(TestTimeout);
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => source.Diagnostics.OutboundChanges.Depth == 0,
+            message: "The warmup write did not leave the processor queue.");
+
+        Volatile.Write(ref failCurrentWrite, true);
+        subject.FirstName = "blocked";
+        await currentWriteStarted.Task.WaitAsync(TestTimeout);
+
+        try
+        {
+            // Act
+            await source.StopAsync(CancellationToken.None).WaitAsync(TeardownWaitTimeout);
+        }
+        finally
+        {
+            Volatile.Write(ref failCurrentWrite, false);
+            releaseCurrentWrite.TrySetResult();
+        }
+
+        await currentWriteFinished.Task.WaitAsync(TestTimeout);
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => source.Diagnostics.OutboundRetries.TotalDropped == 1 ||
+                  source.WriteRetryQueue.PendingWriteCount > 0,
+            message: "The late write did not settle with its retry owner.");
+        await source.WriteRetryQueue.FlushAsync(source, CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+
+        // Assert
+        Assert.Equal(0, source.Diagnostics.OutboundChanges.TotalDropped);
+        Assert.Equal(1, source.Diagnostics.OutboundRetries.TotalDropped);
+    }
+
+    [Fact]
+    public async Task WhenACurrentWriteWaitsBehindAnOlderRetryAtTheDeadline_ThenCombinedDropsEqualTheTwoChanges()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create()
+            .WithFullPropertyTracking()
+            .WithRegistry();
+        var subject = new Person(context);
+        var warmupWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var warmupFenceWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstWriteFailed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var olderRetryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOlderRetry = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var olderRetryFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var currentTransportStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstNameAttempt = 0;
+        var sourceLifetimeToken = CancellationToken.None;
+        using var source = new TestSubjectSource(
+            subject,
+            context,
+            NullLogger.Instance,
+            bufferTime: TimeSpan.FromMilliseconds(8))
+        {
+            LoadInitialStateOverride = cancellationToken =>
+            {
+                sourceLifetimeToken = cancellationToken;
+                return Task.FromResult<Action?>(null);
+            },
+            WriteChangesOverride = async (changes, cancellationToken) =>
+            {
+                var changeArray = changes.ToArray();
+                var firstNameChanges = changeArray
+                    .Where(change => change.Property.Name == nameof(Person.FirstName))
+                    .ToArray();
+                if (firstNameChanges.Length > 0)
+                {
+                    if (Interlocked.Increment(ref firstNameAttempt) == 1)
+                    {
+                        firstWriteFailed.TrySetResult();
+                        return WriteResult.Failure(
+                            firstNameChanges,
+                            new InvalidOperationException("park for retry"));
+                    }
+
+                    olderRetryStarted.TrySetResult();
+                    await releaseOlderRetry.Task.ConfigureAwait(false);
+                    olderRetryFinished.TrySetResult();
+                    return WriteResult.Success;
+                }
+
+                if (changeArray.Any(change => change.Property.Name == nameof(Person.LastName)))
+                {
+                    currentTransportStarted.TrySetResult();
+                }
+                if (changeArray.Any(change => change.Property.Name == nameof(Person.FirstName_MaxLength)))
+                {
+                    warmupFenceWritten.TrySetResult();
+                }
+                if (cancellationToken != sourceLifetimeToken)
+                {
+                    warmupWritten.TrySetResult();
+                }
+
+                return WriteResult.Success;
+            }
+        };
+        new PropertyReference(subject, nameof(Person.FirstName)).SetSource(source);
+        new PropertyReference(subject, nameof(Person.LastName)).SetSource(source);
+        new PropertyReference(subject, nameof(Person.FirstName_MaxLength)).SetSource(source);
+        new PropertyReference(subject, nameof(Person.FirstName_MaxLength_Unit)).SetSource(source);
+
+        using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var watchdogRegistration = watchdog.Token.Register(() => releaseOlderRetry.TrySetResult());
+        await source.StartAsync(CancellationToken.None);
+        var probeValue = 0;
+        await AsyncTestHelpers.WaitUntilAsync(() =>
+        {
+            subject.FirstName_MaxLength_Unit = "probe" + probeValue++;
+            return warmupWritten.Task.IsCompleted;
+        }, message: "The warmup write did not reach the connected processor.");
+        await warmupWritten.Task.WaitAsync(TestTimeout);
+        subject.FirstName_MaxLength = probeValue;
+        await warmupFenceWritten.Task.WaitAsync(TestTimeout);
+
+        subject.FirstName = "older";
+        await firstWriteFailed.Task.WaitAsync(TestTimeout);
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => source.WriteRetryQueue.PendingWriteCount == 1,
+            message: "The failed write was not parked for retry.");
+
+        subject.LastName = "current";
+        await olderRetryStarted.Task.WaitAsync(TestTimeout);
+
+        bool retryOwnerRetiredAtStop;
+        try
+        {
+            // Act
+            await source.StopAsync(CancellationToken.None).WaitAsync(TeardownWaitTimeout);
+            retryOwnerRetiredAtStop = source.Diagnostics.OutboundRetries.TotalDropped == 2;
+        }
+        finally
+        {
+            // Idempotent on the fixed path, and guarantees a failed RED run cannot let the current
+            // transport call escape after the assertion tears the source down.
+            source.WriteRetryQueue.Retire();
+            releaseOlderRetry.TrySetResult();
+        }
+
+        await olderRetryFinished.Task.WaitAsync(TestTimeout);
+        await source.WriteRetryQueue.FlushAsync(source, CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => source.Diagnostics.OutboundRetries.TotalDropped >= 2,
+            message: "Every retry-owned continuation should settle before exact accounting is read.");
+
+        // Assert
+        Assert.True(retryOwnerRetiredAtStop);
+        Assert.False(currentTransportStarted.Task.IsCompleted);
+        Assert.Equal(2,
+            source.Diagnostics.OutboundChanges.TotalDropped +
+            source.Diagnostics.OutboundRetries.TotalDropped);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task WhenStoppingWithParkedWrites_ThenRetryHandoffUsesTheProcessorDeadline(
+        bool processorDeadlineAlreadyConsumed)
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create()
+            .WithFullPropertyTracking()
+            .WithRegistry();
+        var subject = new Person(context);
+        var warmupWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var warmupFenceWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var deadlineWriteStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDeadlineWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var deadlineWriteFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sourceLifetimeToken = CancellationToken.None;
+        using var source = new TestSubjectSource(
+            subject,
+            context,
+            NullLogger.Instance,
+            bufferTime: TimeSpan.FromMilliseconds(8))
+        {
+            LoadInitialStateOverride = cancellationToken =>
+            {
+                sourceLifetimeToken = cancellationToken;
+                return Task.FromResult<Action?>(null);
+            },
+            WriteChangesOverride = async (changes, cancellationToken) =>
+            {
+                var changeArray = changes.ToArray();
+                if (changeArray.Any(change => change.Property.Name == nameof(Person.FirstName)))
+                {
+                    deadlineWriteStarted.TrySetResult();
+                    await releaseDeadlineWrite.Task.ConfigureAwait(false);
+                    deadlineWriteFinished.TrySetResult();
+                }
+                if (changeArray.Any(change => change.Property.Name == nameof(Person.FirstName_MaxLength)))
+                {
+                    warmupFenceWritten.TrySetResult();
+                }
+                if (cancellationToken != sourceLifetimeToken)
+                {
+                    warmupWritten.TrySetResult();
+                }
+
+                return WriteResult.Success;
+            }
+        };
+        new PropertyReference(subject, nameof(Person.FirstName)).SetSource(source);
+        new PropertyReference(subject, nameof(Person.LastName)).SetSource(source);
+        new PropertyReference(subject, nameof(Person.FirstName_MaxLength)).SetSource(source);
+        new PropertyReference(subject, nameof(Person.FirstName_MaxLength_Unit)).SetSource(source);
+
+        using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var watchdogRegistration = watchdog.Token.Register(() => releaseDeadlineWrite.TrySetResult());
+        await source.StartAsync(CancellationToken.None);
+        var probeValue = 0;
+        await AsyncTestHelpers.WaitUntilAsync(() =>
+        {
+            subject.FirstName_MaxLength_Unit = "probe" + probeValue++;
+            return warmupWritten.Task.IsCompleted;
+        }, message: "The warmup write did not reach the connected processor.");
+        await warmupWritten.Task.WaitAsync(TestTimeout);
+        subject.FirstName_MaxLength = probeValue;
+        await warmupFenceWritten.Task.WaitAsync(TestTimeout);
+
+        if (processorDeadlineAlreadyConsumed)
+        {
+            subject.FirstName = "current";
+            await deadlineWriteStarted.Task.WaitAsync(TestTimeout);
+            EnqueueRetryChange(source, subject, nameof(Person.LastName), null, "parked");
+        }
+        else
+        {
+            EnqueueRetryChange(source, subject, nameof(Person.FirstName), null, "parked");
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        var stopping = Task.Run(() => source.StopAsync(CancellationToken.None));
+        if (!processorDeadlineAlreadyConsumed)
+        {
+            await Task.WhenAny(stopping, deadlineWriteStarted.Task).WaitAsync(TestTimeout);
+        }
+
+        bool retryOwnerRetiredAtStop;
+        try
+        {
+            // Act
+            await stopping.WaitAsync(TeardownWaitTimeout);
+            retryOwnerRetiredAtStop = source.Diagnostics.OutboundRetries.TotalDropped ==
+                (processorDeadlineAlreadyConsumed ? 2 : 1);
+        }
+        finally
+        {
+            source.WriteRetryQueue.Retire();
+            releaseDeadlineWrite.TrySetResult();
+        }
+
+        if (deadlineWriteStarted.Task.IsCompleted)
+        {
+            await deadlineWriteFinished.Task.WaitAsync(TestTimeout);
+        }
+        await source.WriteRetryQueue.FlushAsync(source, CancellationToken.None).AsTask().WaitAsync(TestTimeout);
+
+        // Assert
+        Assert.True(retryOwnerRetiredAtStop);
+        Assert.True(stopwatch.Elapsed < ChangeQueueProcessor.TeardownFlushBound + TimeSpan.FromSeconds(2),
+            $"Stopping took {stopwatch.Elapsed}, which indicates a second teardown window.");
+        Assert.Equal(0, source.Diagnostics.OutboundChanges.TotalDropped);
+        Assert.Equal(processorDeadlineAlreadyConsumed ? 2 : 1,
+            source.Diagnostics.OutboundRetries.TotalDropped);
     }
 
     [Fact]
@@ -1327,7 +1717,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - broken change failed, but LastName was still re-applied
@@ -1404,7 +1794,7 @@ public class SubjectSourceBaseTests
         IInterceptorSubject subject, string propertyName, TValue oldValue, TValue newValue,
         long revision = 0)
     {
-        var queue = source.WriteRetryQueue!;
+        var queue = source.WriteRetryQueue;
 
         var change = SubjectPropertyChange.Create(
             new PropertyReference(subject, propertyName),
@@ -1436,7 +1826,7 @@ public class SubjectSourceBaseTests
 
         // Act
         await source.StartAsync(CancellationToken.None);
-        await writeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await writeTcs.Task.WaitAsync(TestTimeout);
         await source.StopAsync(CancellationToken.None);
 
         // Assert - the change was sent to the source (flush branch), not dropped
@@ -1533,6 +1923,209 @@ public class SubjectSourceBaseTests
         // Assert
         var received = receivedChanges.First(c => c.Property.Name == nameof(Person.FirstName));
         Assert.Equal("written-while-not-connected", received.GetNewValue<string?>());
+    }
+
+    [Fact]
+    public async Task WhenAProcessorAttemptFaultsBeforeStop_ThenReconnectKeepsRetryOwnerOpen()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create()
+            .WithFullPropertyTracking()
+            .WithRegistry();
+        var subject = new Person(context);
+        var secondProcessorStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transportEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connectionAttempts = 0;
+        var logger = new FaultingFirstImmediateProcessorLogger(secondProcessorStarted);
+        using var source = new TestSubjectSource(
+            subject,
+            context,
+            logger,
+            bufferTime: TimeSpan.Zero,
+            retryTime: TimeSpan.Zero)
+        {
+            StartListeningOverride = (_, _) =>
+            {
+                Interlocked.Increment(ref connectionAttempts);
+                return Task.FromResult<IAsyncDisposable?>(null);
+            },
+            WriteChangesOverride = (changes, _) =>
+            {
+                if (changes.Span[0].Property.Name == nameof(Person.FirstName))
+                {
+                    transportEntered.TrySetResult();
+                }
+
+                return ValueTask.FromResult(WriteResult.Success);
+            }
+        };
+        new PropertyReference(subject, nameof(Person.FirstName)).SetSource(source);
+
+        await source.StartAsync(CancellationToken.None);
+        try
+        {
+            await secondProcessorStarted.Task.WaitAsync(TestTimeout);
+            var droppedBeforeWrite = source.Diagnostics.OutboundRetries.TotalDropped;
+
+            // Act
+            subject.FirstName = "after-reconnect";
+            await AsyncTestHelpers.WaitUntilAsync(
+                () => transportEntered.Task.IsCompleted ||
+                      source.Diagnostics.OutboundRetries.TotalDropped > droppedBeforeWrite,
+                message: "The current write did not settle after the second processor started.");
+
+            // Assert
+            Assert.True(transportEntered.Task.IsCompleted,
+                "A transient processor failure retired the source-lifetime retry owner.");
+            Assert.Equal(droppedBeforeWrite, source.Diagnostics.OutboundRetries.TotalDropped);
+            Assert.True(Volatile.Read(ref connectionAttempts) >= 2);
+        }
+        finally
+        {
+            await source.StopAsync(CancellationToken.None).WaitAsync(TestTimeout);
+        }
+    }
+
+    [Fact]
+    public async Task WhenDisposePublishesStopped_ThenRetryOwnerAlreadyRejectsWrites()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create()
+            .WithFullPropertyTracking()
+            .WithRegistry();
+        var subject = new Person(context);
+        var warmupWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stoppedNotificationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseStoppedNotification = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var postStoppedTransportEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var source = new TestSubjectSource(
+            subject,
+            context,
+            NullLogger.Instance,
+            bufferTime: TimeSpan.FromMilliseconds(8))
+        {
+            WriteChangesOverride = (changes, _) =>
+            {
+                var changeArray = changes.ToArray();
+                if (changeArray.Any(change => change.Property.Name == nameof(Person.LastName)))
+                {
+                    warmupWritten.TrySetResult();
+                }
+                if (changeArray.Any(change => change.Property.Name == nameof(Person.FirstName)))
+                {
+                    postStoppedTransportEntered.TrySetResult();
+                }
+
+                return ValueTask.FromResult(WriteResult.Success);
+            }
+        };
+        new PropertyReference(subject, nameof(Person.FirstName)).SetSource(source);
+        new PropertyReference(subject, nameof(Person.LastName)).SetSource(source);
+        source.StateChanged += (_, sourceEvent) =>
+        {
+            if (sourceEvent.NewState == SourceState.Stopped)
+            {
+                stoppedNotificationEntered.TrySetResult();
+                releaseStoppedNotification.Task.GetAwaiter().GetResult();
+            }
+        };
+
+        using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var watchdogRegistration = watchdog.Token.Register(() => releaseStoppedNotification.TrySetResult());
+        await source.StartAsync(CancellationToken.None);
+        var probeValue = 0;
+        await AsyncTestHelpers.WaitUntilAsync(() =>
+        {
+            subject.LastName = "probe" + probeValue++;
+            return source.Diagnostics.OutboundChanges.Depth > 0;
+        }, message: "The connected processor did not buffer the warmup write.");
+        await warmupWritten.Task.WaitAsync(TestTimeout);
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => source.Diagnostics.OutboundChanges.Depth == 0,
+            message: "The warmup write did not leave the connected processor.");
+        var droppedBeforeDispose = source.Diagnostics.OutboundRetries.TotalDropped;
+
+        var disposal = Task.Run(source.Dispose);
+        await stoppedNotificationEntered.Task.WaitAsync(TestTimeout);
+        try
+        {
+            // Act
+            subject.FirstName = "after-stopped";
+            await AsyncTestHelpers.WaitUntilAsync(
+                () => postStoppedTransportEntered.Task.IsCompleted ||
+                      source.Diagnostics.OutboundRetries.TotalDropped > droppedBeforeDispose,
+                message: "The write made during the Stopped notification did not settle.");
+        }
+        finally
+        {
+            releaseStoppedNotification.TrySetResult();
+        }
+        await disposal.WaitAsync(TestTimeout);
+
+        // Assert
+        Assert.False(postStoppedTransportEntered.Task.IsCompleted);
+        Assert.Equal(droppedBeforeDispose + 1, source.Diagnostics.OutboundRetries.TotalDropped);
+    }
+
+    [Fact]
+    public async Task WhenMonitorRegistrationFails_ThenRetryOwnerRetiresBeforeStoppedNotification()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create()
+            .WithFullPropertyTracking()
+            .WithRegistry()
+            .WithLifecycle()
+            .WithSourceMonitoring();
+        var monitor = context.GetSourceMonitor();
+        using var poisonCancellation = new CancellationTokenSource();
+        var poisonWait = ArmFailingSourceRegistration(context, monitor, poisonCancellation.Token);
+        var subject = new Person(context);
+        var stoppedNotificationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseStoppedNotification = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var source = new TestSubjectSource(subject, context, NullLogger.Instance);
+        source.StateChanged += (_, sourceEvent) =>
+        {
+            if (sourceEvent.NewState == SourceState.Stopped)
+            {
+                stoppedNotificationEntered.TrySetResult();
+                releaseStoppedNotification.Task.GetAwaiter().GetResult();
+            }
+        };
+
+        using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var watchdogRegistration = watchdog.Token.Register(() => releaseStoppedNotification.TrySetResult());
+        var starting = Task.Run(() => source.StartAsync(CancellationToken.None));
+        await stoppedNotificationEntered.Task.WaitAsync(TestTimeout);
+        var droppedBeforeWrite = source.Diagnostics.OutboundRetries.TotalDropped;
+
+        // Act
+        EnqueueRetryChange(source, subject, nameof(Person.FirstName), null, "after-stopped");
+        var droppedDuringNotification = source.Diagnostics.OutboundRetries.TotalDropped;
+        var pendingDuringNotification = source.WriteRetryQueue.PendingWriteCount;
+        releaseStoppedNotification.TrySetResult();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => starting);
+        await poisonCancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => poisonWait);
+
+        // Assert
+        Assert.Equal(droppedBeforeWrite + 1, droppedDuringNotification);
+        Assert.Equal(0, pendingDuringNotification);
+    }
+
+    private static Task<SourceSynchronizationResult> ArmFailingSourceRegistration(
+        IInterceptorSubjectContext context,
+        SourceMonitor monitor,
+        CancellationToken cancellationToken)
+    {
+        monitor.Register(new TestStateSource(new Person(context)));
+
+        var hold = monitor.DeferWaitCompletion();
+        monitor.CompleteSourceRegistration();
+        var poisonWait = new PoisonAnchor(context).WaitForSynchronizationAsync(cancellationToken);
+        Assert.False(poisonWait.IsCompleted);
+        Assert.Throws<InvalidOperationException>(() => hold.Dispose());
+        return poisonWait;
     }
 
     [Fact]
@@ -1641,7 +2234,7 @@ public class SubjectSourceBaseTests
     public void WhenSubjectSourceBaseDeclaresState_ThenItReadsLockFreeNotUnderStateLock()
     {
         // Arrange
-        // The docs' lock-free getter contract (docs/connectors-monitoring.md: State, LastSynchronizedAt
+        // The docs' lock-free getter contract (docs/connectors-monitoring.md: State, StateChangeTime
         // and RootSubject must not acquire any lock held while StateChanged is raised) has no dynamic
         // test: SourceMonitor reads source.State while holding its own _lock, and TransitionTo raises
         // StateChanged while holding _stateLock - a regression that made State take _stateLock too
@@ -1654,11 +2247,41 @@ public class SubjectSourceBaseTests
         var sourceFilePath = GetSubjectSourceBaseFilePath();
         var source = File.ReadAllText(sourceFilePath);
         var stateProperty = ExtractExpressionBodiedMember(source, "public SourceState State =>");
+        var stateChangeTimeProperty = ExtractExpressionBodiedMember(source, "public DateTimeOffset StateChangeTime =>");
 
         // Act & Assert
-        Assert.Contains("Volatile.Read", stateProperty);
-        Assert.DoesNotContain("_stateLock", stateProperty);
-        Assert.DoesNotContain("lock (", stateProperty);
+        foreach (var getter in new[] { stateProperty, stateChangeTimeProperty })
+        {
+            Assert.Contains("Volatile.Read", getter);
+            Assert.DoesNotContain("_stateLock", getter);
+            Assert.DoesNotContain("lock (", getter);
+        }
+    }
+
+    [Fact]
+    public void WhenSubjectSourceBaseDeclaresStateAndItsTimestamp_ThenBothReadTheSameSnapshotField()
+    {
+        // Arrange
+        // Both getters dereference one immutable snapshot, so each individual read is internally
+        // consistent. Split back into two fields, a read of StateChangeTime could report the previous
+        // transition's moment beside the new state, and no dynamic test can force that: the wall
+        // clock is far coarser than the window between the two writes, so a torn pair is
+        // indistinguishable from a legal one. Hence the static scan, like the getter pinned above.
+        var source = File.ReadAllText(GetSubjectSourceBaseFilePath());
+
+        // Act
+        var stateProperty = ExtractExpressionBodiedMember(source, "public SourceState State =>");
+        var stateChangeTimeProperty = ExtractExpressionBodiedMember(source, "public DateTimeOffset StateChangeTime =>");
+
+        // Located rather than sliced blind, like the sibling scans above: without this a renamed field
+        // fails as a raw string-contains diff that reads as a broken invariant rather than a move.
+        const string snapshotFieldDeclaration = "private SourceStateSnapshot _stateSnapshot";
+        Assert.True(source.Contains(snapshotFieldDeclaration, StringComparison.Ordinal),
+            $"'{snapshotFieldDeclaration}' not found; this scan needs updating");
+
+        // Assert
+        Assert.Contains("Volatile.Read(ref _stateSnapshot)", stateProperty);
+        Assert.Contains("Volatile.Read(ref _stateSnapshot)", stateChangeTimeProperty);
     }
 
     private static string ExtractExpressionBodiedMember(string source, string signature)
@@ -1830,5 +2453,110 @@ public class SubjectSourceBaseTests
         Assert.Contains(recordingLogger.Warnings, message => message.Contains("already started"));
         await AsyncTestHelpers.WaitUntilAsync(() => source.State == SourceState.Synchronized);
         Assert.Equal(1, Volatile.Read(ref loads));
+    }
+
+    [Fact]
+    public async Task WhenSourceStopsWithBufferedChanges_ThenTheyStillReachTheSource()
+    {
+        // Arrange: a buffer time no periodic tick reaches during the test, so every change the pump takes
+        // off its subscription stays in the change processor buffer until the source stops. A change left
+        // there is invisible to the retry queue, which is only fed from the subscription.
+        var context = InterceptorSubjectContext
+            .Create()
+            .WithRegistry()
+            .WithFullPropertyTracking();
+
+        var person = new Person(context);
+        var receivedWrites = new ConcurrentQueue<string>();
+
+        using var source = new TestSubjectSource(person, context, NullLogger.Instance,
+            bufferTime: TimeSpan.FromMinutes(5))
+        {
+            WriteChangesOverride = (changes, _) =>
+            {
+                foreach (var change in changes.ToArray())
+                {
+                    receivedWrites.Enqueue($"{change.Property.Name}={change.GetNewValue<object?>()}");
+                }
+                return ValueTask.FromResult(WriteResult.Success);
+            },
+        };
+
+        new PropertyReference(person, nameof(Person.FirstName)).SetSource(source);
+        new PropertyReference(person, nameof(Person.LastName)).SetSource(source);
+
+        await source.StartAsync(CancellationToken.None);
+        try
+        {
+            // The probe is re-written on each poll because writes captured before the change processor
+            // runs are parked in the retry queue and reconciled rather than buffered.
+            var probeValue = 0;
+            await AsyncTestHelpers.WaitUntilAsync(
+                () =>
+                {
+                    person.LastName = "Probe" + probeValue++;
+                    return source.Diagnostics.OutboundChanges.Depth > 0;
+                },
+                message: "The pump did not start buffering changes.");
+
+            // The probe written by the last predicate evaluation may not be dequeued yet, and one that
+            // lands after the depth is read would satisfy the wait below on its own: the wait would then
+            // return before FirstName is dequeued, and the stop strands it in the subscription. Wait for
+            // the depth to hold across two polls first, so only the FirstName write can still grow it.
+            var previousDepth = -1;
+            await AsyncTestHelpers.WaitUntilAsync(
+                () =>
+                {
+                    var depth = source.Diagnostics.OutboundChanges.Depth;
+                    var isSettled = depth == previousDepth;
+                    previousDepth = depth;
+                    return isSettled;
+                },
+                message: "The buffered depth did not settle after the probe loop.");
+
+            // Act
+            var bufferedBeforeWrite = previousDepth;
+            person.FirstName = "John";
+            await AsyncTestHelpers.WaitUntilAsync(
+                () => source.Diagnostics.OutboundChanges.Depth > bufferedBeforeWrite,
+                message: "The write was not buffered by the change processor.");
+        }
+        finally
+        {
+            await source.StopAsync(CancellationToken.None);
+        }
+
+        // Assert
+        Assert.Contains("FirstName=John", receivedWrites);
+    }
+
+    private sealed class FaultingFirstImmediateProcessorLogger(
+        TaskCompletionSource secondProcessorStarted) : ILogger
+    {
+        private int _processorStarts;
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel != LogLevel.Warning)
+            {
+                return;
+            }
+
+            if (Interlocked.Increment(ref _processorStarts) == 1)
+            {
+                throw new InvalidOperationException("first processor attempt faults");
+            }
+
+            secondProcessorStarted.TrySetResult();
+        }
     }
 }
