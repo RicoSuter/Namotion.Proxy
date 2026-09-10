@@ -660,7 +660,7 @@ namespace Repro
 
         // Assert
         var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0008");
-        Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
+        Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
         Assert.Equal(
             "'Kind' is provided by more than one member; the subject exposes Repro.IFoo<int>.Kind and Repro.IFoo<string>.Kind is unreachable",
             diagnostic.GetMessage());
@@ -725,7 +725,7 @@ namespace Repro
 
         // Assert
         var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0008");
-        Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
+        Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
         Assert.Equal(
             "'Kind' is provided by more than one member; the subject exposes Repro.IFoo<int>.Kind and Repro.IFoo<string>.Kind is unreachable",
             diagnostic.GetMessage());
@@ -825,7 +825,7 @@ namespace Repro
 
         // Assert
         var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0005");
-        Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
+        Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
     }
 
     [Fact]

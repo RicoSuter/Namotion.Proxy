@@ -52,11 +52,12 @@ internal static class Diagnostics
     public static readonly DiagnosticDescriptor ShadowsBaseImplementation = new(
         id: "NI0005",
         title: "Property re-declares a member already implemented by the base class",
-        messageFormat: "'{0}' re-declares '{1}', which the base class already implements, so the subject and the interface report different values",
+        // Two sentences, so RS1032 requires the trailing period.
+        messageFormat: "'{0}' re-declares '{1}' without taking the interface slot, so the subject and the interface report different values forever. Re-list the interface in the class's base list, or rename the property when its type differs from the interface member's.",
         category: Category,
-        defaultSeverity: DiagnosticSeverity.Warning,
+        defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
-        description: "Reading through the interface resolves to the base class implementation, not this property.");
+        description: "Reading through the interface resolves to the base class implementation, not this property. C# fixes the interface map at the class that declares the interface, so a property further down takes the slot only when that class re-lists the interface, which is what every generated subject does for IInterceptorSubject.");
 
     public static readonly DiagnosticDescriptor MemberSkipped = new(
         id: "NI0006",
@@ -87,7 +88,7 @@ internal static class Diagnostics
         // property that takes the name is neither of the colliding members.
         messageFormat: "'{0}' is provided by more than one member; the subject exposes {1} and {2} is unreachable",
         category: Category,
-        defaultSeverity: DiagnosticSeverity.Warning,
+        defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
         description: "Subject properties are keyed by simple name, so only one of the colliding members is reachable. A class-declared property always takes the name; between interface members, the first one the generator reaches takes it.");
 
