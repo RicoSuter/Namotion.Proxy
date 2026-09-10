@@ -1,5 +1,4 @@
-﻿using System.Collections.Concurrent;
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using Namotion.Interceptor.Dynamic;
 using Namotion.Interceptor.OpcUa.Attributes;
 using Opc.Ua;
@@ -9,131 +8,215 @@ namespace Namotion.Interceptor.OpcUa.Client;
 
 public class OpcUaTypeResolver
 {
+    // The base classification completes synchronously and yields one of exactly three types, so the
+    // tasks are cached rather than allocated once per Object node of every load.
+    private static readonly Task<Type> CollectionType = Task.FromResult(typeof(DynamicSubject[]));
+    private static readonly Task<Type> DictionaryType = Task.FromResult(typeof(IReadOnlyDictionary<string, DynamicSubject>));
+    private static readonly Task<Type> SubjectType = Task.FromResult(typeof(DynamicSubject));
+
     private readonly ILogger _logger;
-    private readonly ConcurrentDictionary<(string NamespaceUri, object Identifier), Type?> _typeCache = new();
 
     public OpcUaTypeResolver(ILogger logger)
     {
         _logger = logger;
     }
 
-    public virtual Attribute[] GetDynamicPropertyAttributes(ReferenceDescription reference, ISession session)
+    /// <summary>
+    /// Returns the attributes to stamp on a property the loader is adding for a discovered node.
+    /// The base returns one <see cref="OpcUaNodeAttribute"/> carrying the node's browse name and
+    /// identifier, which is what makes the property addressable by the mapper and what re-matches
+    /// it to the same node on the next load. An override that drops it unmaps the property.
+    /// </summary>
+    public virtual Attribute[] GetAttributesForDynamicProperty(OpcUaDynamicPropertyContext property)
     {
-        var namespaceUri = reference.NodeId.NamespaceUri ?? session.NamespaceUris.GetString(reference.NodeId.NamespaceIndex);
+        return CreateNodeAttributes(property.Session, property.Node);
+    }
+
+    /// <summary>
+    /// Returns the attributes to stamp on an attribute the loader is adding for a discovered node,
+    /// with the same contract as <see cref="GetAttributesForDynamicProperty"/>.
+    /// </summary>
+    public virtual Attribute[] GetAttributesForDynamicAttribute(OpcUaDynamicAttributeContext attribute)
+    {
+        return CreateNodeAttributes(attribute.Session, attribute.Node);
+    }
+
+    private static Attribute[] CreateNodeAttributes(ISession session, ReferenceDescription node)
+    {
+        var namespaceUri = node.NodeId.NamespaceUri ?? session.NamespaceUris.GetString(node.NodeId.NamespaceIndex);
         return
         [
-            new OpcUaNodeAttribute(reference.BrowseName.Name, namespaceUri)
+            new OpcUaNodeAttribute(node.BrowseName.Name, namespaceUri)
             {
-                NodeIdentifier = reference.NodeId.Identifier.ToString(),
+                NodeIdentifier = node.NodeId.Identifier.ToString(),
                 NodeNamespaceUri = namespaceUri
             }
         ];
     }
 
-    public virtual async Task<Type?> TryGetTypeForNodeAsync(ISession session, ReferenceDescription reference, CancellationToken cancellationToken)
+    /// <summary>
+    /// Classifies an OPC UA Object node as a collection, a dictionary or a single subject reference
+    /// from the browse name of its first child, and only when that child is an Object: numeric bracket
+    /// content (<c>Items[0]</c>) yields <c>DynamicSubject[]</c>, other non-empty bracket content
+    /// (<c>Items[Key]</c>) yields <c>IReadOnlyDictionary&lt;string, DynamicSubject&gt;</c>, and anything
+    /// else, including an empty child list, yields <see cref="DynamicSubject"/>.
+    /// </summary>
+    /// <remarks>
+    /// The children are already browsed, so the base implementation completes without any call to the
+    /// server. It is asynchronous for overrides that have to read the server to classify a node; every
+    /// such read costs one round-trip per Object node, which is what the batched loader otherwise avoids.
+    /// </remarks>
+    public virtual Task<Type> ResolveObjectNodeTypeAsync(OpcUaObjectNodeContext node, CancellationToken cancellationToken)
     {
-        // Check cache first
-        var cacheKey = (reference.NodeId.NamespaceUri ?? session.NamespaceUris.GetString(reference.NodeId.NamespaceIndex), reference.NodeId.Identifier);
-        if (_typeCache.TryGetValue(cacheKey, out var cachedType))
+        if (node.Children.Count > 0 && node.Children[0].NodeClass == NodeClass.Object)
         {
-            return cachedType;
+            var name = node.Children[0].BrowseName?.Name;
+            if (name is not null && OpcUaBrowseName.TryGetBracketContent(name, out var content))
+            {
+                return int.TryParse(content, out _) ? CollectionType : DictionaryType;
+            }
         }
 
-        var type = await TryGetTypeForNodeWithoutCacheAsync(session, reference, cancellationToken).ConfigureAwait(false);
-        _typeCache.TryAdd(cacheKey, type);
-        return type;
+        return SubjectType;
     }
 
-    private async Task<Type?> TryGetTypeForNodeWithoutCacheAsync(ISession session, ReferenceDescription reference, CancellationToken cancellationToken)
+    /// <summary>
+    /// Infers the CLR type of every Variable node in <paramref name="variables"/> from one batched read
+    /// of its DataType and ValueRank attributes. The result is keyed by resolved <see cref="NodeId"/>:
+    /// a key is absent when the reference's <see cref="ExpandedNodeId"/> cannot be resolved against the
+    /// session's namespace table, and a key with a null value means the type could not be inferred, so
+    /// the loader skips the node. A ValueRank of zero or more yields an array of the mapped element type.
+    /// </summary>
+    /// <remarks>
+    /// Override this only to replace the batched read itself, for example when the types come from a
+    /// model file and no server read is needed. To decide the type of a single node, override
+    /// <see cref="ResolveVariableNodeTypeAsync"/> instead and keep the batching, the positional alignment
+    /// of the two attributes per node and the transient status handling.
+    /// </remarks>
+    /// <exception cref="OpcUaTransientServiceException">A DataType or ValueRank read returned a transient bad status.</exception>
+    public virtual async Task<IReadOnlyDictionary<NodeId, Type?>> ResolveVariableNodeTypesAsync(
+        ISession session,
+        IReadOnlyCollection<ReferenceDescription> variables,
+        CancellationToken cancellationToken)
     {
-        var nodeId = ExpandedNodeId.ToNodeId(reference.NodeId, session.NamespaceUris);
-
-        if (reference.NodeClass != NodeClass.Variable)
+        var result = new Dictionary<NodeId, Type?>(variables.Count);
+        if (variables.Count == 0)
         {
-            var browseDescriptions = new BrowseDescriptionCollection
-            {
-                new BrowseDescription
-                {
-                    NodeId = nodeId!,
-                    BrowseDirection = BrowseDirection.Forward,
-                    ReferenceTypeId = ReferenceTypeIds.HierarchicalReferences,
-                    IncludeSubtypes = true,
-                    NodeClassMask = (uint)NodeClass.Variable | (uint)NodeClass.Object,
-                    ResultMask = (uint)(BrowseResultMask.BrowseName | BrowseResultMask.NodeClass)
-                }
-            };
-
-            // Browse only the first child: the [index] convention requires every collection/dictionary
-            // element to follow the pattern, so the first reference is enough to classify the parent.
-            var response = await session.BrowseAsync(null, null, 1u, browseDescriptions, cancellationToken);
-            if (response.Results.Count > 0 &&
-                response.Results[0].References.Count > 0 &&
-                response.Results[0].References[0].NodeClass == NodeClass.Object)
-            {
-                var name = response.Results[0].References[0].BrowseName?.Name;
-                if (name is not null)
-                {
-                    var bracketStart = name.LastIndexOf('[');
-                    if (bracketStart >= 0 && name.EndsWith("]"))
-                    {
-                        var content = name.AsSpan(bracketStart + 1, name.Length - bracketStart - 2);
-                        if (int.TryParse(content, out _))
-                        {
-                            return typeof(DynamicSubject[]);
-                        }
-
-                        return typeof(IReadOnlyDictionary<string, DynamicSubject>);
-                    }
-                }
-            }
-
-            return typeof(DynamicSubject);
+            return result;
         }
 
-        try
+        var resolvedVariables = new List<(NodeId NodeId, ReferenceDescription Reference)>(variables.Count);
+        foreach (var reference in variables)
         {
-            if (nodeId is null)
+            var nodeId = ExpandedNodeId.ToNodeId(reference.NodeId, session.NamespaceUris);
+            if (nodeId is not null)
             {
-                return null;
-            }
-
-            var nodesToRead = new ReadValueIdCollection(2)
-            {
-                new ReadValueId { NodeId = nodeId, AttributeId = Opc.Ua.Attributes.DataType },
-                new ReadValueId { NodeId = nodeId, AttributeId = Opc.Ua.Attributes.ValueRank }
-            };
-
-            var response = await session.ReadAsync(null, 0, TimestampsToReturn.Neither, nodesToRead, cancellationToken);
-            if (response.Results.Count >= 2 && StatusCode.IsGood(response.Results[0].StatusCode))
-            {
-                var dataTypeId = response.Results[0].Value as NodeId;
-                if (dataTypeId != null)
-                {
-                    var builtIn = await TypeInfo.GetBuiltInTypeAsync(dataTypeId, session.TypeTree, cancellationToken);
-                    var elementType = TryMapBuiltInType(builtIn);
-                    if (elementType is not null)
-                    {
-                        // If ValueRank >= 0 we treat it as (at least) an array - simplification for multi-dim arrays.
-                        var valueRank = response.Results[1].Value is int vr ? vr : -1; // -1 => scalar
-                        if (valueRank >= 0)
-                        {
-                            return elementType.MakeArrayType();
-                        }
-
-                        return elementType;
-                    }
-                }
+                resolvedVariables.Add((nodeId, reference));
             }
         }
-        catch (Exception ex)
+
+        if (resolvedVariables.Count == 0)
         {
-            _logger.LogDebug(ex, "Failed to infer CLR type for node {BrowseName}", reference.BrowseName.Name);
+            return result;
         }
 
-        return null;
+        var nodesToRead = new ReadValueIdCollection(resolvedVariables.Count * 2);
+        foreach (var (nodeId, _) in resolvedVariables)
+        {
+            nodesToRead.Add(new ReadValueId { NodeId = nodeId, AttributeId = Opc.Ua.Attributes.DataType });
+            nodesToRead.Add(new ReadValueId { NodeId = nodeId, AttributeId = Opc.Ua.Attributes.ValueRank });
+        }
+
+        // ReadNodesAsync pads short responses and clamps long ones, so
+        // `allResults.Count == resolvedVariables.Count * 2` and `allResults[i]` is
+        // positionally aligned with `nodesToRead[i]`.
+        var allResults = await session.ReadNodesAsync(nodesToRead, TimestampsToReturn.Neither, _logger, cancellationToken).ConfigureAwait(false);
+
+        for (var i = 0; i < resolvedVariables.Count; i++)
+        {
+            var (nodeId, reference) = resolvedVariables[i];
+            var dataTypeIndex = i * 2;
+            var valueRankIndex = dataTypeIndex + 1;
+
+            // Abort on a transient attribute read: an unresolved type silently drops the
+            // property from the model (does not self-heal). Permanent statuses fall through
+            // to the graceful skip in ResolveVariableNodeTypeAsync.
+            OpcUaStatusCodeClassifier.ThrowIfLoadMustRetry(allResults[dataTypeIndex].StatusCode, "Read", nodeId);
+            OpcUaStatusCodeClassifier.ThrowIfLoadMustRetry(allResults[valueRankIndex].StatusCode, "Read", nodeId);
+
+            Type? type = null;
+            try
+            {
+                type = await ResolveVariableNodeTypeAsync(
+                        new OpcUaVariableNodeContext(session, reference, nodeId, allResults[dataTypeIndex], allResults[valueRankIndex]),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OpcUaTransientServiceException)
+            {
+                // An override that reads from the server itself has to be able to abort the load.
+                throw;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to infer CLR type for node {BrowseName}.", reference.BrowseName.Name);
+            }
+
+            result[nodeId] = type;
+        }
+
+        return result;
     }
 
-    private static Type? TryMapBuiltInType(BuiltInType builtInType) => builtInType switch
+    /// <summary>
+    /// Infers the CLR type of one Variable node from its already-read DataType and ValueRank attributes.
+    /// Returns null when the type cannot be inferred, which makes the loader skip the node. A ValueRank
+    /// of zero or more yields an array of the mapped element type.
+    /// </summary>
+    /// <remarks>
+    /// This is the extension point for typing a node by something other than its built-in type, such as
+    /// its browse name. Both attributes have already been classified, so a bad status here is permanent
+    /// and returning null is the right answer for it. Throwing
+    /// <see cref="OpcUaTransientServiceException"/> aborts the load so the source retries it; any other
+    /// exception is logged and treated as an uninferable type.
+    /// </remarks>
+    protected virtual async Task<Type?> ResolveVariableNodeTypeAsync(
+        OpcUaVariableNodeContext node,
+        CancellationToken cancellationToken)
+    {
+        if (!StatusCode.IsGood(node.DataType.StatusCode))
+        {
+            _logger.LogWarning("Failed to read DataType for node {BrowseName} ({StatusCode}).",
+                node.Node.BrowseName.Name, node.DataType.StatusCode);
+            return null;
+        }
+
+        if (node.DataType.Value is not NodeId dataTypeId)
+        {
+            return null;
+        }
+
+        var builtIn = await TypeInfo.GetBuiltInTypeAsync(dataTypeId, node.Session.TypeTree, cancellationToken).ConfigureAwait(false);
+        var elementType = TryMapBuiltInType(builtIn);
+        if (elementType is null)
+        {
+            return null;
+        }
+
+        var rank = node.ValueRank.Value is int parsedRank ? parsedRank : -1;
+        return rank >= 0 ? elementType.MakeArrayType() : elementType;
+    }
+
+    /// <summary>
+    /// Maps an OPC UA built-in type to the CLR type of the dynamic property. Returns null when there is
+    /// no mapping, which includes <see cref="BuiltInType.Variant"/> and <see cref="BuiltInType.Null"/> by
+    /// design, so the caller skips the node.
+    /// </summary>
+    protected virtual Type? TryMapBuiltInType(BuiltInType builtInType) => builtInType switch
     {
         BuiltInType.Boolean => typeof(bool),
         BuiltInType.SByte => typeof(sbyte),

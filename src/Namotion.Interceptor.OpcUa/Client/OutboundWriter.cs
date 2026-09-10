@@ -98,7 +98,7 @@ internal sealed class OutboundWriter
             if (!StatusCode.IsGood(results[resultIndex]))
             {
                 failedChanges.Add(change);
-                if (OpcUaStatusCodeClassifier.IsTransientError(results[resultIndex]))
+                if (OpcUaStatusCodeClassifier.IsRecoverableWithinSession(results[resultIndex]))
                     transientCount++;
             }
             resultIndex++;

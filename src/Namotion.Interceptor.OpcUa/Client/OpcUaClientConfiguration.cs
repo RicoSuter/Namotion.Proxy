@@ -208,6 +208,21 @@ public class OpcUaClientConfiguration
     public uint MaxReferencesPerNode { get; set; } = 0;
 
     /// <summary>
+    /// Gets or sets the maximum number of BrowseNext rounds per browse, where one round drains every
+    /// pending continuation point. A node still paginating when the limit is reached is omitted from the
+    /// browse result and logged as a warning, so the loader keeps that property's current value and
+    /// reloads the node on the next load. Default is 100. Must be positive.
+    /// </summary>
+    public int MaxBrowseContinuationRounds { get; set; } = 100;
+
+    /// <summary>
+    /// Gets or sets the maximum number of attribute levels (attributes of attributes) walked per load.
+    /// When the limit is reached, the remaining pending attributes are skipped for this load and logged
+    /// as a warning; everything matched on earlier levels stays monitored. Default is 100. Must be positive.
+    /// </summary>
+    public int MaxAttributeTraversalDepth { get; set; } = 100;
+
+    /// <summary>
     /// Gets or sets whether to enable automatic polling fallback when subscriptions are not supported.
     /// When enabled, items that fail subscription creation automatically fall back to periodic polling.
     /// Default is true.
@@ -456,6 +471,20 @@ public class OpcUaClientConfiguration
             throw new ArgumentException(
                 $"MaxItemsPerSubscription must be positive, got: {MaxItemsPerSubscription}",
                 nameof(MaxItemsPerSubscription));
+        }
+
+        if (MaxBrowseContinuationRounds <= 0)
+        {
+            throw new ArgumentException(
+                $"MaxBrowseContinuationRounds must be positive, got: {MaxBrowseContinuationRounds}",
+                nameof(MaxBrowseContinuationRounds));
+        }
+
+        if (MaxAttributeTraversalDepth <= 0)
+        {
+            throw new ArgumentException(
+                $"MaxAttributeTraversalDepth must be positive, got: {MaxAttributeTraversalDepth}",
+                nameof(MaxAttributeTraversalDepth));
         }
 
         if (EnablePollingFallback)

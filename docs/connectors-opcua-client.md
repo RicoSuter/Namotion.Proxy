@@ -115,7 +115,7 @@ ShouldAddDynamicProperty = async (node, ct) =>
 
 **Dynamic Attribute Discovery:**
 
-When loading variable nodes, any child properties (HasProperty references) not found in the C# model can be added as dynamic attributes:
+When loading variable nodes, any child reached by a hierarchical reference to a Variable node, typically HasProperty, that is not found in the C# model can be added as a dynamic attribute:
 
 ```csharp
 ShouldAddDynamicAttribute = async (node, ct) =>
@@ -178,6 +178,10 @@ Beyond the settings shown above, the following properties are available on `OpcU
 | Property | Default | Description |
 |----------|---------|-------------|
 | `MaxReferencesPerNode` | 0 | Max references per browse request (0 = server default) |
+| `MaxBrowseContinuationRounds` | 100 | Max BrowseNext rounds per browse, where one round drains every continuation point pending at that time. Must be positive |
+| `MaxAttributeTraversalDepth` | 100 | Max attribute levels (attributes of attributes) walked per load. Must be positive |
+
+Both limits are backstops against a server that never stops handing out work, and both degrade to a retry rather than to an error. A node still paginating when `MaxBrowseContinuationRounds` is reached is omitted from the browse result and logged as a warning, so the loader keeps that property's current value and reloads the node on the next load. When `MaxAttributeTraversalDepth` is reached, the attributes still pending for the next level are skipped for this load and logged as a warning, while everything matched on earlier levels stays monitored. A value of zero or less on either fails configuration validation with an `ArgumentException`.
 
 ## Security
 
@@ -379,6 +383,8 @@ Configure monitored item behavior at global or per-property level:
 
 All settings can be overridden per-property using `[OpcUaNode]` attribute.
 
+**Notification gating during setup.** Incoming data change notifications are dropped while subscriptions and monitored items are being created, and start being applied only once setup finishes, so no notification reaches a subject whose items are still being registered. A subject that detaches while setup runs is recorded and its items are dropped by a sweep at the end of setup, before read-after-write registration. Nothing is lost by the gate: the initial state read that follows supplies the current value of every owned property, and notifications arriving after the gate opens but before that read are buffered and replayed. Disposal closes the gate permanently, so a reconnect that races disposal never resumes callbacks; the next connect builds a fresh subscription manager instead.
+
 ## Resilience
 
 ### Write Retry Queue During Disconnection
@@ -536,18 +542,50 @@ For custom type conversions (used by both client and server), see [Custom Value 
 
 Extend `OpcUaTypeResolver` to customize how the client infers C# types from OPC UA node metadata during dynamic property discovery. This is useful when you want specific OPC UA nodes to map to custom C# classes.
 
+The resolver reads the address space in batches, so it has one seam per decision, and each per-node seam takes a context carrying the session, the node and its resolved `NodeId`. `ResolveObjectNodeTypeAsync` classifies one Object node from the children the loader already browsed. `ResolveVariableNodeTypeAsync` types one Variable node from its already-read DataType and ValueRank attributes. Both are where a rule based on the browse name belongs. `TryMapBuiltInType` maps one OPC UA built-in type for every node at once. Overriding `ResolveVariableNodeTypesAsync` itself replaces the batched read, which is only worth doing when the types come from somewhere other than the server.
+
 ```csharp
 public class CustomTypeResolver : OpcUaTypeResolver
 {
-    public override async Task<Type?> TryGetTypeForNodeAsync(
-        ISession session, ReferenceDescription reference, CancellationToken ct)
+    public CustomTypeResolver(ILogger logger)
+        : base(logger)
     {
-        if (reference.BrowseName.Name.StartsWith("CustomDevice"))
-            return typeof(MyCustomDevice);
-        return await base.TryGetTypeForNodeAsync(session, reference, ct);
+    }
+
+    public override Task<Type> ResolveObjectNodeTypeAsync(
+        OpcUaObjectNodeContext node, CancellationToken cancellationToken)
+    {
+        if (node.Node.BrowseName.Name.StartsWith("CustomDevice"))
+        {
+            return Task.FromResult(typeof(MyCustomDevice));
+        }
+
+        return base.ResolveObjectNodeTypeAsync(node, cancellationToken);
+    }
+
+    protected override Task<Type?> ResolveVariableNodeTypeAsync(
+        OpcUaVariableNodeContext node, CancellationToken cancellationToken)
+    {
+        if (node.Node.BrowseName.Name == "Timestamp")
+        {
+            return Task.FromResult<Type?>(typeof(DateTime));
+        }
+
+        return base.ResolveVariableNodeTypeAsync(node, cancellationToken);
+    }
+
+    protected override Type? TryMapBuiltInType(BuiltInType builtInType)
+    {
+        return builtInType == BuiltInType.ExtensionObject
+            ? typeof(string)
+            : base.TryMapBuiltInType(builtInType);
     }
 }
 ```
+
+Both per-node seams are asynchronous so an override can read the server to classify a node, and every such read costs one round-trip per node. The base object seam never reads the server; the base variable seam reads it only to walk a custom DataType up the type tree to its built-in type. `ResolveVariableNodeTypeAsync` returns null when the type cannot be inferred, and the loader then skips that node. Its two attribute values have already been classified, so a bad status reaching it is permanent and null is the right answer. A transient status never reaches it: `ResolveVariableNodeTypesAsync` throws `OpcUaTransientServiceException` first, which aborts the load so the source retries it, and an override that replaces the batched read must do the same.
+
+The two decoration seams, `GetAttributesForDynamicProperty` and `GetAttributesForDynamicAttribute`, return the attributes stamped on a member the loader adds for a discovered node: the base `OpcUaNodeAttribute` is what makes the member addressable by the mapper and re-matches it to the same node on the next load, so an override that drops it unmaps the member. HomeBlaze overrides both to stamp its own framework attribute alongside the base one.
 
 ### Custom Subject Factory
 
@@ -614,10 +652,10 @@ The `OpcUaTypeResolver` maps OPC UA nodes to CLR types during dynamic discovery:
 
 - **Object nodes** become `DynamicSubject` (named sub-properties on the parent subject).
 - **Object nodes with `[numeric]` convention** (e.g., `People[0]`, `People[1]`) become `DynamicSubject[]` collections.
-- **Object nodes with `[string]` convention** (e.g., `Devices[SensorA]`) become `IReadOnlyDictionary<string, DynamicSubject>` dictionaries.
-
-The bracket convention is produced by this library's OPC UA server when exposing C# collections and dictionaries. Standard OPC UA servers typically use named children and are always treated as single subjects.
+- **Object nodes with `[string]` convention** (e.g., `Devices[SensorA]`) become `IReadOnlyDictionary<string, DynamicSubject>` dictionaries. The key of each entry is the bracket content of the child's browse name, so `Items[1]` yields the key `1`, and a child whose browse name has no brackets uses that full browse name as its key.
 - **Variable nodes** are mapped to CLR types based on their OPC UA DataType. The resolver uses `session.TypeTree` to walk the type hierarchy, so custom DataType subtypes (e.g., a server-specific `LocalizedText` variant) are correctly resolved to their base built-in type.
+
+The classification of an Object node reads its first browsed child, and only when that child is itself an Object. The bracket convention is produced by this library's OPC UA server when exposing C# collections and dictionaries. Standard OPC UA servers typically use named children and are always treated as single subjects.
 
 | OPC UA BuiltInType | CLR Type | Notes |
 |---|---|---|
@@ -633,11 +671,13 @@ The bracket convention is produced by this library's OPC UA server when exposing
 | XmlElement | string | |
 | Variant, Null | (skipped) | Type cannot be determined |
 
-Override `TryGetTypeForNodeAsync` on `OpcUaTypeResolver` to customize type mapping for specific nodes.
+Override `ResolveVariableNodeTypeAsync` on `OpcUaTypeResolver` to customize the type of specific Variable nodes, or `TryMapBuiltInType` to change one built-in type's mapping for all of them. See [Custom Type Resolver](#custom-type-resolver).
 
 #### Subject Deduplication
 
 When the same OPC UA node appears at multiple paths in the address space (e.g., `Identification` referenced from both `MyMachine` and `MachineryBuildingBlocks`), the client reuses the same subject instance. Reuse applies to single references as well as collection and dictionary elements: any property that resolves to the same `NodeId` during a load is bound to the existing subject, which receives a single set of monitored items. The same applies within a single browse call: if a server exposes one target through multiple reference types (e.g., both `HasComponent` and `HasProperty`), the duplicate browse references are filtered so the underlying node is processed exactly once per parent, at both the property and attribute level.
+
+The rule above collapses several references to one node. The opposite collision, several distinct nodes landing on the same destination in the model, is resolved the other way round: the first reference in browse order wins and each later one is skipped with a warning. It applies in three places, all within one parent: two sibling references that map to the same subject reference, collection or dictionary property; two siblings with the same browse name that would both add a dynamic property; and two children of a dictionary node whose browse names reduce to the same dictionary key. The loser is dropped before its subject is created, so nothing is staged, claimed or monitored for a node the model has no place for.
 
 Round-trip identity is preserved for the common cross-parent DAG: if the server-side C# model has a single instance reachable from two different parent paths, the client materializes one instance bound to both parent properties. The case where two properties on the **same parent** reference the same instance under different names does not round-trip because OPC UA stores the BrowseName on the target node rather than on the reference. See [connectors-opcua-server.md](connectors-opcua-server.md#subject-deduplication) for the full discussion of the server-side behavior and its limitations.
 
@@ -651,7 +691,7 @@ When a batch write to the OPC UA server partially fails, the client throws an `O
 
 `OpcUaClientDiagnostics` derives from `SourceDiagnostics`, whose members, buffer semantics and read guarantees are described once in [Connector Diagnostics](connectors.md#connector-diagnostics). What follows is what is specific to this client.
 
-**`IsOperational` here means the client has a live session with its subscriptions set up.** This built-in client implements liveness monitoring, but `IsOperational` is `null` before its first protocol-specific observation. It then publishes false for the whole address space browse and subscription creation, which on a large server takes minutes. Which step raises it depends on how the session came about: the first health check tick on an initial connect, the completed subscription transfer on an SDK reconnect, and the completed state reload on a manual reconnect. It drops whenever the session is lost, killed or torn down, and whenever a connect attempt ends, so a client sitting in its retry delay reports an explicit false rather than serving.
+**`IsOperational` here means the client has a live session with its subscriptions set up.** This built-in client implements liveness monitoring, but `IsOperational` is `null` before its first protocol-specific observation. It then publishes false for the whole address space browse and subscription creation, which on a large server still takes a while: the browse costs a batched call per level of the address space, and subscription creation grows with the number of monitored items. Which step raises it depends on how the session came about: the first health check tick on an initial connect, the completed subscription transfer on an SDK reconnect, and the completed state reload on a manual reconnect. It drops whenever the session is lost, killed or torn down, and whenever a connect attempt ends, so a client sitting in its retry delay reports an explicit false rather than serving.
 
 It is not a claim that the model is in sync, and the two are not ordered against each other: the initial value read can run either side of the rise on an initial connect, and on a manual reconnect the reload always finishes first. While that read runs, `ISubjectSource.State` is `Synchronizing`, so reading it together with `IsOperational` is how a dropped network is told apart from a connected client that is still loading. See [Diagnostics and State answer different questions](connectors-monitoring.md#diagnostics-and-state-answer-different-questions).
 
@@ -786,11 +826,14 @@ The OPC UA client hooks into the interceptor lifecycle system (see [Subject Life
 - Polling items in `PollingManager._pollingItems` are also cleaned up
 - Property data (OPC UA node IDs) associated with the subject is cleared
 - OPC UA subscription items remain on the server until session ends
-- Cleanup is skipped during reconnection to avoid interfering with subscription transfer
+- Cleanup runs lock-free from the synchronous detach callback, so it cannot deadlock against a load in progress
+- A subject that detaches while subscriptions are being created is recorded, and its items are dropped by a sweep at the end of setup
 
 See also [Lifecycle Limitations](connectors-opcua.md#lifecycle-limitations) that apply to both client and server.
 
 ## Internal Design
+
+> For the reasoning behind the address space loader, its staging and commit model, and the browse primitives, see [OPC UA Client Loader Design](design/opcua-client-loader.md).
 
 ### Class Dependency Graph
 
@@ -804,6 +847,8 @@ OpcUaSubjectClientSource (SubjectSourceBase: BackgroundService + ISubjectSource)
  ├── owns OutgoingThroughput               (standalone, ThroughputCounter)
  ├── owns SubscriptionHealthMonitor        (standalone)
  ├── owns OpcUaSubjectLoader               (back-ref to source)
+ │    ├── owns OpcUaAttributeLoader        (back-ref to the loader)
+ │    └── creates OpcUaLoadContext         (one per load, disposed when the load ends)
  ├── owns OpcUaClientDiagnostics           (back-ref to source, read-only facade over SourceMetrics)
  ├── creates SessionManager                (back-ref to source)
  │    ├── creates SubscriptionManager      (back-ref to source)
@@ -827,7 +872,10 @@ OpcUaSubjectClientSource (SubjectSourceBase: BackgroundService + ISubjectSource)
 | `PollingManager` | Polling fallback for nodes that don't support subscriptions. Includes a circuit breaker. |
 | `ReadAfterWriteManager` | Schedules read-backs after writes for nodes where exception-based monitoring was revised to sampling. |
 | `SubscriptionHealthMonitor` | Retries failed monitored items that may succeed later (transient server errors). |
-| `OpcUaSubjectLoader` | Browses the OPC UA address space and maps nodes to C# properties. |
+| `OpcUaSubjectLoader` | Discovers the address space breadth-first and maps nodes to C# properties. Every level is browsed in a fixed number of batched calls, so the number of round-trips grows with the depth of the address space rather than with the number of nodes. |
+| `OpcUaAttributeLoader` | Loads the attribute nodes of variable properties round by round, so attributes of attributes are discovered until nothing new appears or `MaxAttributeTraversalDepth` is reached. |
+| `OpcUaLoadContext` | Per-load state: the browse cache, the staged subjects, and the queued ownership claims and property bindings that the commit at the end of the load applies. |
+| `OpcUaSessionExtensions` | Batched browse and read primitives over `ISession`, including continuation-point handling, batch splitting when the server rejects a size, and deduplication by resolved `NodeId`. |
 | `OpcUaClientDiagnostics` | Read-only public facade, a `SourceDiagnostics` narrowed for this connector, that aggregates diagnostics from all internal components. |
 | `ReconnectionMetrics` | Thread-safe counters for reconnection tracking (attempts, successes, failures, abandoned). |
 | `PollingMetrics`, `ReadAfterWriteMetrics` | Thread-safe counters for the polling fallback and the read-after-write fallback. Owned by the source rather than by the manager that feeds them, so a rebuilt session does not rebase them. |
@@ -840,3 +888,15 @@ OpcUaSubjectClientSource (SubjectSourceBase: BackgroundService + ISubjectSource)
 **Back-reference pattern.** Several classes (`SessionManager`, `SubscriptionManager`, `PollingManager`) receive a reference to `OpcUaSubjectClientSource` to access shared state (metrics, throughput counters, error tracking). `OutboundWriter` demonstrates the preferred alternative: receiving only the specific dependencies it needs via constructor parameters.
 
 **Diagnostics as a facade.** `OpcUaClientDiagnostics` navigates through `OpcUaSubjectClientSource` and `SessionManager` to expose a flat public API. `SessionManager` creates and caches its `PollingDiagnostics` and `ReadAfterWriteDiagnostics` wrappers, so repeated reads reuse the same objects without exposing internal types.
+
+### Load Failure and Rollback
+
+A load discovers the address space first and changes the model only at the end. Ownership claims and property bindings are queued while browsing and applied by a single commit, claims first, then the bindings deepest level first. A failure before that commit therefore leaves the model at its pre-load state, with one exception: dynamic properties and dynamic attributes are added eagerly during discovery and survive a failed load. They are transient rather than torn state, because the next load re-matches each of them through the OPC UA node attribute it carries and monitors it again.
+
+A failure inside the commit undoes what that commit did: the ownership claims it established are released, while ownership from a previous successful load is kept, and the bindings it applied are restored in reverse order, except where the application has since written the property itself, in which case the newer value wins.
+
+A subject whose browse did not complete this load is skipped rather than loaded from a truncated child list. Its properties keep their current values and the next load reloads it.
+
+### Known Limitations
+
+**The staging link can survive a successful load in a graph-shaped address space.** A subject reached under two parents can keep delegating to its discovering parent's context after a successful load. The consequence is a retained context reference rather than a wrong model: the subject stays registered, monitored and correct. The cause and the fix, which belongs in the core, are described in [OPC UA Client Loader Design](design/opcua-client-loader.md#the-remaining-leak-is-in-the-core).

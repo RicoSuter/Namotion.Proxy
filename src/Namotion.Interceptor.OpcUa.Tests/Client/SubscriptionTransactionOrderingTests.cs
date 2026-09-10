@@ -47,6 +47,10 @@ public class SubscriptionTransactionOrderingTests
         };
         subscription.AddItem(monitoredItem);
         manager.TrackMonitoredItem(monitoredItem);
+
+        // Notifications are dropped until subscription setup completes; open the gate as a real setup would.
+        manager.CompleteSetup([monitoredItem]);
+
         root.Name = "Initial";
         var committedTimestamp = new DateTimeOffset(2026, 1, 1, 0, 0, 1, TimeSpan.Zero);
         using (var setup = await context.BeginTransactionAsync(TransactionFailureHandling.BestEffort))

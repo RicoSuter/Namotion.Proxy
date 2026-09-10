@@ -43,6 +43,20 @@ internal sealed class ReadAfterWriteManager : IAsyncDisposable
     internal int PendingReadCount => Volatile.Read(ref _pendingReadCount);
 
     /// <summary>
+    /// Gets how many properties are registered for read-after-writes.
+    /// </summary>
+    internal int TrackedPropertyCount
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _trackedProperties.Count;
+            }
+        }
+    }
+
+    /// <summary>
     /// Creates a new read-after-write manager.
     /// </summary>
     /// <param name="sessionProvider">Function to get current session.</param>

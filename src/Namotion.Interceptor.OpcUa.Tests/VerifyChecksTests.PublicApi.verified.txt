@@ -97,6 +97,8 @@ namespace Namotion.Interceptor.OpcUa.Client
         public bool EnableReadAfterWrite { get; set; }
         public System.TimeSpan KeepAliveInterval { get; set; }
         public Namotion.Interceptor.Connectors.Mapping.IReversePropertyMapper<Namotion.Interceptor.OpcUa.Mapping.OpcUaPropertyMapping, Namotion.Interceptor.OpcUa.Mapping.OpcUaLookupKey> Mapper { get; set; }
+        public int MaxAttributeTraversalDepth { get; set; }
+        public int MaxBrowseContinuationRounds { get; set; }
         public int MaxItemsPerSubscription { get; set; }
         public System.TimeSpan MaxReconnectDuration { get; set; }
         public uint MaxReferencesPerNode { get; set; }
@@ -150,11 +152,59 @@ namespace Namotion.Interceptor.OpcUa.Client
         public Opc.Ua.Client.ISession? CurrentSession { get; }
         public Opc.Ua.Client.ISession? PreviousSession { get; }
     }
+    public readonly struct OpcUaDynamicAttributeContext : System.IEquatable<Namotion.Interceptor.OpcUa.Client.OpcUaDynamicAttributeContext>
+    {
+        public OpcUaDynamicAttributeContext(Opc.Ua.Client.ISession Session, Opc.Ua.ReferenceDescription Node, Opc.Ua.NodeId NodeId, System.Type AttributeType, Namotion.Interceptor.Registry.Abstractions.RegisteredSubjectProperty Property, string AttributeName) { }
+        public string AttributeName { get; init; }
+        public System.Type AttributeType { get; init; }
+        public Opc.Ua.ReferenceDescription Node { get; init; }
+        public Opc.Ua.NodeId NodeId { get; init; }
+        public Namotion.Interceptor.Registry.Abstractions.RegisteredSubjectProperty Property { get; init; }
+        public Opc.Ua.Client.ISession Session { get; init; }
+    }
+    public readonly struct OpcUaDynamicPropertyContext : System.IEquatable<Namotion.Interceptor.OpcUa.Client.OpcUaDynamicPropertyContext>
+    {
+        public OpcUaDynamicPropertyContext(Opc.Ua.Client.ISession Session, Opc.Ua.ReferenceDescription Node, Opc.Ua.NodeId NodeId, System.Type PropertyType, Namotion.Interceptor.Registry.Abstractions.RegisteredSubject Subject, string PropertyName) { }
+        public Opc.Ua.ReferenceDescription Node { get; init; }
+        public Opc.Ua.NodeId NodeId { get; init; }
+        public string PropertyName { get; init; }
+        public System.Type PropertyType { get; init; }
+        public Opc.Ua.Client.ISession Session { get; init; }
+        public Namotion.Interceptor.Registry.Abstractions.RegisteredSubject Subject { get; init; }
+    }
+    public readonly struct OpcUaObjectNodeContext : System.IEquatable<Namotion.Interceptor.OpcUa.Client.OpcUaObjectNodeContext>
+    {
+        public OpcUaObjectNodeContext(Opc.Ua.Client.ISession Session, Opc.Ua.ReferenceDescription Node, Opc.Ua.NodeId NodeId, System.Collections.Generic.IReadOnlyList<Opc.Ua.ReferenceDescription> Children) { }
+        public System.Collections.Generic.IReadOnlyList<Opc.Ua.ReferenceDescription> Children { get; init; }
+        public Opc.Ua.ReferenceDescription Node { get; init; }
+        public Opc.Ua.NodeId NodeId { get; init; }
+        public Opc.Ua.Client.ISession Session { get; init; }
+    }
+    public sealed class OpcUaTransientServiceException : System.Exception
+    {
+        public OpcUaTransientServiceException(string operation, Opc.Ua.NodeId? nodeId, Opc.Ua.StatusCode statusCode) { }
+        public Opc.Ua.NodeId? NodeId { get; }
+        public string Operation { get; }
+        public Opc.Ua.StatusCode StatusCode { get; }
+    }
     public class OpcUaTypeResolver
     {
         public OpcUaTypeResolver(Microsoft.Extensions.Logging.ILogger logger) { }
-        public virtual System.Attribute[] GetDynamicPropertyAttributes(Opc.Ua.ReferenceDescription reference, Opc.Ua.Client.ISession session) { }
-        public virtual System.Threading.Tasks.Task<System.Type?> TryGetTypeForNodeAsync(Opc.Ua.Client.ISession session, Opc.Ua.ReferenceDescription reference, System.Threading.CancellationToken cancellationToken) { }
+        public virtual System.Attribute[] GetAttributesForDynamicAttribute(Namotion.Interceptor.OpcUa.Client.OpcUaDynamicAttributeContext attribute) { }
+        public virtual System.Attribute[] GetAttributesForDynamicProperty(Namotion.Interceptor.OpcUa.Client.OpcUaDynamicPropertyContext property) { }
+        public virtual System.Threading.Tasks.Task<System.Type> ResolveObjectNodeTypeAsync(Namotion.Interceptor.OpcUa.Client.OpcUaObjectNodeContext node, System.Threading.CancellationToken cancellationToken) { }
+        protected virtual System.Threading.Tasks.Task<System.Type?> ResolveVariableNodeTypeAsync(Namotion.Interceptor.OpcUa.Client.OpcUaVariableNodeContext node, System.Threading.CancellationToken cancellationToken) { }
+        public virtual System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyDictionary<Opc.Ua.NodeId, System.Type?>> ResolveVariableNodeTypesAsync(Opc.Ua.Client.ISession session, System.Collections.Generic.IReadOnlyCollection<Opc.Ua.ReferenceDescription> variables, System.Threading.CancellationToken cancellationToken) { }
+        protected virtual System.Type? TryMapBuiltInType(Opc.Ua.BuiltInType builtInType) { }
+    }
+    public readonly struct OpcUaVariableNodeContext : System.IEquatable<Namotion.Interceptor.OpcUa.Client.OpcUaVariableNodeContext>
+    {
+        public OpcUaVariableNodeContext(Opc.Ua.Client.ISession Session, Opc.Ua.ReferenceDescription Node, Opc.Ua.NodeId NodeId, Opc.Ua.DataValue DataType, Opc.Ua.DataValue ValueRank) { }
+        public Opc.Ua.DataValue DataType { get; init; }
+        public Opc.Ua.ReferenceDescription Node { get; init; }
+        public Opc.Ua.NodeId NodeId { get; init; }
+        public Opc.Ua.Client.ISession Session { get; init; }
+        public Opc.Ua.DataValue ValueRank { get; init; }
     }
     public sealed class OpcUaWriteException : System.InvalidOperationException
     {

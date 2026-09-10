@@ -16,8 +16,6 @@ namespace Namotion.Interceptor.OpcUa.Client;
 
 internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjectClientSource, IFaultInjectable, IAsyncDisposable
 {
-    private const int DefaultChunkSize = 512;
-
     private readonly IInterceptorSubject _subject;
     private readonly ILogger _logger;
     private readonly SourceOwnershipManager _ownership;
@@ -268,39 +266,20 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
         }
 
         var itemCount = ownedProperties.Count;
-        var batchSize = (int)(session.OperationLimits?.MaxNodesPerRead ?? DefaultChunkSize);
-        batchSize = batchSize is 0 ? int.MaxValue : batchSize;
+        var nodesToRead = new ReadValueIdCollection(itemCount);
+        foreach (var (_, nodeId) in ownedProperties)
+        {
+            nodesToRead.Add(new ReadValueId { NodeId = nodeId, AttributeId = Opc.Ua.Attributes.Value });
+        }
+
+        var readResults = await session.ReadNodesAsync(nodesToRead, TimestampsToReturn.Source, _logger, cancellationToken).ConfigureAwait(false);
 
         var result = new Dictionary<RegisteredSubjectProperty, DataValue>(itemCount);
-        for (var offset = 0; offset < itemCount; offset += batchSize)
+        for (var i = 0; i < itemCount; i++)
         {
-            var take = Math.Min(batchSize, itemCount - offset);
-            var readValues = new ReadValueIdCollection(take);
-
-            for (var i = 0; i < take; i++)
+            if (StatusCode.IsGood(readResults[i].StatusCode))
             {
-                readValues.Add(new ReadValueId
-                {
-                    NodeId = ownedProperties[offset + i].NodeId,
-                    AttributeId = Opc.Ua.Attributes.Value
-                });
-            }
-
-            var readResponse = await session.ReadAsync(
-                requestHeader: null,
-                maxAge: 0,
-                timestampsToReturn: TimestampsToReturn.Source,
-                readValues,
-                cancellationToken).ConfigureAwait(false);
-
-            var resultCount = Math.Min(readResponse.Results.Count, readValues.Count);
-            for (var i = 0; i < resultCount; i++)
-            {
-                if (StatusCode.IsGood(readResponse.Results[i].StatusCode))
-                {
-                    var dataValue = readResponse.Results[i];
-                    result[ownedProperties[offset + i].Property] = dataValue;
-                }
+                result[ownedProperties[i].Property] = readResults[i];
             }
         }
 
@@ -621,7 +600,7 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
         sessionManager.ReportLivenessFromSessionState();
     }
 
-    private async Task<ReferenceDescription?> TryGetRootNodeAsync(Session session, CancellationToken cancellationToken)
+    internal async Task<ReferenceDescription?> TryGetRootNodeAsync(ISession session, CancellationToken cancellationToken)
     {
         if (_configuration.RootPath is { Length: > 0 } rootPath)
         {
@@ -630,7 +609,7 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
             for (var i = 0; i < rootPath.Length; i++)
             {
                 var references = await BrowseNodeAsync(session, currentNodeId, cancellationToken).ConfigureAwait(false);
-                var match = references.FirstOrDefault(reference => reference.BrowseName.Name == rootPath[i]);
+                var match = FindChildByBrowseName(references, rootPath[i]);
                 if (match is null)
                 {
                     return null;
@@ -641,7 +620,22 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
                     return match;
                 }
 
-                currentNodeId = ExpandedNodeId.ToNodeId(match.NodeId, session.NamespaceUris);
+                // ToNodeId returns null when the matched reference carries a namespace URI that
+                // is not registered in the session's NamespaceTable. Return null rather than
+                // browsing a null NodeId (which throws deep in the browse primitive): the caller
+                // logs "could not find root node", the root subject keeps its current property
+                // values, and the next load resolves the path again. Symmetric with the
+                // null-BrowseName tolerance in FindChildByBrowseName.
+                var resolvedNodeId = ExpandedNodeId.ToNodeId(match.NodeId, session.NamespaceUris);
+                if (resolvedNodeId is null)
+                {
+                    _logger.LogWarning(
+                        "Root path segment '{Segment}' resolved to ExpandedNodeId '{NodeId}' whose namespace URI is not registered in the session's NamespaceTable; cannot continue resolving the root node.",
+                        rootPath[i], match.NodeId);
+                    return null;
+                }
+
+                currentNodeId = resolvedNodeId;
             }
         }
 
@@ -760,24 +754,35 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
     }
 
     private async Task<ReferenceDescriptionCollection> BrowseNodeAsync(
-        Session session,
+        ISession session,
         NodeId nodeId,
         CancellationToken cancellationToken)
     {
-        const uint nodeClassMask = (uint)NodeClass.Variable | (uint)NodeClass.Object;
-
-        var (_, _, nodeProperties, _) = await session.BrowseAsync(
-            requestHeader: null,
-            view: null,
+        var results = await session.BrowseNodesAsync(
             [nodeId],
-            maxResultsToReturn: 0u,
-            BrowseDirection.Forward,
-            ReferenceTypeIds.HierarchicalReferences,
-            includeSubtypes: true,
-            nodeClassMask,
+            _configuration.MaxReferencesPerNode,
+            _configuration.MaxBrowseContinuationRounds,
+            _logger,
             cancellationToken).ConfigureAwait(false);
 
-        return nodeProperties[0];
+        // Absent means the browse did not complete for this node, which the caller treats the same
+        // as "no match found": the root subject keeps its current property values and the next
+        // load resolves the path again.
+        return results.TryGetValue(nodeId, out var references) ? references : new ReferenceDescriptionCollection();
+    }
+
+    internal static ReferenceDescription? FindChildByBrowseName(ReferenceDescriptionCollection references, string browseName)
+    {
+        foreach (var reference in references)
+        {
+            // These raw references bypass DistinctByResolvedNodeId, so BrowseName may be null.
+            if (reference.BrowseName?.Name == browseName)
+            {
+                return reference;
+            }
+        }
+
+        return null;
     }
 
     private void Reset()
@@ -788,16 +793,11 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
 
     private void RemoveItemsForSubject(IInterceptorSubject subject)
     {
-        _structureLock.Wait();
-        try
-        {
-            _sessionManager?.SubscriptionManager.RemoveItemsForSubject(subject);
-            _sessionManager?.PollingManager?.RemoveItemsForSubject(subject);
-        }
-        finally
-        {
-            _structureLock.Release();
-        }
+        // Lock-free by design: this runs from the synchronous subject-detach callback under the
+        // lifecycle interceptor's lock, so taking _structureLock here deadlocks. The reasoning is
+        // in docs/design/opcua-client-loader.md.
+        _sessionManager?.SubscriptionManager.RemoveItemsForSubject(subject);
+        _sessionManager?.PollingManager?.RemoveItemsForSubject(subject);
     }
 
     public async ValueTask DisposeAsync()

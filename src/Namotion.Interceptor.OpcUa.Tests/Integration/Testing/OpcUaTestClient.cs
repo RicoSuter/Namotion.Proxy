@@ -35,11 +35,16 @@ public class OpcUaTestClient<TRoot> : IAsyncDisposable
         _configureClient = configureClient;
     }
 
+    // waitForInitialSync = false returns as soon as the host is running instead of waiting for
+    // subscriptions and the first property sync. Tests that have to interfere with the very first
+    // load need this: that load is what the readiness wait waits for, so waiting here would mean
+    // waiting for the thing the test is about to break.
     public async Task StartAsync(
         Func<IInterceptorSubjectContext, TRoot> createRoot,
         Func<TRoot, bool> isConnected,
         string serverUrl = DefaultServerUrl,
-        string? certificateStoreBasePath = null)
+        string? certificateStoreBasePath = null,
+        bool waitForInitialSync = true)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var builder = Host.CreateApplicationBuilder();
@@ -113,6 +118,12 @@ public class OpcUaTestClient<TRoot> : IAsyncDisposable
 
         await _host.StartAsync();
         _logger.Log($"Client host started in {sw.ElapsedMilliseconds}ms");
+
+        if (!waitForInitialSync)
+        {
+            sw.Stop();
+            return;
+        }
 
         // First wait for OPC UA infrastructure (subscriptions set up) - this is reliable
         // because it's based on actual OPC UA state, not property propagation
