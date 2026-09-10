@@ -20,7 +20,7 @@ using System.Text.Json.Serialization;
 #pragma warning disable CS0067
 #pragma warning disable CS9193
 
-    public partial class Light : IInterceptorSubject, INotifyPropertyChanged, IRaisePropertyChanged
+    public partial class StatusMachine : IInterceptorSubject, INotifyPropertyChanged, IRaisePropertyChanged
     {
         public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -58,25 +58,25 @@ using System.Text.Json.Serialization;
             new Dictionary<string, SubjectPropertyMetadata>
             {
                     ["Name"] = new SubjectPropertyMetadata(
-                        typeof(Light).GetProperty(nameof(Name), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
-                        (o) => ((Light)o).Name,
-                        (o, v) => ((Light)o).Name = (string)v,
+                        typeof(StatusMachine).GetProperty(nameof(Name), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
+                        (o) => ((StatusMachine)o).Name,
+                        (o, v) => ((StatusMachine)o).Name = (string)v,
                         isIntercepted: true,
                         isDynamic: false),
-                    ["On"] = new SubjectPropertyMetadata(
-                        typeof(Light).GetProperty(nameof(On), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
-                        (o) => ((Light)o).On,
-                        (o, v) => ((Light)o).On = (bool)v,
-                        isIntercepted: true,
+                    ["Status"] = new SubjectPropertyMetadata(
+                        typeof(global::IHasStatus).GetProperty(nameof(global::IHasStatus.Status), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        (o) => ((global::IHasStatus)o).Status,
+                        null,
+                        isIntercepted: false,
                         isDynamic: false),
             }
             .ToFrozenDictionary();
 
-        public Light()
+        public StatusMachine()
         {
         }
 
-        public Light(IInterceptorSubjectContext context) : this()
+        public StatusMachine(IInterceptorSubjectContext context) : this()
         {
             ((IInterceptorSubject)this).Context.AddFallbackContext(context);
         }
@@ -87,14 +87,14 @@ using System.Text.Json.Serialization;
         {
             get
             {
-                return GetPropertyValue<string>(nameof(Name), static (o) => ((Light)o)._Name);
+                return GetPropertyValue<string>(nameof(Name), static (o) => ((StatusMachine)o)._Name);
             }
             set
             {
                 var newValue = value;
                 var cancel = false;
                 OnNameChanging(ref newValue, ref cancel);
-                if (!cancel && SetPropertyValue(nameof(Name), newValue, _Name, static (o, v) => ((Light)o)._Name = v))
+                if (!cancel && SetPropertyValue(nameof(Name), newValue, _Name, static (o, v) => ((StatusMachine)o)._Name = v))
                 {
                     OnNameChanged(_Name);
                     RaisePropertyChanged(nameof(Name));
@@ -105,31 +105,6 @@ using System.Text.Json.Serialization;
         partial void OnNameChanging(ref string newValue, ref bool cancel);
 
         partial void OnNameChanged(string newValue);
-
-        private bool _On;
-
-        public partial bool On
-        {
-            get
-            {
-                return GetPropertyValue<bool>(nameof(On), static (o) => ((Light)o)._On);
-            }
-            set
-            {
-                var newValue = value;
-                var cancel = false;
-                OnOnChanging(ref newValue, ref cancel);
-                if (!cancel && SetPropertyValue(nameof(On), newValue, _On, static (o, v) => ((Light)o)._On = v))
-                {
-                    OnOnChanged(_On);
-                    RaisePropertyChanged(nameof(On));
-                }
-            }
-        }
-
-        partial void OnOnChanging(ref bool newValue, ref bool cancel);
-
-        partial void OnOnChanged(bool newValue);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         protected IReadOnlyDictionary<string, SubjectPropertyMetadata>? GetInstanceProperties() => _properties;
@@ -184,7 +159,7 @@ using System.Text.Json.Serialization;
 #pragma warning disable CS0067
 #pragma warning disable CS9193
 
-    public partial class DimmableLight : IInterceptorSubject
+    public partial class StatusPump : IInterceptorSubject
     {
         [JsonIgnore]
         IReadOnlyDictionary<string, SubjectPropertyMetadata> IInterceptorSubject.Properties => GetInstanceProperties() ?? DefaultProperties;
@@ -192,49 +167,29 @@ using System.Text.Json.Serialization;
         public new static IReadOnlyDictionary<string, SubjectPropertyMetadata> DefaultProperties { get; } =
             new Dictionary<string, SubjectPropertyMetadata>
             {
-                    ["Brightness"] = new SubjectPropertyMetadata(
-                        typeof(DimmableLight).GetProperty(nameof(Brightness), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
-                        (o) => ((DimmableLight)o).Brightness,
-                        (o, v) => ((DimmableLight)o).Brightness = (double)v,
-                        isIntercepted: true,
-                        isDynamic: false),
             }
-            .Concat(global::Light.DefaultProperties)
+            .Concat(global::StatusMachine.DefaultProperties)
+            .Concat(
+                new Dictionary<string, SubjectPropertyMetadata>
+                {
+                        ["Status"] = new SubjectPropertyMetadata(
+                            typeof(global::IHasStatus).GetProperty(nameof(global::IHasStatus.Status), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                            (o) => ((global::IHasStatus)o).Status,
+                            null,
+                            isIntercepted: false,
+                            isDynamic: false),
+                }
+            )
             .DistinctBy(pair => pair.Key)
             .ToFrozenDictionary();
 
-        public DimmableLight()
+        public StatusPump()
         {
         }
 
-        public DimmableLight(IInterceptorSubjectContext context) : this()
+        public StatusPump(IInterceptorSubjectContext context) : this()
         {
             ((IInterceptorSubject)this).Context.AddFallbackContext(context);
         }
-
-        private double _Brightness;
-
-        public partial double Brightness
-        {
-            get
-            {
-                return GetPropertyValue<double>(nameof(Brightness), static (o) => ((DimmableLight)o)._Brightness);
-            }
-            set
-            {
-                var newValue = value;
-                var cancel = false;
-                OnBrightnessChanging(ref newValue, ref cancel);
-                if (!cancel && SetPropertyValue(nameof(Brightness), newValue, _Brightness, static (o, v) => ((DimmableLight)o)._Brightness = v))
-                {
-                    OnBrightnessChanged(_Brightness);
-                    RaisePropertyChanged(nameof(Brightness));
-                }
-            }
-        }
-
-        partial void OnBrightnessChanging(ref double newValue, ref bool cancel);
-
-        partial void OnBrightnessChanged(double newValue);
 
     }

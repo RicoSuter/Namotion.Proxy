@@ -200,6 +200,7 @@ using System.Text.Json.Serialization;
                         isDynamic: false),
             }
             .Concat(global::Person.DefaultProperties)
+            .DistinctBy(pair => pair.Key)
             .ToFrozenDictionary();
 
         public Teacher()

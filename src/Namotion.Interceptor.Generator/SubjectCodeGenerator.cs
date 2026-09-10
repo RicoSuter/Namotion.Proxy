@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using Namotion.Interceptor.Generator.Models;
@@ -202,21 +203,66 @@ internal static class SubjectCodeGenerator
         builder.AppendLine();
     }
 
+    /// <summary>
+    /// Precedence, highest first: the subject's own declarations, then everything it inherited, then
+    /// the interface default implementations it adopted. An adopted default is a fallback, so it must
+    /// rank below an inherited real property; otherwise a subject that declares nothing re-injects the
+    /// default and overwrites an ancestor's declaration.
+    /// </summary>
     private static void EmitDefaultProperties(StringBuilder builder, SubjectMetadata metadata)
     {
         var newModifier = metadata.BaseClass.TypeName is not null ? "new " : "";
 
         builder.AppendLine($"        public {newModifier}static IReadOnlyDictionary<string, SubjectPropertyMetadata> DefaultProperties {{ get; }} =");
-        builder.AppendLine("            new Dictionary<string, SubjectPropertyMetadata>");
-        builder.AppendLine("            {");
 
-        // Each entry below is emitted as an indexer assignment (["Name"] = ...) rather than a
-        // collection-initializer Add(...), so a duplicate key silently overwrites the earlier entry
-        // instead of throwing at type-init. The extractor already dedups property names and reports
-        // NI0008 on a genuine collision, so this should never trigger today, but the trade-off is
-        // worth keeping in mind: a future extractor bug that lets a duplicate through would silently
-        // drop a property here rather than fail loudly.
-        foreach (var property in metadata.Properties)
+        // A root has nothing to lose a key to, so it stays a single dictionary: the extractor already
+        // drops an interface default whose name the class declares, and no Concat means no duplicate
+        // to resolve.
+        if (metadata.BaseClass.TypeName is null)
+        {
+            EmitPropertyDictionary(builder, metadata, metadata.Properties);
+            builder.AppendLine("            .ToFrozenDictionary();");
+            builder.AppendLine();
+            return;
+        }
+
+        // Partitioned on IsFromInterface alone. A class-declared explicit implementation is a
+        // declaration in the subject's own class and belongs in the first tier, even though it is
+        // emitted through an interface cast like an adopted default.
+        var ownProperties = metadata.Properties.Where(property => !property.IsFromInterface).ToList();
+        var interfaceDefaults = metadata.Properties.Where(property => property.IsFromInterface).ToList();
+
+        EmitPropertyDictionary(builder, metadata, ownProperties);
+        builder.AppendLine($"            .Concat({metadata.BaseClass.TypeName}.DefaultProperties)");
+
+        if (interfaceDefaults.Count > 0)
+        {
+            builder.AppendLine("            .Concat(");
+            EmitPropertyDictionary(builder, metadata, interfaceDefaults, extraIndent: "    ");
+            builder.AppendLine("            )");
+        }
+
+        // Keeps the FIRST occurrence, which is what makes the order above a precedence order. Without
+        // it ToFrozenDictionary keeps the last, which is how the base used to overwrite the subject.
+        builder.AppendLine("            .DistinctBy(pair => pair.Key)");
+        builder.AppendLine("            .ToFrozenDictionary();");
+        builder.AppendLine();
+    }
+
+    private static void EmitPropertyDictionary(
+        StringBuilder builder,
+        SubjectMetadata metadata,
+        IReadOnlyList<PropertyMetadata> properties,
+        string extraIndent = "")
+    {
+        builder.AppendLine($"{extraIndent}            new Dictionary<string, SubjectPropertyMetadata>");
+        builder.AppendLine($"{extraIndent}            {{");
+
+        // Each entry is emitted as an indexer assignment (["Name"] = ...) rather than a
+        // collection-initializer Add(...), so a duplicate key within one tier silently overwrites
+        // rather than throwing at type init. The extractor dedups names and reports NI0008, so this
+        // should never trigger; across tiers DistinctBy resolves duplicates instead.
+        foreach (var property in properties)
         {
             // An explicitly implemented member is unreachable through the class, so it is emitted
             // through the interface exactly like an interface default property.
@@ -233,12 +279,12 @@ internal static class SubjectCodeGenerator
                     ? $"(o, v) => (({accessorInterfaceTypeName})o).{property.Name} = ({property.FullTypeName})v"
                     : "null";
 
-                builder.AppendLine($"                    [\"{property.Name}\"] = new SubjectPropertyMetadata(");
-                builder.AppendLine($"                        typeof({accessorInterfaceTypeName}).GetProperty(nameof({accessorInterfaceTypeName}.{property.Name}), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,");
-                builder.AppendLine($"                        {getterLambda},");
-                builder.AppendLine($"                        {setterLambda},");
-                builder.AppendLine("                        isIntercepted: false,");
-                builder.AppendLine("                        isDynamic: false),");
+                builder.AppendLine($"{extraIndent}                    [\"{property.Name}\"] = new SubjectPropertyMetadata(");
+                builder.AppendLine($"{extraIndent}                        typeof({accessorInterfaceTypeName}).GetProperty(nameof({accessorInterfaceTypeName}.{property.Name}), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,");
+                builder.AppendLine($"{extraIndent}                        {getterLambda},");
+                builder.AppendLine($"{extraIndent}                        {setterLambda},");
+                builder.AppendLine($"{extraIndent}                        isIntercepted: false,");
+                builder.AppendLine($"{extraIndent}                        isDynamic: false),");
             }
             else
             {
@@ -250,27 +296,19 @@ internal static class SubjectCodeGenerator
                     ? $"(o, v) => (({metadata.ClassName})o).{property.Name} = ({property.FullTypeName})v"
                     : "null";
 
-                builder.AppendLine($"                    [\"{property.Name}\"] = new SubjectPropertyMetadata(");
+                builder.AppendLine($"{extraIndent}                    [\"{property.Name}\"] = new SubjectPropertyMetadata(");
                 // DeclaredOnly because a 'new' property whose type differs from the one it hides makes
                 // the unfiltered lookup ambiguous, which throws at type init. Every property reaching
                 // this branch came from the subject's own declarations, so the filter drops nothing.
-                builder.AppendLine($"                        typeof({metadata.ClassName}).GetProperty(nameof({property.Name}), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,");
-                builder.AppendLine($"                        {getterLambda},");
-                builder.AppendLine($"                        {setterLambda},");
-                builder.AppendLine($"                        isIntercepted: {(property.IsPartial ? "true" : "false")},");
-                builder.AppendLine("                        isDynamic: false),");
+                builder.AppendLine($"{extraIndent}                        typeof({metadata.ClassName}).GetProperty(nameof({property.Name}), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,");
+                builder.AppendLine($"{extraIndent}                        {getterLambda},");
+                builder.AppendLine($"{extraIndent}                        {setterLambda},");
+                builder.AppendLine($"{extraIndent}                        isIntercepted: {(property.IsPartial ? "true" : "false")},");
+                builder.AppendLine($"{extraIndent}                        isDynamic: false),");
             }
         }
 
-        builder.AppendLine("            }");
-
-        if (metadata.BaseClass.TypeName is not null)
-        {
-            builder.AppendLine($"            .Concat({metadata.BaseClass.TypeName}.DefaultProperties)");
-        }
-
-        builder.AppendLine("            .ToFrozenDictionary();");
-        builder.AppendLine();
+        builder.AppendLine($"{extraIndent}            }}");
     }
 
     /// <summary>
