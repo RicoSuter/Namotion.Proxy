@@ -96,7 +96,7 @@ Three sharp edges:
 - If you already registered `T` yourself, `AddSubject<T>()` applies neither the context nor `configure`.
 - When the resolved context has no hosting handler, because `WithHostedServices()` was never called on it or because `contextResolver` returned null, there is nothing to hand the subject to. `AddSubject<T>()` then starts an `IHostedService` subject itself at host start and stops that same instance at host shutdown. It never disposes it.
 
-`configure` always runs before the attach `AddSubject` performs, and construction and `configure` both run inside a [startup scope](#configuration-before-startup), so the subject is fully configured before anything can start it whichever constructor it has. What still differs between the shapes is whether those assignments are intercepted:
+`configure` always runs before the attach `AddSubject` performs, and construction and `configure` both run inside a [startup scope](#configuration-before-startup) on the resolved context, so the subject is fully configured before anything can start it. What still differs between the shapes is whether those assignments are intercepted:
 
 - **`T` has no constructor taking a context**, or it declares the documented `MySubject(IInterceptorSubjectContext? context = null)` parameter and never attaches with it. Nothing is attached while `configure` runs, so its assignments are not intercepted and not tracked.
 - **Construction attaches the subject**, which is what the generated context constructor does. `configure` runs against an attached subject, so its assignments are intercepted and tracked.
@@ -301,7 +301,7 @@ Attaching still takes effect immediately, so the subject joins the graph and is 
 
 Three rules have consequences:
 
-- Do not await a captured service's start inside its own block, because that start cannot run until the block exits.
+- Do not await a captured service's start, or its detach, inside its own block. Both wait for that start, which cannot run until the block exits.
 - A scope nobody disposes holds its starts until the host shuts down.
 - `DeferHostedServiceStartup()` returns null on a context without hosting support, and `using` accepts that.
 
