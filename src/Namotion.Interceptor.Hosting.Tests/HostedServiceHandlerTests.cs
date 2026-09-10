@@ -725,12 +725,14 @@ public class HostedServiceHandlerTests
             await Assert.ThrowsAnyAsync<OperationCanceledException>(
                 () => person.AttachHostedServiceAsync(() => instance, cancellation.Token));
 
-            // Assert
+            // Assert - waits for Current rather than for IsStarted, which the instance sets before its
+            // StartAsync returns, while the handler records Current only afterwards.
+            var attachment = Assert.Single(person.GetHostedServiceAttachments());
             await AsyncTestHelpers.WaitUntilAsync(
-                () => instance.IsStarted,
+                () => attachment.Current is not null,
                 message: "The cancelled await aborted the start transition instead of only the wait.");
 
-            var attachment = Assert.Single(person.GetHostedServiceAttachments());
+            Assert.True(instance.IsStarted);
             Assert.Same(instance, attachment.Current);
             Assert.Null(attachment.Fault);
         });

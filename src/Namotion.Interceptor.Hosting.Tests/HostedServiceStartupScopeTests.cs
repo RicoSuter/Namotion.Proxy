@@ -64,6 +64,7 @@ public class HostedServiceStartupScopeTests
         var configuration = "uninitialized";
         var service = new ProbeService(() => configuration);
         var subject = new Person(fixture.Context);
+        await fixture.Handler.StartAsync(CancellationToken.None);
 
         // Act
         using (fixture.Context.DeferHostedServiceStartup())
@@ -73,9 +74,11 @@ public class HostedServiceStartupScopeTests
                 subject.AttachHostedService(() => service);
             }
 
-            await fixture.Handler.StartAsync(CancellationToken.None);
-            Assert.False(service.Started.Task.IsCompleted);
+            // The inner scope is gone, so only the enclosing one is holding this start. The wait covers
+            // the dispatch as well as the park, which is what makes the observation mean anything: a
+            // body that has not run yet would run inside it.
             configuration = "configured";
+            await AssertDoesNotStartAsync(service, "the enclosing scope is still open");
         }
 
         // Assert
@@ -133,6 +136,10 @@ public class HostedServiceStartupScopeTests
         {
             subject.AttachHostedService(() => deferred);
             Assert.Equal(1, fixture.HoldsTaken);
+
+            // Establishes what this test is about. Without it the drain can begin before the body is
+            // dispatched, which declines at the gate and never reaches the park at all.
+            await AssertDoesNotStartAsync(deferred, "this scope is still open");
 
             await fixture.Handler.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -194,6 +201,19 @@ public class HostedServiceStartupScopeTests
             Assert.True(await detachment.WaitAsync(TimeSpan.FromSeconds(10)));
             Assert.Equal("second", await second.Started.Task.WaitAsync(TimeSpan.FromSeconds(10)));
         }
+    }
+
+    /// <summary>
+    /// How long a parked start is watched for a start it must not make. "Did not happen" has no event
+    /// to wait on, so this is a timed observation, and it cannot false fail: on an intact build the
+    /// start is held on a scope only the test disposes, so no length of watching lets it through.
+    /// </summary>
+    private static readonly TimeSpan MustNotStartWithin = TimeSpan.FromSeconds(1);
+
+    private static async Task AssertDoesNotStartAsync(ProbeService service, string because)
+    {
+        var started = await Task.WhenAny(service.Started.Task, Task.Delay(MustNotStartWithin)) == service.Started.Task;
+        Assert.False(started, $"The start ran while {because}, so nothing was waiting for that scope.");
     }
 
     private sealed class Fixture : IAsyncDisposable, IStartupCompletionDeferrer
