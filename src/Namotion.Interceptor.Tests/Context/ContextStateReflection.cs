@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Reflection;
 
 namespace Namotion.Interceptor.Tests.Context;
@@ -26,6 +27,10 @@ internal static class ContextStateReflection
     internal static readonly FieldInfo ResolvedTerminalField = ContextStateType
         .GetField("_resolvedTerminal", BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("ContextState._resolvedTerminal was renamed, the context tests need updating.");
+
+    private static readonly FieldInfo FallbackContextsField = ContextStateType
+        .GetField("FallbackContexts", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("ContextState.FallbackContexts was renamed, the context tests need updating.");
 
     private static readonly FieldInfo ReadFunctionsField = ContextStateType
         .GetField("_readFunctions", BindingFlags.Instance | BindingFlags.NonPublic)
@@ -62,6 +67,21 @@ internal static class ContextStateReflection
     internal static object? GetResolvedTerminal(InterceptorSubjectContext context)
     {
         return ResolvedTerminalField.GetValue(GetState(context));
+    }
+
+    /// <summary>
+    /// Returns the fallback contexts the installed state publishes. Typed, so a change to what the
+    /// state stores per edge breaks the build here rather than silently reporting no match.
+    /// </summary>
+    internal static ImmutableArray<InterceptorSubjectContext> GetFallbackContexts(InterceptorSubjectContext context)
+    {
+        return (ImmutableArray<InterceptorSubjectContext>)FallbackContextsField.GetValue(GetState(context))!;
+    }
+
+    /// <summary>Returns whether the installed state publishes an edge to the given fallback.</summary>
+    internal static bool HasFallbackContext(InterceptorSubjectContext context, InterceptorSubjectContext fallback)
+    {
+        return GetFallbackContexts(context).Contains(fallback);
     }
 
     /// <summary>Returns the read-function array owned by the context's installed state.</summary>

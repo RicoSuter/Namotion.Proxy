@@ -68,6 +68,15 @@ This is used internally by `WithContextInheritance()` to automatically assign th
 2. Services from fallback contexts (recursively)
 3. Results are deduplicated and ordered
 
+**Lifecycle callbacks on subject contexts:**
+
+When the context belongs to a subject, adding and removing a fallback also notifies the `ILifecycleInterceptor` services of the fallback context:
+
+- The set notified on removal is the set that was resolved when the fallback was added. An interceptor registered on the parent afterwards is not notified, and one unregistered in between still is. If an attach callback throws, the removal notifies only the interceptors up to and including the one that threw.
+- `RemoveFallbackContext` returning `true` means the removal is committed. If an add is still running its attach callbacks, the removal completes on that thread, so the fallback may still be visible for a moment after the call returns.
+- A detach callback that throws does not block the removal. The remaining invoked interceptors are still notified, the fallback is removed, and the first failure is rethrown afterwards.
+- Adding a fallback that closes a delegation cycle succeeds. The cycle is reported by the next service resolution, and the fallback can be removed to break it. The removal itself can still throw, because a recorded interceptor that resolves through the now cyclic chain raises, but the fallback is gone either way.
+
 ## Service Ordering
 
 When multiple handlers or interceptors are registered, their execution order can be controlled using ordering attributes. This is important when services have dependencies on each other.

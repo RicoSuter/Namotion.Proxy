@@ -386,3 +386,6 @@ src/HomeBlaze/HomeBlaze/PluginsCache/
 # Performance pass artifacts
 benchmark_*.md
 .claude/scheduled_tasks.lock
+
+# Superpowers specs and plans are working notes, kept local
+docs/superpowers/

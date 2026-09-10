@@ -21,10 +21,15 @@ public interface IInterceptorSubjectContext
     /// </summary>
     /// <remarks>
     /// Both delegates run while this context is locked for mutation. They may read any context and
-    /// may mutate this one, but they must not mutate a different context: the calling thread then
-    /// holds the mutation locks of two contexts, and two threads that each register into one context
-    /// from a factory mutating the other acquire those locks in opposite orders and deadlock. Create
-    /// the instance in the factory and register it into any other context after this call returns.
+    /// may add services to this one, but they must not mutate a different context: the calling thread
+    /// then holds the mutation locks of two contexts, and two threads that each register into one
+    /// context from a factory mutating the other acquire those locks in opposite orders and deadlock.
+    /// Create the instance in the factory and register it into any other context after this call
+    /// returns.
+    ///
+    /// They must also not add or remove a fallback context on this context. On a subject's context
+    /// that runs the lifecycle callbacks while this mutation lock is still held, so they take the
+    /// lifecycle lock under it and invert the order every other path uses.
     ///
     /// Unlike service resolution, this operation can enter a fallback graph that consists only of a
     /// delegation cycle. If no matching service is found, registering one on this context breaks the
@@ -63,6 +68,13 @@ public interface IInterceptorSubjectContext
     /// Adds a fallback context for service resolution.
     /// Services not found in this context will be looked up in fallback contexts.
     /// </summary>
+    /// <remarks>
+    /// On a subject's context this also notifies the lifecycle interceptors of <paramref name="context"/>,
+    /// and records that set so the matching removal notifies exactly it. Under concurrent mutation
+    /// of the same edge, false can also mean that the edge is present but a removal already owns it
+    /// and is about to drop it, and true can mean that a removal arrived while the attach callbacks
+    /// were running and was completed on this thread, so the fallback is already gone on return.
+    /// </remarks>
     /// <param name="context">The fallback context to add.</param>
     /// <returns>True if the fallback context was added, false if it was already present.</returns>
     bool AddFallbackContext(IInterceptorSubjectContext context);
@@ -70,6 +82,24 @@ public interface IInterceptorSubjectContext
     /// <summary>
     /// Removes a previously added fallback context.
     /// </summary>
+    /// <remarks>
+    /// On a subject's context this first notifies the lifecycle interceptors recorded by the
+    /// matching add, while the fallback is still resolvable. True therefore means the removal is
+    /// committed rather than necessarily already applied: when an add is still running its attach
+    /// callbacks, the removal completes on that thread and the fallback stays visible until it does.
+    /// False can also mean that another caller already owns the removal.
+    /// <para>
+    /// Every interceptor the matching add actually invoked is notified, even when one of them throws.
+    /// That is the recorded set when the add completed, and the prefix up to and including the one
+    /// that threw when it did not. The fallback is removed either way, and the first failure is
+    /// rethrown once it is gone.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="Exception">
+    /// Whatever a lifecycle interceptor threw while detaching, rethrown after the fallback has been
+    /// removed. Resolving through a chain that turned cyclic since the add is one way to reach this,
+    /// which surfaces as an <see cref="InvalidOperationException"/>.
+    /// </exception>
     /// <param name="context">The fallback context to remove.</param>
     /// <returns>True if the fallback context was removed, false if it was not present.</returns>
     bool RemoveFallbackContext(IInterceptorSubjectContext context);

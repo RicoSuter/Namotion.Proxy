@@ -463,9 +463,9 @@ public class ContextConcurrencyFuzzTests
             }
             catch (InvalidOperationException exception) when (IsDelegationCycle(exception))
             {
-                // Closing a circle underneath a subject executor makes its attach callbacks fail
-                // to resolve, after the fallback context is registered. The edge is in place, so
-                // the topology stays exactly as declared.
+                // The executor resolves the lifecycle interceptors before publishing anything, so
+                // a raise leaves no edge behind and the model has to record its absence.
+                edge.IsPresent = false;
             }
         }
 
@@ -520,19 +520,20 @@ public class ContextConcurrencyFuzzTests
             var edge = ownedEdges[random.Next(ownedEdges.Length)];
             if (random.Next(2) == 0)
             {
-                // Recorded before the call, not after: the executor override registers the
-                // fallback context first and only then resolves the lifecycle interceptors to run
-                // the attach callbacks, and that resolution raises when the chain is a circle at
-                // that instant. The edge exists either way, so recording it after the call would
-                // lose it. Removal is the other way round, it resolves first and unregisters
-                // afterwards, so a raise there means the edge is still in place.
-                edge.IsPresent = true;
+                // Recorded after the call: the executor resolves the lifecycle interceptors before
+                // publishing, so an add that raises on a circular chain leaves no edge. A raise
+                // therefore always means the model was already false, because an add over an
+                // existing edge short circuits before it can reach the resolve.
                 edge.Source.Context.AddFallbackContext(edge.Target.Context);
+                edge.IsPresent = true;
             }
             else
             {
-                edge.Source.Context.RemoveFallbackContext(edge.Target.Context);
+                // Recorded before the call, the other way round: removal keeps the edge visible
+                // for the detach callbacks and drops it from a finally, so a raise there still
+                // means the edge is gone. Recording it afterwards would lose exactly that case.
                 edge.IsPresent = false;
+                edge.Source.Context.RemoveFallbackContext(edge.Target.Context);
             }
         }
         else if (choice < 30)

@@ -167,12 +167,25 @@ No leak.
 
 ## Lock Ordering
 
-Two locks exist in the lifecycle/registry system:
+Three locks are involved:
 
 1. `_attachedSubjects` in `LifecycleInterceptor`
 2. `_knownSubjects` in `SubjectRegistry`
+3. `_mutationLock` in `InterceptorSubjectContext`
 
 Acquisition order is always: `_attachedSubjects` → `_knownSubjects`. The `SubjectRegistry` never calls back into `LifecycleInterceptor` while holding `_knownSubjects`. No deadlock is possible.
+
+`_mutationLock` is reached the same way round: `ContextInheritanceHandler` calls `Add`/`RemoveFallbackContext` from a lifecycle change, so the order is `_attachedSubjects` → `_mutationLock`. Taking `_mutationLock` under `_attachedSubjects` is therefore normal, and it is safe as long as the reverse order never occurs.
+
+What is forbidden is stronger: **nothing may wait for another thread's in-flight attach or detach sequence while holding `_attachedSubjects`.** The attaching thread runs its callbacks outside `_mutationLock` and takes `_attachedSubjects` there, so a waiter holding that lock would deadlock against it. This is why a removal that arrives while a fallback is still attaching hands its work to the attaching thread instead of waiting for it.
+
+### The one path that can invert this
+
+`Add`/`RemoveFallbackContext` run their lifecycle callbacks outside `_mutationLock`, so on every normal path the reverse order does not occur. There is one exception, and it is not closed here.
+
+`TryAddService` invokes its `factory` and `exists` delegates while holding `_mutationLock`, and the contract permits those delegates to reenter *this* context, forbidding only the mutation of a different one. On a subject context a delegate that adds a fallback therefore reaches the attach callbacks with the outer `_mutationLock` still held, and those callbacks take `_attachedSubjects`. That is `_mutationLock` → `_attachedSubjects`, against a second thread holding `_attachedSubjects` and entering `ContextInheritanceHandler` to take `_mutationLock`, which is an ABBA deadlock.
+
+No shipping delegate does this: every `TryAddService` factory in the repository is a plain construction. Tracked in #404, which covers the cross-context form of the same hazard and whose contract wording needs extending to cover the same-context fallback case.
 
 The `_attachedSubjects` lock is re-entrant (C# `Monitor`). `WriteProperty` may trigger lifecycle handlers that write to *other* properties, re-entering the lock. Each property has its own `_lastProcessedValues` entry, so there is no interference. Handlers must NOT write to the *same* property being reconciled — this is a documented contract requirement.
 
