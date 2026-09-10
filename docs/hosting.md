@@ -197,7 +197,7 @@ Writing a scalar property from a dispose path is safe. Writing a property whose 
 
 The handle carries the state of the attachment:
 
-- `Current` is the running instance, or null when nothing is running: before the first start, after a stop, and after a start that failed.
+- `Current` is the running instance, or null when nothing is running: before the first start, after a stop, and after a start that failed. The awaiting overload can return this way too, with no fault, when there was no start to wait for: no handler on the context, the subject not in the graph, the attachment already detached, or the host shutting down.
 - `Fault` is the exception from the last failed transition, or null. Only a start clears it, and only once it has got past its own guards, so that a start skipped by a shutdown does not drop a fault nobody has read yet. A stop never clears it. A start that failed followed by a clean stop therefore leaves `Fault` set with `Current` null, which is the shape of "this should be running and is not".
 
 ```csharp
@@ -216,7 +216,7 @@ else if (attachment.Current is { } service)
 ```csharp
 var attachment = await person.AttachHostedServiceAsync(
     () => new PersonBackgroundService(person), cancellationToken);
-// The instance is running, or this call threw.
+// The instance is running, or this call threw, or nothing was started and Current is null.
 
 await person.DetachHostedServiceAsync(attachment, cancellationToken);
 // The instance has stopped, and has been disposed when it is disposable.

@@ -481,7 +481,7 @@ public partial class ShellyDevice
 
 2. **Interaction with AddSubject**: `AddSubject<T>` applies the context unconditionally after construction, so the subject is attached regardless of its constructor shape. A constructor taking an `IInterceptorSubjectContext` is still used when one exists, but it confers no advantage: a subject with only DI parameters is attached just the same. The `contextResolver` parameter allows overriding which context is provided, and returning null from it registers the subject without a context.
 
-   `configure` always runs before the attach `AddSubject` itself performs, but whether the subject is already attached by then depends on the constructor, and the difference is observable. A generated context constructor attaches during construction, so `configure` runs against an attached subject and its assignments are intercepted and tracked. Every shape that does not attach during construction, including one that declares an `IInterceptorSubjectContext` parameter and never attaches with it, is still unattached when `configure` runs, so the subject is fully configured before anything can start it and those assignments are not intercepted. See [Hosting](hosting.md#addsubjectt) for the full picture.
+   `configure` always runs before the attach `AddSubject` itself performs, and a startup scope spans construction and `configure`, so on every constructor shape the subject is fully configured before anything can start it. What differs is interception: a generated context constructor attaches during construction, so `configure` runs against an attached subject and its assignments are intercepted and tracked, while every shape that does not attach during construction, including one that declares an `IInterceptorSubjectContext` parameter and never attaches with it, is still unattached when `configure` runs and those assignments are not intercepted. See [Hosting](hosting.md#addsubjectt) for the full picture.
 
 ### Examples in the Codebase
 
@@ -562,7 +562,7 @@ public MySubject(IMyDriver driver, ILogger<MySubject> logger)
 
 Declare an `IInterceptorSubjectContext` parameter only when the constructor genuinely needs the context, for example to build child subjects.
 
-What changes if it does is the order of two things. The generated context constructor attaches the subject itself, so by the time `AddSubject` runs `configure` the subject is already in the graph: its assignments are intercepted and tracked, and they race the start that attach queued. Without such a constructor `AddSubject` attaches after `configure`, so the assignments are not intercepted and no start can observe them half written. A constructor that declares the parameter but never calls `AddFallbackContext` with it behaves like one that never declared it.
+What changes if it does is what gets intercepted, not what a start can see. The generated context constructor attaches the subject itself, so by the time `AddSubject` runs `configure` the subject is already in the graph and its assignments are intercepted and tracked. Without such a constructor `AddSubject` attaches after `configure`, so those assignments are not intercepted. No start observes a half written subject either way, because `AddSubject` holds a startup scope across construction and `configure`. A constructor that declares the parameter but never calls `AddFallbackContext` with it behaves like one that never declared it.
 
 ### Restart Contract
 
