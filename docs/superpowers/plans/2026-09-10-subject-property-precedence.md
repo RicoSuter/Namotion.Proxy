@@ -19,6 +19,9 @@
 - No AI attribution in commit messages: no agent names, no `Co-Authored-By` trailers, no "Generated with" footers.
 - Snapshot loop: prefix snapshot test runs with `DiffEngine_Disabled=true` so no diff tool launches. Accept a snapshot by replacing the `.verified.txt` with the test's `.received.txt` only after reading the diff.
 - Test naming is `When<Condition>_Then<ExpectedBehavior>`, with explicit `// Arrange`, `// Act`, `// Assert` comments.
+- **Execute the tasks strictly in order, 1 through 6.** They share files and are not independent: Task 2 rewrites the method Task 1 edits, Tasks 3 and 5 both edit `SubjectMetadataExtractor.cs`, and Tasks 4 and 5 both edit `Diagnostics.cs`, `AnalyzerReleases.Unshipped.md` and `DiagnosticTests.cs`. Running Task 2 before Task 1 makes Task 1's target line unmatchable.
+- `#pragma warning disable NIxxxx` suppresses a generator diagnostic even at `Error` severity. Verified against this generator: a non-partial `[InterceptorSubject]` class builds clean inside `#pragma warning disable NI0001` and fails with `error NI0001` without it. Task 4 depends on this, because it is what keeps the existing pragmas in `ExplicitInterfaceBehaviorTests.cs` working.
+- `GeneratorTestHost` does **not** surface generator diagnostics into `CompilationDiagnostics` (`GeneratorTestHost.cs:214-222` assigns `CompilationDiagnostics = outputCompilation.GetDiagnostics()` and `GeneratorDiagnostics = runResult.Diagnostics` separately). So `RunExpectingCleanCompilation` and `RunExpectingNoWarnings` are blind to NI-rule severity, and raising a rule to `Error` breaks no embedded-source test. Only the real project builds are affected.
 
 ## File Structure
 
@@ -47,7 +50,7 @@ A `new` property whose type differs from the one it hides makes `typeof(Leaf).Ge
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: nothing consumed by later tasks. Task 2 rewrites the surrounding method and must preserve this flag.
+- Produces: the `DeclaredOnly` flag on the class-branch lookup. Task 2 rewrites the surrounding method and reproduces the flag verbatim, so Task 2 must not revert it. Task 1 must therefore run first.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -125,8 +128,10 @@ Expected: PASS.
 - [ ] **Step 5: Update the snapshots**
 
 ```bash
-DiffEngine_Disabled=true dotnet test src/Namotion.Interceptor.Generator.Tests --filter "FullyQualifiedName~Snapshot|FullyQualifiedName~SourceGeneratorTests|FullyQualifiedName~InterfaceDefaultPropertyTests|FullyQualifiedName~VirtualPartialTests"
+DiffEngine_Disabled=true dotnet test src/Namotion.Interceptor.Generator.Tests --filter "FullyQualifiedName~SourceGeneratorTests|FullyQualifiedName~InterfaceDefaultPropertyTests|FullyQualifiedName~VirtualPartialTests"
 ```
+
+Exactly 16 `.verified.txt` files contain a class-branch `GetProperty` line, all under `src/Namotion.Interceptor.Generator.Tests/Snapshots/`, produced by `SourceGeneratorTests` (8), `InterfaceDefaultPropertyTests` (5) and `VirtualPartialTests` (3). No snapshot in any other test project contains one, so the filter above is sufficient.
 
 Read each `.received.txt` diff. The only change in every one must be `BindingFlags.Instance` becoming `BindingFlags.Instance | BindingFlags.DeclaredOnly` on class-branch lines. If any other line moved, stop and investigate. Then replace each `.verified.txt` with its `.received.txt` and re-run to confirm green.
 
@@ -156,7 +161,7 @@ nothing and resolves the ambiguity."
 ### Task 2: Three-tier precedence
 
 **Files:**
-- Modify: `src/Namotion.Interceptor.Generator/SubjectCodeGenerator.cs` (`EmitDefaultProperties`, lines 205 to 270)
+- Modify: `src/Namotion.Interceptor.Generator/SubjectCodeGenerator.cs` (`EmitDefaultProperties`, lines 205 to 271)
 - Modify: `src/Namotion.Interceptor.Generator.Tests/PropertyPrecedenceTests.cs`
 - Modify: 3 generator snapshots and 1 registry snapshot, named in Step 6
 
@@ -257,7 +262,9 @@ and these tests inside the `PropertyPrecedenceTests` class:
 dotnet test src/Namotion.Interceptor.Generator.Tests --filter "FullyQualifiedName~PropertyPrecedenceTests"
 ```
 
-Expected: the first two FAIL. `DeclaringType` is `IHasLevel`, `IsIntercepted` is `False`, `SetValue` is null, the value read is `0`, and the marker attribute is absent. The third passes already.
+Expected: the first two FAIL. `DeclaringType` is `IHasLevel`, `IsIntercepted` is `False`, `SetValue` is null, and the marker attribute is absent.
+
+Note what does **not** fail: `GetValue?.Invoke(pump)` returns `42`, not `0`. The inherited entry reads `((IHasLevel)o).Level`, and because `PrecedencePump` re-lists `IHasLevel` its own property takes the interface slot, so the value arrives through virtual interface dispatch even while every other fact about the entry is wrong. A correct RED run shows four failed assertions, not five. The third test passes already.
 
 - [ ] **Step 3: Rewrite `EmitDefaultProperties`**
 
@@ -384,13 +391,13 @@ Expected: all four PASS, Task 1's test included.
 
 - [ ] **Step 5: Verify `EmitProperties` was not disturbed**
 
-`EmitProperties` and the accessor branch of the emitter group properties by `IsFromInterface || ExplicitInterfaceTypeName is not null`, which is a different partition from the tier split. Confirm neither was changed:
+The accessor branch of the emitter groups properties by `IsFromInterface || ExplicitInterfaceTypeName is not null`, which is a different partition from the tier split. `EmitProperties` filters on `IsPartial`, not on `IsFromInterface` at all, so it is untouched by this task. (The spec and the original plan both described `EmitProperties` wrongly here.) Confirm the only `IsFromInterface` uses are the ones this task introduces or preserves:
 
 ```bash
-grep -n "IsFromInterface" src/Namotion.Interceptor.Generator/SubjectCodeGenerator.cs
+grep -n "IsFromInterface\|IsPartial" src/Namotion.Interceptor.Generator/SubjectCodeGenerator.cs
 ```
 
-Expected: the tier split in `EmitDefaultProperties`, the `accessorInterfaceTypeName` line in `EmitPropertyDictionary`, and whatever `EmitProperties` already had, unchanged.
+Expected for `IsFromInterface`: the two tier-split lines in `EmitDefaultProperties` and the `accessorInterfaceTypeName` line in `EmitPropertyDictionary`, and nothing else. Before this task there was exactly one occurrence, at line 223. `EmitProperties`' `IsPartial` filter must be unchanged.
 
 - [ ] **Step 6: Update the snapshots**
 
@@ -398,26 +405,48 @@ Expected: the tier split in `EmitDefaultProperties`, the `accessorInterfaceTypeN
 DiffEngine_Disabled=true dotnet test src/Namotion.Interceptor.slnx --filter "Category!=Integration"
 ```
 
-Exactly these four should move:
+Exactly these three should move, each gaining the `.DistinctBy(pair => pair.Key)` line:
 
 - `src/Namotion.Interceptor.Generator.Tests/Snapshots/SourceGeneratorTests.WhenGeneratingClassWithInheritance_ThenPartialClassIsGenerated.verified.txt`
 - `src/Namotion.Interceptor.Generator.Tests/Snapshots/SourceGeneratorTests.WhenGeneratingClassWithInheritanceAndCustomAttribute_ThenBasePropertiesAreIncluded.verified.txt`
 - `src/Namotion.Interceptor.Generator.Tests/Snapshots/VirtualPartialTests.Test_VirtualInheritanceChain_GeneratesCorrectly.verified.txt`
-- `src/Namotion.Interceptor.Registry.Tests/SubjectRegistryTests.WhenCreatingSubjectWithInheritance_ThenAllPropertiesAreAvailable.verified.txt`
 
-The four `InterfaceDefaultPropertyTests.*.verified.txt` snapshots are root subjects and **must not move**. If one does, the root branch is emitting a `Concat` or a `DistinctBy` it should not.
+`src/Namotion.Interceptor.Registry.Tests/SubjectRegistryTests.WhenCreatingSubjectWithInheritance_ThenAllPropertiesAreAvailable.verified.txt` is expected **not** to move: it is a bare ordered name list for `Teacher : Person`, which has no colliding key and no interfaces, so the sequence reaching `ToFrozenDictionary` is identical before and after. If it does move, read the diff and confirm the set of names is unchanged and only their order moved, which is tolerable; a changed *set* of names means the tiers are wrong.
 
-The registry snapshot is a bare ordered name list. Read the diff and confirm the set of names is unchanged and only their order moved.
+The five `InterfaceDefaultPropertyTests.*.verified.txt` snapshots are root subjects and **must not move**. If one does, the root branch is emitting a `Concat` or a `DistinctBy` it should not.
+
+- [ ] **Step 6b: Add a snapshot for a non-empty third tier**
+
+Nothing above covers the code this task adds. All three moving snapshots are derived subjects with **no** interface default, so the newly emitted third tier is never snapshotted and never compile-checked except indirectly through `PrecedenceSmartPump`. The spec requires snapshots for "derived with interface defaults" and "derived with an empty tier".
+
+Add two snapshot tests to `src/Namotion.Interceptor.Generator.Tests/SourceGeneratorTests.cs`, following the `UseDirectory("Snapshots")` pattern already in that file:
+
+- a derived subject that re-lists an interface its base already adopted and declares nothing itself, so tier 1 is empty and tier 3 is not, proving the emitted `.Concat(` block and the empty `new Dictionary<string, SubjectPropertyMetadata>\n{\n}` are both valid C#;
+- a derived subject that re-lists the interface **and** declares the adopted name, so tier 3 is empty and the `.Concat(` block is omitted entirely.
+
+Accept these snapshots only after reading them: confirm the precedence order in the emitted sequence is own, then base, then interface defaults. Fix the third tier's indentation before accepting, so it is not re-churned by a later cosmetic pass.
 
 - [ ] **Step 7: Check the `override` metadata change**
 
-Six production properties now report the overriding declaration rather than the ancestor:
+Six production properties now report the overriding declaration rather than the ancestor. They are plain expression-bodied overrides, not `override partial`:
 
 ```bash
-grep -rn "override partial" src/HomeBlaze/Namotion.Devices.Philips.Hue/
+grep -rn "public override" src/HomeBlaze/Namotion.Devices.Philips.Hue/
 ```
 
-Expected: `HueLightbulb.cs` (`Title`, `IconName`, `IconColor`), `HueButtonDevice.cs`, `HueMotionDevice.cs`. Confirm each repeats `[Derived]` on the override, so no attribute is lost.
+Expected: `HueLightbulb.cs:183` (`Title`), `:194` (`IconName`), `:197` (`IconColor`), `HueButtonDevice.cs:19` (`IconName`), `:25` (`IconColor`), `HueMotionDevice.cs:29` (`IconName`). The base declarations are `HueDevice.cs:37/40/43`. Confirm each override repeats `[Derived]`, so no attribute is lost.
+
+- [ ] **Step 7b: Pin the `override` metadata change with a test**
+
+This is the headline behaviour change and the only one that alters production metadata for code that never opted in, yet nothing above asserts it. The spec requires it: "the `override` shape asserting the override's own attributes are visible".
+
+Append to `src/Namotion.Interceptor.Generator.Tests/PropertyPrecedenceTests.cs` a `virtual partial` base subject and a derived subject whose `override partial` declaration carries an attribute the base does not, then assert that `Properties[name]`:
+
+- reports `PropertyInfo.DeclaringType` as the derived type, not the base;
+- carries the attribute declared on the override;
+- still carries any attribute declared only on the base, because `PropertyInfoExtensions` reads attributes with `inherit: true`, so this change adds to the attribute set rather than relocating it. Assert both, so a future change that starts *losing* base attributes is caught here.
+
+Use an existing attribute rather than inventing one where a suitable one exists; `PrecedenceMarkerAttribute` from Step 1 is available for the override side.
 
 - [ ] **Step 8: Commit**
 
@@ -442,17 +471,28 @@ nothing otherwise re-injects it over an ancestor's real property."
 
 An interface property whose only accessible accessor is `init`, such as `{ protected get; init; }`, passes the reachability guard because the `init` accessor is accessible, then emits both lambdas as null. The key exists in `Properties` and reading or writing it does nothing.
 
+**This defect exists on two independent code paths and this task fixes both.** The guard is written once per path because the two paths differ in what they do about it:
+
+1. `ExtractInterfaceDefaultProperties` (an interface default the subject adopts): skip in **silence**, matching the existing treatment of interface members generated code cannot reach. The interface may be third-party, leaving the subject's author no remedy to follow.
+2. `CollectProperties`' explicit-implementation branch (an interface property the subject **explicitly implements** in its own file): skip and **report** `Diagnostics.MemberSkipped`, mirroring the NI0006 report that already sits a few lines above it in that same branch. The established policy there is stated in the existing comment: writing an explicit implementation is an opt-in in the author's own file, so dropping it silently would leave them no way to find out.
+
+Path 2 is the one `docs/design/generator-supported-shapes.md` records under "Known gaps" ("explicitly implemented by a class"). Task 6 deletes that bullet, which is only honest if this task fixes path 2 as well.
+
 **Files:**
-- Modify: `src/Namotion.Interceptor.Generator/SubjectMetadataExtractor.cs:644` and the `hasGetter`/`hasSetter` block around line 664
-- Modify: `src/Namotion.Interceptor.Generator.Tests/DiagnosticTests.cs`
+- Modify: `src/Namotion.Interceptor.Generator/SubjectMetadataExtractor.cs`: the `ExtractInterfaceDefaultProperties` guard at line 644 and the `hasGetter`/`hasSetter` block around line 664 (path 1); the explicit-implementation branch at lines 288-320 (path 2)
+- Modify: `src/Namotion.Interceptor.Generator.Tests/InterfaceDefaultPropertyBehaviorTests.cs`
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces: nothing consumed by later tasks.
+- Produces: nothing consumed by later tasks. Task 5 also edits `SubjectMetadataExtractor.cs`, so this task must land first.
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `DiagnosticTests.cs`:
+Put these in `src/Namotion.Interceptor.Generator.Tests/InterfaceDefaultPropertyBehaviorTests.cs`, not in `DiagnosticTests.cs`: they assert generated behaviour, and the plan's File Structure table puts behaviour there.
+
+Each test asserts `Assert.Empty(generated.GeneratorDiagnostics)` and the presence of an unrelated property alongside the absence of the probe. Without both, the test passes for the wrong reason: when the generator throws, its catch block emits a `/* exception */` comment file, `RunExpectingCleanCompilation` still sees zero *compilation* errors, and a bare `Assert.DoesNotContain` on that comment file passes.
+
+First, path 1:
 
 ```csharp
     [Fact]
@@ -481,19 +521,63 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        Assert.DoesNotContain("\"Probe\"", generated.Sources.Single().SourceText.ToString());
+        Assert.Empty(generated.GeneratorDiagnostics);
+        var generatedSource = generated.Sources.Single().SourceText.ToString();
+        Assert.Contains("\"Name\"", generatedSource);
+        Assert.DoesNotContain("\"Probe\"", generatedSource);
     }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+Then path 2, the explicit implementation, which must also report:
 
-```bash
-dotnet test src/Namotion.Interceptor.Generator.Tests --filter "FullyQualifiedName~WhenInterfaceDefaultHasOnlyAnInitAccessorReachable"
+```csharp
+    [Fact]
+    public void WhenExplicitImplementationHasOnlyAnInitAccessorReachable_ThenItIsReportedAndSkipped()
+    {
+        // Arrange: same degenerate shape reached through CollectProperties instead. Reported rather
+        // than silent, because the author opted in by writing the implementation in their own file.
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    public interface IProbe
+    {
+        string Probe { protected get; init; }
+    }
+
+    [InterceptorSubject]
+    public partial class Subject : IProbe
+    {
+        string IProbe.Probe { get => ""x""; init { } }
+
+        public partial string Name { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.Single(generated.GeneratorDiagnostics, diagnostic => diagnostic.Id == "NI0006");
+        var generatedSource = generated.Sources.Single().SourceText.ToString();
+        Assert.Contains("\"Name\"", generatedSource);
+        Assert.DoesNotContain("\"Probe\"", generatedSource);
+    }
 ```
 
-Expected: FAIL, because `"Probe"` is present in the generated source with both accessor lambdas null.
+Confirm the exact id `Diagnostics.MemberSkipped` carries before asserting on it, and confirm both embedded sources compile as C# before relying on the expected failure: if `{ protected get; init; }` in an interface, or the explicit implementation of it, does not compile, the test fails for the wrong reason and looks like the "before" state.
 
-- [ ] **Step 3: Move the guard below the accessor computation**
+- [ ] **Step 2: Run the tests to verify they fail**
+
+```bash
+dotnet test src/Namotion.Interceptor.Generator.Tests --filter "FullyQualifiedName~OnlyAnInitAccessorReachable"
+```
+
+Expected: both FAIL, because `"Probe"` is present in the generated source with both accessor lambdas null.
+
+- [ ] **Step 3: Move the path 1 guard below the accessor computation**
+
+The block quoted below appears **twice** in this file: at line 299 inside `CollectProperties`' explicit-implementation branch (24-space indent, body reports `MemberSkipped`), and at line 644 inside `ExtractInterfaceDefaultProperties` (16-space indent, body is a bare `continue`). This step targets **only** the line 644 occurrence. Do not touch line 299; Step 3b adds to that branch without removing its guard.
 
 In `ExtractInterfaceDefaultProperties`, delete this block:
 
@@ -525,25 +609,52 @@ to:
                 // accessors: a key that exists and does nothing. HasInit does not rescue it, being
                 // consulted only when emitting a partial property's own accessor, which an interface
                 // default never is.
-                //
-                // Skipped in silence, like any interface member generated code cannot reach: the model
-                // stays truthful with the property absent, and the interface may be third-party,
-                // leaving the subject's author no remedy to follow.
                 if (!hasGetter && !hasSetter)
                 {
                     continue;
                 }
 ```
 
+The guard's second half, why this path skips in silence, is already stated in the comment twenty lines above it in the same method. Do not restate it here.
+
 Move the `winnerByPropertyName[resolvedName] = ...` assignment and the NI0007 report so they run **after** this new guard, so a skipped property neither claims the name nor reports.
+
+- [ ] **Step 3b: Guard the path 2 branch**
+
+In `CollectProperties`' explicit-implementation branch, the accessibility narrowing already happens at the end of the `implementedMember is not null` block:
+
+```csharp
+                        hasGetter = hasGetter && isGetterAccessible;
+                        hasSetter = hasSetter && isSetterAccessible;
+                        hasInit = hasInit && isSetterAccessible;
+```
+
+Add a guard directly after it that reports and skips when nothing usable survived, mirroring the `MemberSkipped` report already in this branch rather than inventing a new diagnostic:
+
+```csharp
+                        // Narrowing can leave both emittable accessors off while hasInit survives,
+                        // which would add a key whose getter and setter lambdas are both null. Same
+                        // outcome as the inaccessible case above, so it is reported the same way.
+                        if (!hasGetter && !hasSetter)
+                        {
+                            diagnostics.Add(Diagnostic.Create(
+                                Diagnostics.MemberSkipped, location,
+                                $"{typeSymbol.Name}.{implementedMember.ContainingType.Name}.{implementedMember.Name}",
+                                "no accessor the generated code can emit remains",
+                                "declare a get or set accessor the subject's generated half can reach"));
+                            continue;
+                        }
+```
+
+Match the surrounding code's argument order and wording conventions for `MemberSkipped`; read the existing call a few lines above and follow it. Confirm the `continue` lands in the right loop.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 ```bash
-dotnet test src/Namotion.Interceptor.Generator.Tests --filter "FullyQualifiedName~WhenInterfaceDefaultHasOnlyAnInitAccessorReachable"
+dotnet test src/Namotion.Interceptor.Generator.Tests --filter "FullyQualifiedName~OnlyAnInitAccessorReachable"
 ```
 
-Expected: PASS.
+Expected: both PASS.
 
 - [ ] **Step 5: Run the full unit suite**
 
@@ -556,13 +667,18 @@ Expected: all pass and no snapshot moves. This guard only removes entries whose 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/Namotion.Interceptor.Generator/SubjectMetadataExtractor.cs src/Namotion.Interceptor.Generator.Tests/DiagnosticTests.cs
+git add src/Namotion.Interceptor.Generator/SubjectMetadataExtractor.cs src/Namotion.Interceptor.Generator.Tests/
 git commit -m "fix: drop interface properties that would emit no usable accessor
 
 A property whose only accessible accessor is init passed the reachability
 guard, because the init accessor is accessible, and then emitted both accessor
 lambdas as null: a key in Properties that exists and does nothing. The guard
-now asks whether an accessor can actually be emitted."
+now asks whether an accessor can actually be emitted.
+
+Both paths carried the defect. An adopted interface default is skipped in
+silence, as any unreachable interface member is; an explicit implementation
+the subject wrote itself is reported, matching the policy already applied to
+the inaccessible case in that same branch."
 ```
 
 ---
@@ -622,19 +738,24 @@ For `PropertyNameCollision` change `defaultSeverity: DiagnosticSeverity.Warning`
 
 In `AnalyzerReleases.Unshipped.md`, change the `Severity` column from `Warning` to `Error` for the NI0005 and NI0008 rows. Nothing is in `AnalyzerReleases.Shipped.md`, so no "Changed Rules" section is needed.
 
-- [ ] **Step 5: Fix the tests that now see an error**
+- [ ] **Step 5: Fix the remaining severity assertions**
 
-Two categories:
+Only severity assertions break. No embedded-source test fails compilation, because `GeneratorTestHost` never routes generator diagnostics into `CompilationDiagnostics` (see Global Constraints), so `RunExpectingCleanCompilation` and `RunExpectingNoWarnings` are blind to NI-rule severity.
 
-Tests asserting NI0005 or NI0008 is reported keep working, since they assert on `Id`. Only the severity assertion above changed.
+Two more assertions beyond Step 1's must change from `Warning` to `Error`:
 
-Tests whose *source* trips one of these rules now fail compilation instead of warning. Find them:
+- `DiagnosticTests.cs:663` in `WhenTwoInterfaceDefaultMembersCollideOnName_ThenNI0008IsReported`
+- `DiagnosticTests.cs:728` in `WhenTwoExplicitImplementationsInClassCollideOnName_ThenNI0008IsReported`
+
+`Assert.Equal(DiagnosticSeverity.Warning, ...)` also appears at `DiagnosticTests.cs:591` and `:619`, but those assert NI0007 and must **not** change. Check the surrounding test's asserted `Id` before editing any of them.
+
+Then confirm the two real-source sites still hold. Both are already pragma-suppressed and need no change:
 
 ```bash
-grep -rn "NI0005\|NI0008" src/Namotion.Interceptor.Generator.Tests/
+grep -rn "NI0005\|NI0008" src/
 ```
 
-For each hit in `VirtualPartialTests.cs` and `ExplicitInterfaceBehaviorTests.cs`, check whether the test calls a `RunExpecting...` helper that fails on errors. Where a test intends to exercise the shape rather than the diagnostic, add `#pragma warning disable NI0005` around the offending declaration in the embedded source, matching what `ExplicitInterfaceBehaviorTests.cs` already does. Where a test asserts the diagnostic, leave it.
+Expected: `ExplicitInterfaceBehaviorTests.cs:56/70` (`#pragma warning disable NI0008` around `CaseAASubject`) and `:93/110` (`#pragma warning disable NI0005` around `CaseADDerived`), plus the diagnostic tests. Pragma suppression works at `Error` severity, so no new pragmas are expected. If a build fails somewhere else, a real subject is in one of these shapes: fix the shape by re-listing the interface, and note it for the pull request description.
 
 - [ ] **Step 6: Run the full unit suite**
 
@@ -668,7 +789,13 @@ re-list the interface so the declaration takes the slot."
 
 **Interfaces:**
 - Consumes: `SubjectAncestry.HasInterceptorSubjectAttribute(INamedTypeSymbol? type)` returning `bool`; `SymbolExtensions.EnumerateChain(INamedTypeSymbol? type)` returning `IEnumerable<INamedTypeSymbol>`, which stops before `System.Object` and yields the passed type first; `IsNeverASubjectProperty(IPropertySymbol property)` returning `bool`, a private static already in `SubjectMetadataExtractor.cs`. All exist today.
-- Produces: `Diagnostics.DisplacesAncestorSubjectProperty`, id `NI0015`, severity `Error`, two format arguments: the subject's display string and the property name.
+- Produces: `Diagnostics.DisplacesAncestorSubjectProperty`, id `NI0015`, severity `Error`, two format arguments: `typeSymbol.Name` and the property name. Use `Name`, not the display string, matching how NI0005 formats its subject at `SubjectMetadataExtractor.cs:757`.
+
+**Known limits of the scan, to be recorded in `docs/design/generator-supported-shapes.md` by Task 6 rather than fixed here:**
+
+- `IsNeverASubjectProperty` filters only indexers and statics, not accessibility. An ancestor property the generator itself skipped as inaccessible still satisfies the predicate, so NI0015 can fire on a name the ancestor does not actually contribute.
+- Roslyn names an explicit interface implementation with its dotted form, so `ancestor.GetMembers("Bar")` does not find an ancestor's `IFoo.Bar` even though that ancestor's `DefaultProperties` key **is** `"Bar"`. A derived declaration displacing it goes unreported.
+- The scan is scoped to ancestors carrying `[InterceptorSubject]`, while tier 2 comes from `FindNearestSubjectAncestor`, which also accepts a hand-written class declaring `IInterceptorSubject`. That narrowing is deliberate, but it is narrower than the spec's justification ("no symbol query can reveal"), which holds only across assemblies. An in-source hand-written base is visible and still exempt.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -821,7 +948,84 @@ namespace Repro
     }
 ```
 
+And the positive test for the one shape where the displaced ancestor property is abstract, which is both legal and silent in C# and therefore the easiest to regress:
+
+```csharp
+    [Fact]
+    public void WhenSubjectHidesAnAbstractAncestorSubjectPropertyOverriddenByAPlainClass_ThenNI0015IsReported()
+    {
+        // Arrange: Middle is a plain class, so it contributes nothing, but its sealed override leaves
+        // 'new' as the only declaration C# permits in Derived. This compiles with zero diagnostics
+        // while Base.DefaultProperties still exposes Origin, so the displacement is silent.
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    [InterceptorSubject]
+    public abstract partial class BaseSubject
+    {
+        public abstract string Origin { get; set; }
+    }
+
+    public abstract class Middle : BaseSubject
+    {
+        public sealed override string Origin { get; set; } = ""middle"";
+    }
+
+    [InterceptorSubject]
+    public partial class DerivedSubject : Middle
+    {
+        public new partial string Origin { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+    }
+```
+
+Verified facts behind this test, so it is not weakened if it looks over-specified: an abstract property on an abstract subject does land in that subject's `DefaultProperties`; direct `new` over it without the intermediate class is `CS0534` (or `CS0533` when the derived class is abstract) and never compiles; an abstract property cannot itself be `partial` (`CS0750`); and with the intermediate class present the whole hierarchy compiles clean while `Properties["Origin"]` resolves to the ancestor with `IsIntercepted` false. The same holds across an assembly boundary.
+
+And the negative test that protects the whole feature, since Task 2's own model types depend on this shape staying silent:
+
+```csharp
+    [Fact]
+    public void WhenSubjectDeclaresANameAnAncestorOnlyAdoptedFromAnInterface_ThenNI0015IsNotReported()
+    {
+        // Arrange: the ancestor merely adopts the interface default, so it declares no member of that
+        // name and there is nothing to displace. This is the shape the precedence feature exists for.
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    public interface IHasLevel { int Level => 0; }
+
+    [InterceptorSubject]
+    public partial class Machine : IHasLevel { }
+
+    [InterceptorSubject]
+    public partial class Pump : Machine, IHasLevel
+    {
+        public partial int Level { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+    }
+```
+
+This holds because `INamedTypeSymbol.GetMembers` returns declared members only, with no inheritance flattening, and an adopted interface default is a member of the interface, not of the adopting class. Without this test the only thing catching a regression is the whole `Generator.Tests` project failing to compile.
+
 `GeneratorTestHost.Run` is used rather than `RunExpectingCleanCompilation` because these sources are expected to produce generator errors.
+
+Add `new` to the `Pump.Level` declaration in `WhenAPlainClassBetweenTwoSubjectsDeclaresTheName_ThenNI0005IsReportedAndNI0015IsNot` if the fixture emits CS0108, so the fixture is clean. It changes neither asserted diagnostic.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -892,25 +1096,24 @@ In `SubjectMetadataExtractor.cs`, add this method next to `ReportPropertiesShado
             // nothing. An explicit implementation is deliberately NOT skipped here: it lands in the
             // highest precedence tier and would flip an ancestor's intercepted property to a
             // non-intercepted interface read.
-            if (property.IsOverride || !reported.Add(property.Name))
+            if (property.IsOverride)
             {
                 continue;
             }
 
+            // Abstract ancestor properties are deliberately NOT filtered out. They reach
+            // DefaultProperties like any other, and a plain class between the two subjects can supply
+            // the override that makes a 'new' declaration below it both legal and silent.
             var isDisplacing = subjectAncestors.Any(ancestor => ancestor
                 .GetMembers(property.Name)
                 .OfType<IPropertySymbol>()
-                .Any(candidate => !IsNeverASubjectProperty(candidate) && !candidate.IsAbstract));
+                .Any(candidate => !IsNeverASubjectProperty(candidate)));
 
-            if (isDisplacing)
+            if (isDisplacing && reported.Add(property.Name))
             {
                 diagnostics.Add(Diagnostic.Create(
                     Diagnostics.DisplacesAncestorSubjectProperty, location,
                     typeSymbol.Name, property.Name));
-            }
-            else
-            {
-                reported.Remove(property.Name);
             }
         }
 
@@ -927,9 +1130,8 @@ Wire it into `Extract`, replacing:
 with:
 
 ```csharp
-        // NI0015 runs first and its names are handed to NI0005, which stands down on them: the two
-        // rules are not mutually exclusive, and NI0015 is both the more severe failure and the one
-        // whose remedy subsumes the other's.
+        // NI0015 runs first and its names are handed to NI0005, which stands down on them. The two
+        // rules are not mutually exclusive and both can match one declaration.
         var displacedNames = ReportPropertiesDisplacingAnAncestorSubject(
             typeSymbol, classProperties, location, diagnostics);
 
@@ -978,13 +1180,19 @@ dotnet test src/Namotion.Interceptor.Generator.Tests --filter "FullyQualifiedNam
 
 Expected: all five PASS.
 
+- [ ] **Step 5b: Cover the explicit-implementation form at runtime**
+
+The spec notes this form "has no precedent anywhere and needs its own runtime test", and Step 1 only asserts the diagnostic. Since the shape is now an error, the runtime model needs `#pragma warning disable NI0015` around it, which works at `Error` severity.
+
+Add to `PropertyPrecedenceTests.cs` a subject pair in that shape, suppressed, and assert what `Properties` actually reports for the colliding name, so the behaviour behind the error is recorded rather than assumed. If the shape turns out not to be expressible as a compiling test model, say so in your report and leave the diagnostic test as the only cover; do not force it.
+
 - [ ] **Step 6: Run the full unit suite**
 
 ```bash
 DiffEngine_Disabled=true dotnet test src/Namotion.Interceptor.slnx --filter "Category!=Integration"
 ```
 
-Expected: all pass and no snapshots move. NI0015 fires nowhere in this repository today, so any new error is a genuine finding: report it rather than suppressing it.
+Expected: all pass, and no snapshots move relative to the state after Task 2 (Task 2 is where snapshots change). NI0015 fires nowhere in this repository today, so any new error is a genuine finding: report it rather than suppressing it.
 
 - [ ] **Step 7: Commit**
 
@@ -1023,7 +1231,7 @@ Replace the note under "Interface Default Properties" that reads "**Note:** If a
 **Precedence across a hierarchy**, highest first: the subject's own declarations, then everything it inherits from its base subject, then the interface default implementations it adopts. An adopted default is a fallback, so a real property declared anywhere in the chain beats it, including one declared above the subject that adopted the interface.
 ```
 
-Rewrite the "New and Sealed Properties" section. Its current example fails to build under NI0005, and its claim that `new` silences the accompanying warning is wrong. The example becomes:
+Rewrite the "New and Sealed Properties" section. Its current example fails to build under NI0005. Its claim that `new` silences the accompanying **CS0108** warning is correct and pinned by `VirtualPartialTests.cs:190-197`, so keep it; what must change is any implication that `new` resolves NI0005 itself. The example becomes:
 
 ```csharp
 public interface IHuman { string Origin { get; } }
@@ -1077,6 +1285,10 @@ Delete the first two bullets under "Hierarchy gaps found while reviewing the per
 
 Add a section recording the implemented design: the three tiers and why an adopted interface default ranks last (a subject that declares nothing re-injects it over an ancestor's real property); the `DistinctBy` choice and the measured fact that `FrozenDictionary` does not preserve insertion order in general, so no part of the design may rest on enumeration order; the diagnostic policy that a shape whose defect is invisible from the declaration must not compile; and why discriminating NI0005 from NI0015 by which class declares the name was rejected, with the plain-class-between-two-subjects counterexample.
 
+Record NI0015's three known limits, copied from Task 5's Interfaces section: the accessibility gap in `IsNeverASubjectProperty`, the ancestor explicit-implementation false negative caused by Roslyn's dotted naming, and the deliberate narrowing to ancestors carrying the attribute (which leaves an in-source hand-written subject base exempt even though it is visible).
+
+Add to "Known gaps" that a base assembly compiled by an older generator keeps the inverted precedence baked into its `DefaultProperties`, so recompiling only the leaf cannot repair a hierarchy: the whole chain has to be rebuilt, and no diagnostic detects the mixed-version case.
+
 Add to "Language semantics this design depends on":
 
 ```markdown
@@ -1090,6 +1302,12 @@ GoodPump  instance=42  ((IHasLevel)i)=42  slot implemented by GoodPump.get_Level
 This is why NI0005's remedy is re-listing the interface, and it is the same rule that forces every generated subject to re-list `IInterceptorSubject`.
 
 **`Type.GetProperty(name, Public | NonPublic | Instance)` throws `AmbiguousMatchException`** when a `new` property's type differs from the one it hides. `DeclaredOnly` resolves it; the same-type case resolves on its own through the hiding rule.
+
+**`INamedTypeSymbol.GetMembers(name)` returns declared members only.** There is no inheritance flattening in the symbol API, and an interface default implementation is a member of the interface, not of the class that adopts it. This is what keeps NI0015 off the shape the precedence feature exists to support.
+
+**`#pragma warning disable NIxxxx` suppresses a generator diagnostic at `Error` severity, not only at `Warning`.** Verified against this generator. It is the only escape hatch a consumer has from NI0005, NI0008 and NI0015, and the repository's own tests depend on it.
+
+**An abstract property can be displaced, but only through a plain intermediate class.** Hiding an abstract member directly is `CS0534` in a concrete class and `CS0533` in an abstract one, and no concrete class can then derive from the latter. A plain class that overrides the member, `sealed override` in particular, makes a `new` declaration below it the only one C# permits, and the whole hierarchy compiles with no diagnostic. An abstract property also cannot be `partial` (`CS0750`). This is why NI0015 does not filter abstract candidates.
 ```
 
 - [ ] **Step 3: Update `docs/subject-guidelines.md`**
@@ -1128,13 +1346,13 @@ DiffEngine_Disabled=true dotnet test src/Namotion.Interceptor.slnx --filter "Cat
 
 Expected: all pass.
 
-- [ ] **Confirm the four intended snapshot moves and no others**
+- [ ] **Confirm the intended snapshot moves and no others**
 
 ```bash
 git diff --stat master -- "*.verified.txt"
 ```
 
-Expected: the three generator snapshots and one registry snapshot named in Task 2 Step 6, plus the class-branch `DeclaredOnly` change across the snapshots touched in Task 1. No `InterfaceDefaultPropertyTests` snapshot content change beyond `DeclaredOnly`.
+Expected: `DeclaredOnly` across the 16 snapshots touched in Task 1; the `.DistinctBy` line in the three generator snapshots named in Task 2 Step 6; and the two new snapshots added in Task 2 Step 6b. The five `InterfaceDefaultPropertyTests` snapshots must show no change beyond `DeclaredOnly`, and the registry snapshot is expected to be untouched.
 
 - [ ] **Write the pull request description**
 
@@ -1148,6 +1366,9 @@ The description must carry full migration information:
 - Remedies: for NI0005, re-list the interface in the class's base list, or rename the property when its type differs from the interface member's, since re-listing is then CS0738. For NI0015, make the ancestor property `virtual` and `override` it, or rename.
 - A note that consumers who worked around the inverted precedence by calling `AddProperties` in a constructor can now delete that call. It still works, since dynamic properties win, but it allocates a per-instance `FrozenDictionary` on every subject and uses runtime reflection.
 - A note that a project whose models are emitted into files Roslyn treats as generated (`.g.cs`, `.generated.cs`, or an `<auto-generated>` header) will not see any of these diagnostics, including the new errors.
+- That the whole hierarchy must be rebuilt, not just the consuming assembly: a base compiled by an older generator has the inverted precedence baked into its own `DefaultProperties`, and nothing detects the mixed-version case.
+- That NI0008 is reported once per subject in a chain, because the interface scan re-runs at every level, so one modelling mistake that produced N warnings now produces N errors.
+- That `#pragma warning disable` still works on all three rules at `Error` severity, and that suppressing NI0005 or NI0008 leaves an unreachable property in place rather than resolving anything.
 
 ---
 
