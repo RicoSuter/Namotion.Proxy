@@ -58,13 +58,13 @@ using System.Text.Json.Serialization;
             new Dictionary<string, SubjectPropertyMetadata>
             {
                     ["Name"] = new SubjectPropertyMetadata(
-                        typeof(Light).GetProperty(nameof(Name), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(Light).GetProperty(nameof(Name), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((Light)o).Name,
                         (o, v) => ((Light)o).Name = (string)v,
                         isIntercepted: true,
                         isDynamic: false),
                     ["On"] = new SubjectPropertyMetadata(
-                        typeof(Light).GetProperty(nameof(On), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(Light).GetProperty(nameof(On), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((Light)o).On,
                         (o, v) => ((Light)o).On = (bool)v,
                         isIntercepted: true,
@@ -193,7 +193,7 @@ using System.Text.Json.Serialization;
             new Dictionary<string, SubjectPropertyMetadata>
             {
                     ["Brightness"] = new SubjectPropertyMetadata(
-                        typeof(DimmableLight).GetProperty(nameof(Brightness), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(DimmableLight).GetProperty(nameof(Brightness), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((DimmableLight)o).Brightness,
                         (o, v) => ((DimmableLight)o).Brightness = (double)v,
                         isIntercepted: true,

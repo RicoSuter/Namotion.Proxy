@@ -58,7 +58,7 @@ using System.Text.Json.Serialization;
             new Dictionary<string, SubjectPropertyMetadata>
             {
                     ["Name"] = new SubjectPropertyMetadata(
-                        typeof(BaseEntity).GetProperty(nameof(Name), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(BaseEntity).GetProperty(nameof(Name), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((BaseEntity)o).Name,
                         (o, v) => ((BaseEntity)o).Name = (string)v,
                         isIntercepted: true,
@@ -162,13 +162,13 @@ using System.Text.Json.Serialization;
             new Dictionary<string, SubjectPropertyMetadata>
             {
                     ["Name"] = new SubjectPropertyMetadata(
-                        typeof(Person).GetProperty(nameof(Name), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(Person).GetProperty(nameof(Name), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((Person)o).Name,
                         (o, v) => ((Person)o).Name = (string)v,
                         isIntercepted: true,
                         isDynamic: false),
                     ["Age"] = new SubjectPropertyMetadata(
-                        typeof(Person).GetProperty(nameof(Age), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(Person).GetProperty(nameof(Age), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((Person)o).Age,
                         (o, v) => ((Person)o).Age = (int)v,
                         isIntercepted: true,
@@ -270,7 +270,7 @@ using System.Text.Json.Serialization;
             new Dictionary<string, SubjectPropertyMetadata>
             {
                     ["Age"] = new SubjectPropertyMetadata(
-                        typeof(Employee).GetProperty(nameof(Age), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(Employee).GetProperty(nameof(Age), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((Employee)o).Age,
                         (o, v) => ((Employee)o).Age = (int)v,
                         isIntercepted: true,

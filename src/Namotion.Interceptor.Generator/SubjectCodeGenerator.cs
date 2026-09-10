@@ -251,7 +251,10 @@ internal static class SubjectCodeGenerator
                     : "null";
 
                 builder.AppendLine($"                    [\"{property.Name}\"] = new SubjectPropertyMetadata(");
-                builder.AppendLine($"                        typeof({metadata.ClassName}).GetProperty(nameof({property.Name}), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,");
+                // DeclaredOnly because a 'new' property whose type differs from the one it hides makes
+                // the unfiltered lookup ambiguous, which throws at type init. Every property reaching
+                // this branch came from the subject's own declarations, so the filter drops nothing.
+                builder.AppendLine($"                        typeof({metadata.ClassName}).GetProperty(nameof({property.Name}), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,");
                 builder.AppendLine($"                        {getterLambda},");
                 builder.AppendLine($"                        {setterLambda},");
                 builder.AppendLine($"                        isIntercepted: {(property.IsPartial ? "true" : "false")},");
