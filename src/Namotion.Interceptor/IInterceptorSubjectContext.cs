@@ -39,8 +39,15 @@ public interface IInterceptorSubjectContext
     /// <summary>
     /// Retrieves a service of the specified type, or null if not registered.
     /// </summary>
+    /// <remarks>
+    /// The <c>Try</c> prefix describes the zero-service result only; it is not a no-throw guarantee.
+    /// </remarks>
     /// <typeparam name="TInterface">The type of service to retrieve.</typeparam>
     /// <returns>The service instance, or null if not found.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// The requested singular service has several matches, the delegation chain is cyclic, or an
+    /// unrelated unique authority in the resolved context cone has several distinct instances.
+    /// </exception>
     TInterface? TryGetService<TInterface>();
 
     /// <summary>
@@ -56,7 +63,10 @@ public interface IInterceptorSubjectContext
     /// </remarks>
     /// <typeparam name="TInterface">The type of services to retrieve.</typeparam>
     /// <returns>An immutable array of all matching services.</returns>
-    /// <exception cref="InvalidOperationException">The fallback contexts form a delegation cycle.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The delegation chain is cyclic, or a unique authority in the resolved context cone has
+    /// several distinct instances, including an authority unrelated to <typeparamref name="TInterface"/>.
+    /// </exception>
     ImmutableArray<TInterface> GetServices<TInterface>();
 
     /// <summary>

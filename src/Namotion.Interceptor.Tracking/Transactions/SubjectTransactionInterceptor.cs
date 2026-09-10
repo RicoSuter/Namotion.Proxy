@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using Namotion.Interceptor.Attributes;
 using Namotion.Interceptor.Interceptors;
@@ -12,7 +11,10 @@ namespace Namotion.Interceptor.Tracking.Transactions;
 /// Also manages the per-context transaction lock for serialized transactions.
 /// </summary>
 [RunsBefore(typeof(DerivedPropertyChangeHandler))]
-public sealed class SubjectTransactionInterceptor : IReadInterceptor, IWriteInterceptor
+public sealed class SubjectTransactionInterceptor :
+    IReadInterceptor,
+    IWriteInterceptor,
+    IUniqueContextService<SubjectTransactionInterceptor>
 {
     private readonly SemaphoreSlim _exclusiveTransactionLock = new(1, 1);
 
@@ -109,13 +111,10 @@ public sealed class SubjectTransactionInterceptor : IReadInterceptor, IWriteInte
             return;
         }
 
-        var subjectInterceptors = context.Property.Subject.Context
-            .GetServices<SubjectTransactionInterceptor>();
-        var isBoundToThisContext = subjectInterceptors.Length == 1
-            ? ReferenceEquals(subjectInterceptors[0], transaction.Interceptor)
-            : ContainsByReference(subjectInterceptors, transaction.Interceptor);
+        var subjectInterceptor = context.Property.Subject.Context
+            .TryGetService<SubjectTransactionInterceptor>();
 
-        if (!isBoundToThisContext)
+        if (!ReferenceEquals(subjectInterceptor, transaction.Interceptor))
         {
             throw new InvalidOperationException(
                 $"Cannot modify property '{context.Property.Metadata.Name}': Transaction is bound to a different context.");
@@ -138,22 +137,6 @@ public sealed class SubjectTransactionInterceptor : IReadInterceptor, IWriteInte
         }
 
         next(ref context);
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool ContainsByReference(
-        ImmutableArray<SubjectTransactionInterceptor> interceptors,
-        SubjectTransactionInterceptor target)
-    {
-        for (var index = 0; index < interceptors.Length; index++)
-        {
-            if (ReferenceEquals(interceptors[index], target))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private sealed class LockReleaser(SemaphoreSlim semaphore) : IDisposable

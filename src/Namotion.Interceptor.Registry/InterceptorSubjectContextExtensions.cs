@@ -1,5 +1,7 @@
 ﻿using Namotion.Interceptor.Tracking;
 
+using Namotion.Interceptor.Registry.Abstractions;
+
 namespace Namotion.Interceptor.Registry;
 
 public static class InterceptorSubjectContextExtensions
@@ -12,7 +14,7 @@ public static class InterceptorSubjectContextExtensions
     public static IInterceptorSubjectContext WithRegistry(this IInterceptorSubjectContext context)
     {
         context
-            .TryAddService(() => new SubjectRegistry(), _ => true);
+            .TryAddService<ISubjectRegistry>(() => new SubjectRegistry(), _ => true);
 
         return context
             .WithContextInheritance();

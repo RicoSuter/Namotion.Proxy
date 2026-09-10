@@ -328,11 +328,13 @@ public class SourceWaitResultTests
         // with every reachable monitor, making the aggregation idempotent rather than tested.
         // Varying which monitor carries the failure rules out folding to one fixed constituent, and
         // varying which settles last rules out first-to-complete and last-to-complete winning.
-        var parent = InterceptorSubjectContext.Create()
-            .WithFullPropertyTracking()
-            .WithLifecycle()
-            .WithSourceMonitoring();
-        var child = InterceptorSubjectContext.Create().WithSourceMonitoring();
+        var lifecycle = new LifecycleInterceptor();
+        var parent = InterceptorSubjectContext.Create();
+        var child = InterceptorSubjectContext.Create();
+        parent.AddService(lifecycle);
+        child.AddService(lifecycle);
+        parent.WithFullPropertyTracking().WithSourceMonitoring();
+        child.WithSourceMonitoring();
         child.AddFallbackContext(parent);
 
         var parentMonitor = parent.GetSourceMonitor();
@@ -381,11 +383,13 @@ public class SourceWaitResultTests
         // the transient satisfaction below has been withdrawn, and it would block forever. Which
         // monitor comes first in the aggregation is an implementation detail, so both placements run:
         // whichever order holds, one of them puts the transient source second and would hang.
-        var parent = InterceptorSubjectContext.Create()
-            .WithFullPropertyTracking()
-            .WithLifecycle()
-            .WithSourceMonitoring();
-        var child = InterceptorSubjectContext.Create().WithSourceMonitoring();
+        var lifecycle = new LifecycleInterceptor();
+        var parent = InterceptorSubjectContext.Create();
+        var child = InterceptorSubjectContext.Create();
+        parent.AddService(lifecycle);
+        child.AddService(lifecycle);
+        parent.WithFullPropertyTracking().WithSourceMonitoring();
+        child.WithSourceMonitoring();
         child.AddFallbackContext(parent);
 
         var parentMonitor = parent.GetSourceMonitor();

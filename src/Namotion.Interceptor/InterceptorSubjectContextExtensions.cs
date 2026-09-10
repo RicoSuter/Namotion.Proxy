@@ -41,7 +41,11 @@ public static class InterceptorSubjectContextExtensions
     /// <typeparam name="TService">The type of service to retrieve.</typeparam>
     /// <param name="context">The subject context.</param>
     /// <returns>The service instance.</returns>
-    /// <exception cref="InvalidOperationException">Thrown if the service is not registered.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The service is not registered, the requested singular service has several matches, the
+    /// delegation chain is cyclic, or an unrelated unique authority in the resolved context cone
+    /// has several distinct instances.
+    /// </exception>
     public static TService GetService<TService>(this IInterceptorSubjectContext context)
     {
         return context.TryGetService<TService>()

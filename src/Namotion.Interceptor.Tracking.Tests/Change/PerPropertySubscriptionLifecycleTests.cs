@@ -3,6 +3,7 @@ using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Testing;
 using Namotion.Interceptor.Tracking.Change;
+using Namotion.Interceptor.Tracking.Lifecycle;
 using Namotion.Interceptor.Tracking.Transactions;
 using Namotion.Interceptor.Tracking.Tests.Models;
 
@@ -110,9 +111,14 @@ public class PerPropertySubscriptionLifecycleTests
     [Fact]
     public void WhenTwoAggregatedInterceptors_ThenListenerDeliversExactlyOnce()
     {
-        // Arrange: a subject whose context aggregates two full-tracking contexts.
-        var parent = InterceptorSubjectContext.Create().WithFullPropertyTracking();
-        var childCtx = InterceptorSubjectContext.Create().WithFullPropertyTracking();
+        // Arrange: a subject whose context aggregates two property-change interceptors under one lifecycle.
+        var lifecycle = new LifecycleInterceptor();
+        var parent = InterceptorSubjectContext.Create();
+        var childCtx = InterceptorSubjectContext.Create();
+        parent.AddService(lifecycle);
+        childCtx.AddService(lifecycle);
+        parent.WithFullPropertyTracking();
+        childCtx.WithFullPropertyTracking();
         childCtx.AddFallbackContext(parent);
         var person = new Person(childCtx);
         var hits = 0;
@@ -132,7 +138,8 @@ public class PerPropertySubscriptionLifecycleTests
         // the target-side [RunsAfter] ordering (PropertyChangeInterceptor after SubjectTransactionInterceptor):
         // staged writes stay silent during capture and replay once at commit. The aggregated counterpart is
         // WhenAggregatedWithSingleTransactionContext...; only the symmetric aggregation (both contexts
-        // .WithTransactions()) is inexpressible, because capture's TryGetService<SubjectTransactionInterceptor>
+        // .WithTransactions()) is inexpressible only when both contexts independently configure
+        // transaction authorities, because capture's TryGetService<SubjectTransactionInterceptor>
         // throws when two aggregated contexts each contribute one.
         var context = InterceptorSubjectContext.Create().WithFullPropertyTracking().WithTransactions();
         var person = new Person(context);
@@ -158,15 +165,20 @@ public class PerPropertySubscriptionLifecycleTests
     [Fact]
     public async Task WhenAggregatedWithSingleTransactionContext_ThenStagedWritesStaySilentAndDeliverOnceAtCommit()
     {
-        // Arrange: an ASYMMETRIC aggregation. A symmetric one (both contexts .WithTransactions()) cannot be
-        // expressed because capture resolves the interceptor via TryGetService, which throws when two
-        // aggregated contexts each contribute a SubjectTransactionInterceptor. Here only the parent fallback
+        // Arrange: an ASYMMETRIC aggregation. An aggregation where both contexts independently configure
+        // transactions cannot be expressed because capture resolves the interceptor via TryGetService, which
+        // throws when two aggregated contexts each contribute a SubjectTransactionInterceptor. Here only the parent fallback
         // adds transactions, so SubjectTransactionInterceptor resolves to exactly one instance while
         // PropertyChangeInterceptor aggregates to two (one per context). This pins the target-side
         // [RunsAfter] ordering across aggregated change interceptors: neither aggregated instance leaks a
         // staged write to a per-property listener during capture, and commit replay delivers exactly once.
-        var child = InterceptorSubjectContext.Create().WithFullPropertyTracking();
-        var parent = InterceptorSubjectContext.Create().WithFullPropertyTracking().WithTransactions();
+        var lifecycle = new LifecycleInterceptor();
+        var child = InterceptorSubjectContext.Create();
+        var parent = InterceptorSubjectContext.Create();
+        child.AddService(lifecycle);
+        parent.AddService(lifecycle);
+        child.WithFullPropertyTracking();
+        parent.WithFullPropertyTracking().WithTransactions();
         child.AddFallbackContext(parent);
         var person = new Person(child);
         var hits = 0;
@@ -449,10 +461,15 @@ public class PerPropertySubscriptionLifecycleTests
     [Fact]
     public void WhenAggregatedContextsAssignSubject_ThenNewChildIsAttachedAtCallbackTime()
     {
-        // Arrange: the ordering edge must bind to every LifecycleInterceptor instance, not just
-        // one, when a context aggregates a fallback context that also registers tracking.
-        var parentContext = InterceptorSubjectContext.Create().WithFullPropertyTracking().WithRegistry();
-        var childContext = InterceptorSubjectContext.Create().WithFullPropertyTracking();
+        // Arrange: the ordering edge must bind the aggregated change interceptors to the shared
+        // lifecycle authority when a fallback context also registers tracking.
+        var lifecycle = new LifecycleInterceptor();
+        var parentContext = InterceptorSubjectContext.Create();
+        var childContext = InterceptorSubjectContext.Create();
+        parentContext.AddService(lifecycle);
+        childContext.AddService(lifecycle);
+        parentContext.WithFullPropertyTracking().WithRegistry();
+        childContext.WithFullPropertyTracking();
         childContext.AddFallbackContext(parentContext);
         var root = new Person(childContext);
         var child = new Person();

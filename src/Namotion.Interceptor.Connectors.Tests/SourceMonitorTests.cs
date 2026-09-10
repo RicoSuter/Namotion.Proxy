@@ -366,8 +366,13 @@ public class SourceMonitorTests
     public void WhenTwoMonitorsAreReachable_ThenGetSourceMonitorThrows()
     {
         // Arrange
-        var parent = InterceptorSubjectContext.Create().WithFullPropertyTracking().WithLifecycle().WithSourceMonitoring();
-        var child = InterceptorSubjectContext.Create().WithSourceMonitoring();
+        var lifecycle = new LifecycleInterceptor();
+        var parent = InterceptorSubjectContext.Create();
+        var child = InterceptorSubjectContext.Create();
+        parent.AddService(lifecycle);
+        child.AddService(lifecycle);
+        parent.WithFullPropertyTracking().WithSourceMonitoring();
+        child.WithSourceMonitoring();
         child.AddFallbackContext(parent);
 
         // Act & Assert

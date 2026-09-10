@@ -85,32 +85,27 @@ public class SubjectTransactionTests
     }
 
     [Fact]
-    public async Task WhenTheBoundTransactionInterceptorIsInheritedAndSecond_ThenTheWriteIsCapturedInsteadOfThrowing()
+    public async Task WhenTwoTransactionInterceptorsResolveForAWrite_ThenItFailsBeforeTheSetterRuns()
     {
-        // Arrange: context inheritance adds another context as a fallback on attach, so a subject built on
-        // one transaction-enabled context and attached into a graph rooted on another resolves two. The
-        // subject's own interceptor is first and the fallback's interceptor is second, so binding must scan
-        // all resolved instances by reference rather than accepting only the first one.
-        var context = CreateTransactionContext();
-        var fallbackContext = CreateTransactionContext();
+        // Arrange
+        var subjectContext = InterceptorSubjectContext.Create().WithTransactions();
+        var transactionContext = InterceptorSubjectContext.Create().WithTransactions();
+        var person = new Person(subjectContext);
+        ((IInterceptorSubject)person).Context.AddFallbackContext(transactionContext);
 
-        var person = new Person(context);
-        ((IInterceptorSubject)person).Context.AddFallbackContext(fallbackContext);
+        using var transaction = await transactionContext.BeginTransactionAsync(
+            TransactionFailureHandling.BestEffort);
 
         // Act
-        using (var transaction = await fallbackContext.BeginTransactionAsync(TransactionFailureHandling.BestEffort))
-        {
-            person.FirstName = "John";
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => person.FirstName = "John");
 
-            // Assert: captured rather than written straight through, so the binding resolved to this
-            // context. Reading the property here would serve the pending value either way.
-            Assert.Single(transaction.GetPendingChanges(),
-                change => change.Property.Name == nameof(Person.FirstName));
+        ((IInterceptorSubject)person).Context.RemoveFallbackContext(transactionContext);
 
-            await transaction.CommitAsync(CancellationToken.None);
-        }
-
-        Assert.Equal("John", person.FirstName);
+        // Assert
+        Assert.Contains(typeof(SubjectTransactionInterceptor).FullName!, exception.Message);
+        Assert.Empty(transaction.GetPendingChanges());
+        Assert.Null(person.FirstName);
     }
 
     [Fact]

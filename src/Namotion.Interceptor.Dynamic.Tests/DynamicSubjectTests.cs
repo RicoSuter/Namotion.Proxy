@@ -72,7 +72,8 @@ public class DynamicSubjectTests
         var context = InterceptorSubjectContext
             .Create()
             .WithService(() => new TestInterceptor("a", logs), _ => false)
-            .WithService(() => new TestInterceptor("b", logs), _ => false);
+            .WithService(() => new TestInterceptor("b", logs), _ => false)
+            .WithService(() => new TestLifecycleInterceptor("lifecycle", logs), _ => false);
 
         var subject = DynamicSubjectFactory.CreateDynamicSubject(typeof(IMotor), typeof(ISensor));
         subject.Context.AddFallbackContext(context);
@@ -133,7 +134,7 @@ public class DynamicSubjectTests
         Assert.Equal(["Speed", "Temperature"], propertyNames);
     }
 
-    public class TestInterceptor : IReadInterceptor, IWriteInterceptor, ILifecycleInterceptor
+    public class TestInterceptor : IReadInterceptor, IWriteInterceptor
     {
         private readonly string _name;
         private readonly List<string> _logs;
@@ -158,6 +159,19 @@ public class DynamicSubjectTests
             context.NewValue = (TProperty)(object)((int)((object)context.NewValue!) + 1);
             next(ref context);
             _logs.Add($"{_name}: After write {context.Property.Name}");
+        }
+
+    }
+
+    public class TestLifecycleInterceptor : ILifecycleInterceptor
+    {
+        private readonly List<string> _logs;
+        private readonly string _name;
+
+        public TestLifecycleInterceptor(string name, List<string> logs)
+        {
+            _logs = logs;
+            _name = name;
         }
 
         public void AttachSubjectToContext(IInterceptorSubject subject)

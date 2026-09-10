@@ -12,7 +12,7 @@ namespace Namotion.Interceptor.Registry.Abstractions
     {
         void InitializeProperty(Namotion.Interceptor.Registry.Abstractions.RegisteredSubjectProperty property);
     }
-    public interface ISubjectRegistry
+    public interface ISubjectRegistry : Namotion.Interceptor.IUniqueContextService<Namotion.Interceptor.Registry.Abstractions.ISubjectRegistry>
     {
         System.Collections.Generic.IReadOnlyDictionary<Namotion.Interceptor.IInterceptorSubject, Namotion.Interceptor.Registry.Abstractions.RegisteredSubject> KnownSubjects { get; }
         Namotion.Interceptor.Registry.Abstractions.RegisteredSubject? TryGetRegisteredSubject(Namotion.Interceptor.IInterceptorSubject subject);
@@ -107,7 +107,7 @@ namespace Namotion.Interceptor.Registry
     [Namotion.Interceptor.Attributes.RunsBefore(new System.Type[] {
             typeof(Namotion.Interceptor.Tracking.Parent.ParentTrackingHandler),
             typeof(Namotion.Interceptor.Tracking.Lifecycle.ContextInheritanceHandler)})]
-    public class SubjectRegistry : Namotion.Interceptor.Registry.Abstractions.ISubjectIdRegistry, Namotion.Interceptor.Registry.Abstractions.ISubjectRegistry, Namotion.Interceptor.Tracking.Lifecycle.ILifecycleHandler, Namotion.Interceptor.Tracking.Lifecycle.IPropertyLifecycleHandler
+    public class SubjectRegistry : Namotion.Interceptor.IUniqueContextService<Namotion.Interceptor.Registry.Abstractions.ISubjectRegistry>, Namotion.Interceptor.Registry.Abstractions.ISubjectIdRegistry, Namotion.Interceptor.Registry.Abstractions.ISubjectRegistry, Namotion.Interceptor.Tracking.Lifecycle.ILifecycleHandler, Namotion.Interceptor.Tracking.Lifecycle.IPropertyLifecycleHandler
     {
         public SubjectRegistry() { }
         public System.Collections.Generic.IReadOnlyDictionary<Namotion.Interceptor.IInterceptorSubject, Namotion.Interceptor.Registry.Abstractions.RegisteredSubject> KnownSubjects { get; }

@@ -1,5 +1,6 @@
 ﻿using System.Reactive.Concurrency;
 using System.Reactive.Linq;
+using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Tracking.Change;
 using Namotion.Interceptor.Tracking.Lifecycle;
 using Namotion.Interceptor.Tracking.Parent;
@@ -159,8 +160,8 @@ public static class InterceptorSubjectContextExtensions
     /// <returns>The collection.</returns>
     public static IInterceptorSubjectContext WithLifecycle(this IInterceptorSubjectContext context)
     {
-        return context
-            .WithService(() => new LifecycleInterceptor());
+        context.TryAddService<ILifecycleInterceptor>(() => new LifecycleInterceptor(), _ => true);
+        return context;
     }
     
     /// <summary>

@@ -79,6 +79,7 @@ namespace Namotion.Interceptor
     {
         void RaisePropertyChanged(string propertyName);
     }
+    public interface IUniqueContextService<TContract> { }
     public class InterceptorSubjectContext : Namotion.Interceptor.IInterceptorSubjectContext
     {
         public virtual bool AddFallbackContext(Namotion.Interceptor.IInterceptorSubjectContext context) { }
@@ -179,7 +180,7 @@ namespace Namotion.Interceptor.Interceptors
         object? InvokeMethod(string methodName, object?[] parameters, System.Func<Namotion.Interceptor.IInterceptorSubject, object?[], object?> invokeMethod);
         bool SetPropertyValue<TProperty>(string propertyName, TProperty newValue, TProperty currentValue, System.Action<Namotion.Interceptor.IInterceptorSubject, TProperty> writeValue);
     }
-    public interface ILifecycleInterceptor
+    public interface ILifecycleInterceptor : Namotion.Interceptor.IUniqueContextService<Namotion.Interceptor.Interceptors.ILifecycleInterceptor>
     {
         void AttachSubjectToContext(Namotion.Interceptor.IInterceptorSubject subject);
         void DetachSubjectFromContext(Namotion.Interceptor.IInterceptorSubject subject);

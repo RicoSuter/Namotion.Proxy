@@ -46,6 +46,14 @@ var registry = context.TryGetService<SubjectRegistry>();
 
 Services are cached after first resolution. The cache is invalidated when services or fallback contexts change.
 
+### Unique authorities
+
+Some context services are singular authorities, determined by reference identity. Validation covers
+unrelated services in the complete fallback cone, so `TryGetService<T>()` can throw for
+singular-service ambiguity, delegation cycles, or unique authority conflicts. One shared context
+remains the recommended setup for the common case. See [Context service cardinality](design/context-cardinality.md)
+for the full contract.
+
 ## Fallback Contexts
 
 Contexts can be linked in a hierarchy where child contexts inherit services from parent contexts:

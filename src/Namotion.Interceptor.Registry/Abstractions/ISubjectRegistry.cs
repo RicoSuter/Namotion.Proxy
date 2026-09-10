@@ -3,7 +3,7 @@
 /// <summary>
 /// A registry which tracks subjects and their child subjects, property attributes and additional metadata.
 /// </summary>
-public interface ISubjectRegistry
+public interface ISubjectRegistry : IUniqueContextService<ISubjectRegistry>
 {
     /// <summary>
     /// Gets all known registered subjects.

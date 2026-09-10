@@ -60,6 +60,16 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
     private static HashSet<InterceptorSubjectContext>? _serviceQueryVisited;
 
     [ThreadStatic]
+    private static HashSet<InterceptorSubjectContext>? _uniqueServiceValidationVisited;
+
+    [ThreadStatic]
+    private static List<(InterceptorSubjectContext Context, ContextState State)>?
+        _uniqueServiceValidationPending;
+
+    [ThreadStatic]
+    private static Dictionary<Type, object>? _uniqueServiceValidationAuthorities;
+
+    [ThreadStatic]
     private static HashSet<InterceptorSubjectContext>? _delegationCycleVisited;
 
     [ThreadStatic]
@@ -551,6 +561,8 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
             return ImmutableArray<TInterface>.Empty;
         }
 
+        ValidateUniqueContextServices(state);
+
         var serviceCache = state.GetServiceCache();
         if (serviceCache.TryGetValue(typeof(TInterface), out var cachedServices))
         {
@@ -561,6 +573,104 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
 
         // The two-argument GetOrAdd canonicalizes racing computations without a closure allocation.
         return (ImmutableArray<TInterface>)serviceCache.GetOrAdd(typeof(TInterface), services);
+    }
+
+    private void ValidateUniqueContextServices(ContextState state)
+    {
+        if (state.AreUniqueContextServicesValidated)
+        {
+            return;
+        }
+
+        var visited = _uniqueServiceValidationVisited ??= [];
+        var pending = _uniqueServiceValidationPending ??= [];
+        var authorities = _uniqueServiceValidationAuthorities ??= [];
+        pending.Add((this, state));
+
+        try
+        {
+            while (pending.Count > 0)
+            {
+                var lastIndex = pending.Count - 1;
+                var entry = pending[lastIndex];
+                pending.RemoveAt(lastIndex);
+                if (!visited.Add(entry.Context))
+                {
+                    continue;
+                }
+
+                foreach (var service in entry.State.Services)
+                {
+                    if (service is null)
+                    {
+                        continue;
+                    }
+
+                    foreach (var contract in UniqueContextServiceMetadata.GetContracts(service.GetType()))
+                    {
+                        if (authorities.TryGetValue(contract, out var existing))
+                        {
+                            if (!ReferenceEquals(existing, service))
+                            {
+                                throw new InvalidOperationException(
+                                    $"Context service contract '{contract.FullName}' must resolve to at most one distinct " +
+                                    $"instance, but '{existing.GetType().FullName}' and " +
+                                    $"'{service.GetType().FullName}' were found.");
+                            }
+                        }
+                        else
+                        {
+                            authorities.Add(contract, service);
+                        }
+                    }
+                }
+
+                for (var index = entry.State.FallbackContexts.Length - 1; index >= 0; index--)
+                {
+                    var fallback = entry.State.FallbackContexts[index];
+                    pending.Add((fallback, Volatile.Read(ref fallback._state)));
+                }
+            }
+
+            state.MarkUniqueContextServicesValidated();
+        }
+        finally
+        {
+            ReleaseUniqueServiceValidationBuffers(visited, pending, authorities);
+        }
+    }
+
+    private static void ReleaseUniqueServiceValidationBuffers(
+        HashSet<InterceptorSubjectContext> visited,
+        List<(InterceptorSubjectContext Context, ContextState State)> pending,
+        Dictionary<Type, object> authorities)
+    {
+        if (visited.Count > MaximumRetainedTraversalSize)
+        {
+            _uniqueServiceValidationVisited = null;
+        }
+        else
+        {
+            visited.Clear();
+        }
+
+        if (pending.Capacity > MaximumRetainedTraversalSize)
+        {
+            _uniqueServiceValidationPending = null;
+        }
+        else
+        {
+            pending.Clear();
+        }
+
+        if (authorities.Count > MaximumRetainedTraversalSize)
+        {
+            _uniqueServiceValidationAuthorities = null;
+        }
+        else
+        {
+            authorities.Clear();
+        }
     }
 
     private ImmutableArray<TInterface> ComputeServices<TInterface>(ContextState state)
@@ -959,6 +1069,8 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
         private Delegate?[]? _readFunctions;
         private Delegate?[]? _writeFunctions;
 
+        private int _areUniqueContextServicesValidated;
+
         // The context this state's chain ends on, or CyclicDelegationMarker when it runs in a
         // circle. Null until first walked. A context and never a state: a context's state is
         // replaced whenever anything below it changes, so a cached state would serve an abandoned
@@ -973,6 +1085,12 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
         }
 
         internal bool IsEmpty => Services.IsEmpty && FallbackContexts.IsEmpty;
+
+        internal bool AreUniqueContextServicesValidated =>
+            Volatile.Read(ref _areUniqueContextServicesValidated) != 0;
+
+        internal void MarkUniqueContextServicesValidated() =>
+            Volatile.Write(ref _areUniqueContextServicesValidated, 1);
 
         internal InterceptorSubjectContext? ResolvedTerminal
         {

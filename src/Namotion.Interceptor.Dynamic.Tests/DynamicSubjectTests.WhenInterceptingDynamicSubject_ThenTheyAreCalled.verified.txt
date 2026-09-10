@@ -1,6 +1,5 @@
 ﻿[
-  a: Attached,
-  b: Attached,
+  lifecycle: Attached,
   a: Before write Speed,
   b: Before write Speed,
   b: After write Speed,
@@ -17,6 +16,5 @@
   b: Before read Temperature,
   b: After read Temperature,
   a: After read Temperature,
-  a: Detached,
-  b: Detached
+  lifecycle: Detached
 ]

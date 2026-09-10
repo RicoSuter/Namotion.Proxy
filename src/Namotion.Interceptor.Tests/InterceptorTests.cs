@@ -93,8 +93,7 @@ public class InterceptorTests
         
         var context = InterceptorSubjectContext
             .Create()
-            .WithService(() => new TestLifecycleInterceptor("a", logs), _ => false)
-            .WithService(() => new TestLifecycleInterceptor("b", logs), _ => false);
+            .WithService(() => new TestLifecycleInterceptor("lifecycle", logs), _ => false);
         
         // Act
         var car = new Car(context);

@@ -165,7 +165,7 @@ namespace Namotion.Interceptor.Tracking.Lifecycle
         void DetachProperty(Namotion.Interceptor.Tracking.Lifecycle.SubjectPropertyLifecycleChange change);
         void RefreshCollectionProperty(Namotion.Interceptor.PropertyReference property, object? value);
     }
-    public class LifecycleInterceptor : Namotion.Interceptor.Interceptors.ILifecycleInterceptor, Namotion.Interceptor.Interceptors.IWriteInterceptor
+    public class LifecycleInterceptor : Namotion.Interceptor.IUniqueContextService<Namotion.Interceptor.Interceptors.ILifecycleInterceptor>, Namotion.Interceptor.Interceptors.ILifecycleInterceptor, Namotion.Interceptor.Interceptors.IWriteInterceptor
     {
         public LifecycleInterceptor() { }
         public event System.Action<Namotion.Interceptor.Tracking.Lifecycle.SubjectLifecycleChange>? SubjectAttached;
@@ -297,7 +297,7 @@ namespace Namotion.Interceptor.Tracking.Transactions
     }
     [Namotion.Interceptor.Attributes.RunsBefore(new System.Type[] {
             typeof(Namotion.Interceptor.Tracking.Change.DerivedPropertyChangeHandler)})]
-    public sealed class SubjectTransactionInterceptor : Namotion.Interceptor.Interceptors.IReadInterceptor, Namotion.Interceptor.Interceptors.IWriteInterceptor
+    public sealed class SubjectTransactionInterceptor : Namotion.Interceptor.IUniqueContextService<Namotion.Interceptor.Tracking.Transactions.SubjectTransactionInterceptor>, Namotion.Interceptor.Interceptors.IReadInterceptor, Namotion.Interceptor.Interceptors.IWriteInterceptor
     {
         public SubjectTransactionInterceptor() { }
         public TProperty ReadProperty<TProperty>(ref Namotion.Interceptor.Interceptors.PropertyReadContext<TProperty> context, Namotion.Interceptor.Interceptors.ReadInterceptionDelegate<TProperty> next) { }

@@ -242,11 +242,13 @@ public class SourceWaitTests
     public void WhenTwoMonitorsAreReachable_ThenCompleteSourceRegistrationSignalsAll()
     {
         // Arrange
-        var parent = InterceptorSubjectContext.Create()
-            .WithFullPropertyTracking()
-            .WithLifecycle()
-            .WithSourceMonitoring();
-        var child = InterceptorSubjectContext.Create().WithSourceMonitoring();
+        var lifecycle = new LifecycleInterceptor();
+        var parent = InterceptorSubjectContext.Create();
+        var child = InterceptorSubjectContext.Create();
+        parent.AddService(lifecycle);
+        child.AddService(lifecycle);
+        parent.WithFullPropertyTracking().WithSourceMonitoring();
+        child.WithSourceMonitoring();
         child.AddFallbackContext(parent);
 
         var parentMonitor = parent.GetSourceMonitor();
@@ -264,11 +266,13 @@ public class SourceWaitTests
     public void WhenDeferWaitCompletionIsCalledWithTwoMonitors_ThenBothHoldsAreReleased()
     {
         // Arrange
-        var parent = InterceptorSubjectContext.Create()
-            .WithFullPropertyTracking()
-            .WithLifecycle()
-            .WithSourceMonitoring();
-        var child = InterceptorSubjectContext.Create().WithSourceMonitoring();
+        var lifecycle = new LifecycleInterceptor();
+        var parent = InterceptorSubjectContext.Create();
+        var child = InterceptorSubjectContext.Create();
+        parent.AddService(lifecycle);
+        child.AddService(lifecycle);
+        parent.WithFullPropertyTracking().WithSourceMonitoring();
+        child.WithSourceMonitoring();
         child.AddFallbackContext(parent);
 
         var parentMonitor = parent.GetSourceMonitor();
@@ -782,11 +786,13 @@ public class SourceWaitTests
     public void WhenOneMonitorsReleaseThrows_ThenTheOtherMonitorIsStillReleased()
     {
         // Arrange
-        var parent = InterceptorSubjectContext.Create()
-            .WithFullPropertyTracking()
-            .WithLifecycle()
-            .WithSourceMonitoring();
-        var child = InterceptorSubjectContext.Create().WithSourceMonitoring();
+        var lifecycle = new LifecycleInterceptor();
+        var parent = InterceptorSubjectContext.Create();
+        var child = InterceptorSubjectContext.Create();
+        parent.AddService(lifecycle);
+        child.AddService(lifecycle);
+        parent.WithFullPropertyTracking().WithSourceMonitoring();
+        child.WithSourceMonitoring();
         child.AddFallbackContext(parent);
 
         var parentMonitor = parent.GetSourceMonitor();
@@ -897,4 +903,3 @@ internal sealed class PoisonAnchor(IInterceptorSubjectContext context) : IInterc
     public void AddProperties(params IEnumerable<SubjectPropertyMetadata> properties) =>
         throw new NotSupportedException();
 }
-

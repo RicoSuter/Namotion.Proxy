@@ -57,10 +57,15 @@ public class WritePipelineOrderTests
     [Fact]
     public void WhenContextsAreAggregated_ThenEveryChangeInterceptorPrecedesEveryLifecycleInterceptor()
     {
-        // Arrange: each context contributes its own instances, so the ordering edges must bind to
-        // every instance of the referenced type rather than just one.
-        var parentContext = InterceptorSubjectContext.Create().WithFullPropertyTracking();
-        var childContext = InterceptorSubjectContext.Create().WithFullPropertyTracking();
+        // Arrange: each context contributes its own non-unique interceptors under one shared
+        // lifecycle authority, so ordering edges must bind across the complete resolved cone.
+        var lifecycle = new LifecycleInterceptor();
+        var parentContext = InterceptorSubjectContext.Create();
+        var childContext = InterceptorSubjectContext.Create();
+        parentContext.AddService(lifecycle);
+        childContext.AddService(lifecycle);
+        parentContext.WithFullPropertyTracking();
+        childContext.WithFullPropertyTracking();
         childContext.AddFallbackContext(parentContext);
 
         // Act
@@ -77,7 +82,6 @@ public class WritePipelineOrderTests
                 typeof(DerivedPropertyChangeHandler),
                 typeof(PropertyChangeInterceptor),
                 typeof(PropertyChangeInterceptor),
-                typeof(LifecycleInterceptor),
                 typeof(LifecycleInterceptor)
             ],
             chain);
