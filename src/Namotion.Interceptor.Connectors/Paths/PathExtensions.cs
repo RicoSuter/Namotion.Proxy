@@ -72,7 +72,8 @@ public static class PathExtensions
     public static IEnumerable<string> UpdatePropertyValuesFromPaths(this IInterceptorSubject subject, IReadOnlyDictionary<string, object?> pathsAndValues, DateTimeOffset timestamp, PathProviderBase pathProvider, object? source)
     {
         return subject
-            .VisitPropertiesFromPathsWithTimestamp(pathsAndValues.Keys, timestamp, (property, path, _) => SetPropertyValue(property, timestamp, pathsAndValues[path], source), pathProvider);
+            .VisitPropertiesFromPathsWithTimestamp(pathsAndValues.Keys, timestamp, (property, path, _) 
+                => SetPropertyValue(property, timestamp, pathsAndValues[path], source), pathProvider);
     }
 
     private static IReadOnlyCollection<string> VisitPropertiesFromPathsWithTimestamp(this IInterceptorSubject subject,

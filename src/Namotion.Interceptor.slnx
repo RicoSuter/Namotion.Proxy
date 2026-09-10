@@ -129,6 +129,7 @@
     <Project Path="Namotion.Interceptor.Tests/Namotion.Interceptor.Tests.csproj" />
     <Project Path="Namotion.Interceptor.Tracking.Tests/Namotion.Interceptor.Tracking.Tests.csproj" />
     <Project Path="Namotion.Interceptor.Validation.Tests/Namotion.Interceptor.Validation.Tests.csproj" />
+    <Project Path="Namotion.Interceptor.GraphQL.Tests/Namotion.Interceptor.GraphQL.Tests.csproj" />
     <Project Path="Namotion.Interceptor.WebSocket.Tests/Namotion.Interceptor.WebSocket.Tests.csproj" />
     <Project Path="Namotion.Interceptor.ConnectorTester.Tests/Namotion.Interceptor.ConnectorTester.Tests.csproj" />
   </Folder>
