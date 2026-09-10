@@ -221,6 +221,53 @@ namespace Namotion.Interceptor.Tracking.Parent
         public Namotion.Interceptor.PropertyReference Property { get; set; }
     }
 }
+namespace Namotion.Interceptor.Tracking.Paths
+{
+    public interface ISubjectPathChangeObserver<TValue>
+    {
+        void OnChange(in Namotion.Interceptor.Tracking.Paths.SubjectPathChange<TValue> change);
+    }
+    public delegate void SubjectPathChangeCallback<TValue>(in Namotion.Interceptor.Tracking.Paths.SubjectPathChange<TValue> change);
+    public enum SubjectPathChangeKind
+    {
+        ValueChange = 0,
+        PathChange = 1,
+    }
+    public readonly struct SubjectPathChange<TValue>
+    {
+        public Namotion.Interceptor.Tracking.Change.SubjectPropertyChange Cause { get; }
+        public Namotion.Interceptor.Tracking.Paths.SubjectPathChangeKind Kind { get; }
+        public Namotion.Interceptor.Tracking.Paths.SubjectPathValue<TValue> NewState { get; }
+        public Namotion.Interceptor.Tracking.Paths.SubjectPathValue<TValue> OldState { get; }
+    }
+    public static class SubjectPathSubscriptionExtensions
+    {
+        public static Namotion.Interceptor.Tracking.Paths.SubjectPathSubscription<TValue> SubscribeToPath<TSubject, TValue>(this TSubject subject, System.Linq.Expressions.Expression<System.Func<TSubject, TValue>> path, Namotion.Interceptor.Tracking.Paths.ISubjectPathChangeObserver<TValue> observer, Namotion.Interceptor.Tracking.Paths.SubjectPathValidation validation)
+            where TSubject : Namotion.Interceptor.IInterceptorSubject { }
+        public static Namotion.Interceptor.Tracking.Paths.SubjectPathSubscription<TValue> SubscribeToPath<TSubject, TValue>(this TSubject subject, System.Linq.Expressions.Expression<System.Func<TSubject, TValue>> path, Namotion.Interceptor.Tracking.Paths.SubjectPathChangeCallback<TValue> callback, Namotion.Interceptor.Tracking.Paths.SubjectPathValidation validation)
+            where TSubject : Namotion.Interceptor.IInterceptorSubject { }
+    }
+    public sealed class SubjectPathSubscription<TValue> : System.IDisposable
+    {
+        public Namotion.Interceptor.Tracking.Paths.SubjectPathValue<TValue> Current { get; }
+        public void Dispose() { }
+    }
+    public enum SubjectPathValidation
+    {
+        Full = 0,
+        LeafOnly = 1,
+    }
+    public readonly struct SubjectPathValue<TValue>
+    {
+        public bool IsResolved { get; }
+        public TValue Value { get; }
+        public static Namotion.Interceptor.Tracking.Paths.SubjectPathValue<TValue> Unresolved { get; }
+        public TValue? GetValueOrDefault() { }
+        public TValue GetValueOrDefault(TValue fallback) { }
+        public bool TryGetValue([System.Diagnostics.CodeAnalysis.MaybeNull] out TValue value) { }
+        public static Namotion.Interceptor.Tracking.Paths.SubjectPathValue<TValue> Resolved(TValue? value) { }
+    }
+}
 namespace Namotion.Interceptor.Tracking.Performance
 {
     public sealed class ObjectPool<T>

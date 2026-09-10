@@ -135,6 +135,101 @@ The scheduled queue is unbounded and has no backpressure or overflow policy. `Pe
 
 When the scheduler defers delivery, the captured old and new values can be stale by callback time. Use `change.GetCurrentValue<TValue>()` to read the property's current state when freshness matters. Under concurrent writes, delivery order can differ from commit order for every channel.
 
+### Path Subscriptions
+
+When you care about a location in the object graph rather than a fixed instance, subscribe to a path. `SubscribeToPath` observes "the value at `x.Engine.PrimarySensor.Temperature`" as the path itself changes over time: `Engine` may be null at first and appear later, `PrimarySensor` may be replaced with a different subject, and the leaf value changes. Internally it is a chain of per-property subscriptions, one per segment, that re-subscribes the suffix on a structural change, so its cost is O(path depth) per delivery plus retrack work only on structural changes.
+
+It differs from a per-property subscription in both what it watches and what it guarantees:
+
+| | Per-property (`SubscribeToProperty`) | Path (`SubscribeToPath`) |
+|---|---|---|
+| Observes | a fixed instance and property | a location in the graph as it reshapes |
+| Delivery | every committed write | a current-value observer, so racing and no-op writes coalesce |
+| Event payload | the write's exact old and new value and origin | an observed-state transition (`OldState`/`NewState`); `NewState` is a fresh re-read, not a specific write's value |
+| Use when | you need every write or per-write origin fidelity (a write log, via the queue or observable channels) | you care about the value at a location as intermediates appear, move, or vanish |
+
+Two overloads mirror the per-property primitive, one taking a callback and one a zero-closure observer. Both require a `SubjectPathValidation` mode as the last parameter:
+
+```csharp
+// Callback overload:
+using var handle = car.SubscribeToPath(
+    x => x.Engine.PrimarySensor.Temperature,
+    (in SubjectPathChange<double> change) =>
+    {
+        // Re-render from Current on every callback (see below).
+    },
+    SubjectPathValidation.Full);
+
+// Observer overload (ISubjectPathChangeObserver<double>, no per-event closure):
+using var handle2 = car.SubscribeToPath(x => x.Engine.PrimarySensor.Temperature, observer, SubjectPathValidation.Full);
+```
+
+The validation mode chooses how much of the path a leaf write revalidates:
+
+- `SubjectPathValidation.Full`: every delivered callback, leaf or structural, revalidates the whole path from the root. A divergence created while part of the path was dormant (a structural change that could not dispatch) is healed on the next delivered callback of any kind. Choose this unless the walk cost on leaf writes is a measured problem.
+- `SubjectPathValidation.LeafOnly`: a write to the resolved leaf re-reads only the leaf on its cached subject and skips the from-root walk; structural writes still revalidate and retrack. This is faster for deep paths with high-frequency leaf writes, but a divergence created while dormant is not healed by a leaf write, only by a later structural write, so a stale off-path leaf value can keep delivering until then (a bounded consistency carve-out).
+
+`Current` is always a fresh full walk and stays accurate in both modes.
+
+`SubscribeToPath` delivers no event at subscribe time. Every delivered event corresponds to exactly one real property write, carried as `Cause`. Consumers seed their initial state from `Current`, which computes the current observed state on demand and never caches it:
+
+```csharp
+var initial = handle.Current;
+if (initial.IsResolved)
+{
+    Console.WriteLine($"Temperature is {initial.Value}.");
+}
+```
+
+For a single-segment path (`x => x.Speed`) `SubscribeToProperty` is the lighter choice; `SubscribeToPath` accepts it for uniformity but adds walk and retrack machinery you do not need there.
+
+**Seeding without races**: subscribe-then-read-`Current` is not atomic with the event stream. A write may fire the callback before you read `Current` the first time. Pull consumers (render from `Current`, re-render on every callback) are always safe, since `Current` is authoritative and side-effect free. A caching consumer must not seed with a value captured before a newer callback applied, or it can go permanently stale. Hold one consumer lock across subscription creation, handle assignment, and the initial seed, and re-take it in every callback, reading `Current` at apply time rather than a cached snapshot or the event's `NewState`:
+
+```csharp
+lock (gate)
+{
+    subscription = car.SubscribeToPath(
+        x => x.Engine.PrimarySensor.Temperature,
+        (in SubjectPathChange<double> change) =>
+        {
+            lock (gate)
+            {
+                state = subscription.Current; // read Current, never change.NewState or a cached snapshot
+            }
+        },
+        SubjectPathValidation.Full);
+
+    state = subscription.Current; // seed under the same lock
+}
+```
+
+A callback racing the subscribe blocks on `gate` until the seed is applied, and reading `Current` at apply time means the last apply reads the freshest state, so the consumer converges.
+
+**Observed state**: each observed state is a `SubjectPathValue<TValue>` (its members are documented on the type). The point to know is that it is a tri-state: an unresolved path, a resolved leaf with a value, and a resolved leaf whose value is null are all distinct, so `TryGetValue` returns true with a null value only for the resolved-null case.
+
+**Transitions and suppression**: a `SubjectPathChange<TValue>` carries `Kind`, `OldState`, `NewState`, and `Cause` (documented on the type). The contracts to rely on: an event is suppressed when the observed state does not change (`OldState` equals `NewState`), so chained transitions hold (event N+1's `OldState` equals event N's `NewState`) and racing or no-op writes coalesce.
+
+**Expression rules**: a path chains property access, collection indices, and dictionary keys directly off the lambda parameter. Malformed shapes throw `ArgumentException` at subscribe with a message naming the problem (the overloads document the exceptions), so they are not enumerated here. The contracts that do not announce themselves are:
+
+- Index and key arguments are evaluated exactly once at subscribe time, so `[3]`, `["name"]`, and `[variable]` are all fixed positions that do not re-read the variable later.
+- A runtime-invalid segment (missing on the runtime type, or a plain non-intercepted, non-derived property such as a plain interface default) does not throw; the path resolves as unresolved from that segment onward.
+- A `[Derived]` leaf or intermediate is subscribable but only fires when derived-change detection is enabled.
+
+Indexable collection and dictionary types are `T[]`, `List<T>`, `IList<T>`, `IReadOnlyList<T>`, `ImmutableArray<T>`, `Dictionary<,>`, `IDictionary<,>`, and `IReadOnlyDictionary<,>` (any key type).
+
+Deliveries are totally ordered per subscription and run on the writing (or draining) thread; callbacks must be fast, non-blocking, and must not throw. `Current` always reflects the live graph, even in the few cases where the event stream briefly lags. For the delivery and retrack mechanism, the five quiescent-consistency carve-outs, the two-tier validation internals, and the concurrency model, see the internal design doc: [Path Subscriptions Design](design/tracking-path-subscriptions.md).
+
+Operational caveats to know before adopting:
+
+- **Dispose is mandatory.** `SubscribeToPath` returns a `SubjectPathSubscription<TValue>`; `Dispose()` tears down every segment subscription, drops queued undelivered events, and afterwards makes `Current` return the unresolved default. Self-dispose from inside a callback is supported. A dropped, undisposed handle keeps delivering and permanently degrades the process-wide idle write fast path by the chain's depth (only `Dispose` decrements the primitive's subscription count), and any externally rooted chain subject pins the rest of the chain until you dispose.
+- **Transactions**: subscribing inside an active, not-yet-committing transaction throws `InvalidOperationException` (the chain would bind to speculative staged subjects). Staged writes deliver at commit replay on the committing thread; a rollback delivers nothing, and a failed commit that reverts can deliver apply-and-revert pairs that converge back. Read `Current` inside a transaction and you get that transaction's read-your-writes view.
+- **Thread marshaling for UI consumers**: callbacks run on writer or draining threads, never a UI thread. Blazor and other UI consumers must marshal (for example via `InvokeAsync`) before touching component state.
+- **Allocation-free delivery** for inline value types and strings, including a path with an `ImmutableArray<T>` intermediate (a non-`IEquatable<T>` struct leaf is the one boxing exception).
+
+> **Prerequisite**: multi-segment paths that dynamically introduce context-free children require context inheritance. Use `WithFullPropertyTracking()`, or at least `WithPropertyChangeSubscriptions()` plus `WithContextInheritance()`, for any path spanning more than one subject. Without `ContextInheritanceHandler`, a context-free child assigned into the graph never inherits the root's context, so its writes bypass interception: segment 0 fires, deeper segments through that child are silently inert, `Current` still works, and nothing errors. A child that carries its own notifying context works without inheritance. Subscribing before the root is first attached is valid; the subscription is dormant until attach.
+
+> **Warning**: a `[Derived]` segment's getter executes on every processed event of the subscription; keep derived segments off hot paths. A derived subject-valued intermediate must alias a stable instance: a getter that constructs a fresh instance per read forces a full suffix retrack on every event and leaves that suffix dormant, because the reconstructed subjects are never the instance lifecycle attached.
+
 ### Concurrency and Delivery
 
 Dispatch starts on the writing thread, outside the subject lock. The pull queue and inline per-property subscriptions accept changes there. `GetPropertyChangeObservable()` also receives changes there but reschedules its subscribers by default. Scheduled per-property subscriptions invoke observers through their selected schedulers, which may run asynchronously or inline.
