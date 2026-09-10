@@ -158,7 +158,8 @@ internal sealed class HostedServiceTarget
     /// </summary>
     /// <remarks>
     /// Test only. Every production append is attributed, or shutdown returns while the transition is
-    /// still about to touch a service provider the host is disposing.
+    /// still about to touch a service provider the host is disposing, and the body keeps the appending
+    /// flow's ambient startup scope, which <see cref="RunAsync"/> clears only for an attributed one.
     /// </remarks>
     public Task AppendAsync(Func<Task> body)
     {

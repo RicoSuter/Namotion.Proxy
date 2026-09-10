@@ -167,6 +167,35 @@ public class HostedServiceStartupScopeTests
         }
     }
 
+    [Fact]
+    public async Task WhenAStopPathAwaitsItsOwnAttach_ThenAnUnrelatedOpenScopeDoesNotWedgeTheChain()
+    {
+        // Arrange
+        await using var fixture = new Fixture();
+        await fixture.Handler.StartAsync(CancellationToken.None);
+        var subject = new Person(fixture.Context);
+        var second = new ProbeService(() => "second");
+        Func<Task>? attachFromStop = null;
+        var first = new ProbeService(() => "first", stopping: () => attachFromStop!());
+        attachFromStop = () => subject.AttachHostedServiceAsync(() => second, CancellationToken.None);
+        var attachment = await subject
+            .AttachHostedServiceAsync(() => first, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Act - this stop is not captured by the scope, having been attached and started before it
+        // opened, so awaiting the detach inside the scope is not the hazard awaiting a captured start
+        // is. What the stop path attaches is what an inherited scope would park.
+        using (fixture.Context.DeferHostedServiceStartup())
+        {
+            var detachment = subject.DetachHostedServiceAsync(attachment, CancellationToken.None);
+
+            // Assert - the stop body returns rather than holding its chain for as long as this scope
+            // stays open.
+            Assert.True(await detachment.WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.Equal("second", await second.Started.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+        }
+    }
+
     private sealed class Fixture : IAsyncDisposable, IStartupCompletionDeferrer
     {
         private readonly ServiceProvider _provider;
@@ -209,7 +238,12 @@ public class HostedServiceStartupScopeTests
         public void Dispose() => released();
     }
 
-    private sealed class ProbeService(Func<string> readConfiguration, Action? stopped = null, Task? startup = null, Action<CancellationToken>? starting = null) : IHostedService
+    private sealed class ProbeService(
+        Func<string> readConfiguration,
+        Action? stopped = null,
+        Task? startup = null,
+        Action<CancellationToken>? starting = null,
+        Func<Task>? stopping = null) : IHostedService
     {
         public TaskCompletionSource<string> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Task StartAsync(CancellationToken cancellationToken)
@@ -218,10 +252,13 @@ public class HostedServiceStartupScopeTests
             Started.TrySetResult(readConfiguration());
             return startup ?? Task.CompletedTask;
         }
-        public Task StopAsync(CancellationToken cancellationToken)
+        public async Task StopAsync(CancellationToken cancellationToken)
         {
             stopped?.Invoke();
-            return Task.CompletedTask;
+            if (stopping is not null)
+            {
+                await stopping();
+            }
         }
     }
 }
