@@ -2,9 +2,6 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 
 public static class LifecycleInterceptorExtensions
 {
-    // Must match LifecycleInterceptor.ReferenceCountKey (private implementation detail)
-    private const string ReferenceCountKey = "Namotion.Interceptor.Tracking.ReferenceCount";
-
     /// <summary>
     /// Gets the lifecycle interceptor from the context, if configured.
     /// </summary>
@@ -14,39 +11,33 @@ public static class LifecycleInterceptorExtensions
     }
 
     /// <summary>
-    /// Gets the current reference count (number of parent references) for the subject.
-    /// Returns 0 if subject is not attached or lifecycle tracking is not enabled.
+    /// Gets the number of active incoming structural edge occurrences of the subject. A subject
+    /// listed twice in one collection counts two. Returns 0 for an unattached subject and for an
+    /// anchored root that no edge points at, so this is not an ownership predicate: use
+    /// <see cref="InterceptorSubjectExtensions.TryGetContext"/> to test attachment and a non-None
+    /// <see cref="Interceptors.IInterceptorExecutor.AttachmentAnchor"/> to test root-ness.
     /// </summary>
     public static int GetReferenceCount(this IInterceptorSubject subject)
     {
-        if (subject.Data.TryGetValue((null, ReferenceCountKey), out var count))
-        {
-            return (int)(count ?? 0);
-        }
-        return 0;
+        // Zero is the answer in both fallbacks rather than a stand-in for one. No edge can point at
+        // an unattached subject, because an attached parent would have pulled it into the context.
+        // On a context with no lifecycle, the only subject that can be attached is one anchored to
+        // that context directly: nothing propagates the context along an edge, and a lifecycle
+        // cannot be registered behind an attach, so such a subject is a root and has no edge either.
+        return subject.TryGetContext()?.TryGetLifecycleInterceptor()?.GetReferenceCount(subject) ?? 0;
     }
 
     /// <summary>
-    /// Increments the reference count and returns the new value.
+    /// Runs the property attach callbacks for one property. The subject must be attached: every
+    /// caller runs inside an attach descent or a property admission, where the attachment is
+    /// already established.
     /// </summary>
-    internal static int IncrementReferenceCount(this IInterceptorSubject subject)
-    {
-        return (int)(subject.Data.AddOrUpdate((null, ReferenceCountKey), 1, (_, count) => (int)(count ?? 0) + 1) ?? 1);
-    }
-
-    /// <summary>
-    /// Decrements the reference count and returns the new value.
-    /// </summary>
-    internal static int DecrementReferenceCount(this IInterceptorSubject subject)
-    {
-        return (int)(subject.Data.AddOrUpdate((null, ReferenceCountKey), 0, (_, count) => Math.Max(0, (int)(count ?? 0) - 1)) ?? 0);
-    }
-
     public static void AttachSubjectProperty(this IInterceptorSubject subject, PropertyReference property)
-    {            
+    {
+        using var scope = CallbackReentrancyGuard.EnterPropertyCallbackScope();
         var change = new SubjectPropertyLifecycleChange(subject, property);
 
-        foreach (var handler in subject.Context.GetServices<IPropertyLifecycleHandler>())
+        foreach (var handler in subject.GetContext().GetServices<IPropertyLifecycleHandler>())
         {
             handler.AttachProperty(change);
         }
@@ -56,12 +47,17 @@ public static class LifecycleInterceptorExtensions
             lifecycleHandler.AttachProperty(change);
         }
     }
-    
+
+    /// <summary>
+    /// Runs the property detach callbacks for one property. The subject must be attached: the
+    /// release descent runs these before the claim is released.
+    /// </summary>
     public static void DetachSubjectProperty(this IInterceptorSubject subject, PropertyReference property)
-    {            
+    {
+        using var scope = CallbackReentrancyGuard.EnterPropertyCallbackScope();
         var change = new SubjectPropertyLifecycleChange(subject, property);
 
-        foreach (var handler in subject.Context.GetServices<IPropertyLifecycleHandler>())
+        foreach (var handler in subject.GetContext().GetServices<IPropertyLifecycleHandler>())
         {
             handler.DetachProperty(change);
         }

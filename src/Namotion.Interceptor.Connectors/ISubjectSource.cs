@@ -17,7 +17,7 @@ namespace Namotion.Interceptor.Connectors;
 /// satisfies this.
 /// <para>
 /// Implementing this directly instead of deriving from <see cref="SubjectSourceBase"/> means
-/// registering with every monitor from <c>subject.Context.GetServices&lt;SourceMonitor&gt;()</c> on
+/// registering with every monitor from <c>subject.GetContext().GetServices&lt;SourceMonitor&gt;()</c> on
 /// start and unregistering on stop. Skipping that is silent rather than fatal: the source never
 /// appears in the stream, and branch-scoped waits covering it complete vacuously.
 /// </para>

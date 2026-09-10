@@ -5,7 +5,7 @@ namespace Namotion.Interceptor.Registry.Abstractions;
 /// Used by connectors (e.g., WebSocket) to look up subjects by their
 /// protocol-level identifiers during update application.
 /// </summary>
-public interface ISubjectIdRegistry
+public interface ISubjectIdRegistry : ISingletonContextService<ISubjectIdRegistry>
 {
     /// <summary>
     /// Tries to get a subject by its ID from the reverse index.
@@ -20,7 +20,7 @@ public interface ISubjectIdRegistry
 /// Internal writer interface for managing subject IDs and the reverse index atomically.
 /// Both the subject's Data store and the reverse index are updated under a single lock.
 /// </summary>
-internal interface ISubjectIdRegistryWriter
+internal interface ISubjectIdRegistryWriter : ISingletonContextService<ISubjectIdRegistryWriter>
 {
     /// <summary>
     /// Gets an existing subject ID or generates a new one, atomically updating

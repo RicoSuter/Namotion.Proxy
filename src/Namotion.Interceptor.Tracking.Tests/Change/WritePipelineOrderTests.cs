@@ -54,32 +54,4 @@ public class WritePipelineOrderTests
             chain);
     }
 
-    [Fact]
-    public void WhenContextsAreAggregated_ThenEveryChangeInterceptorPrecedesEveryLifecycleInterceptor()
-    {
-        // Arrange: each context contributes its own instances, so the ordering edges must bind to
-        // every instance of the referenced type rather than just one.
-        var parentContext = InterceptorSubjectContext.Create().WithFullPropertyTracking();
-        var childContext = InterceptorSubjectContext.Create().WithFullPropertyTracking();
-        childContext.AddFallbackContext(parentContext);
-
-        // Act
-        var chain = childContext.GetServices<IWriteInterceptor>().Select(interceptor => interceptor.GetType()).ToArray();
-
-        // Assert: an exact array, because this is the only configuration where the derived-before-change
-        // edge is load-bearing. A weaker "all change before all lifecycle" predicate is satisfied by
-        // the interleaved order too, so removing that edge would not fail any test.
-        Assert.Equal(
-            [
-                typeof(PropertyValueEqualityCheckHandler),
-                typeof(PropertyValueEqualityCheckHandler),
-                typeof(DerivedPropertyChangeHandler),
-                typeof(DerivedPropertyChangeHandler),
-                typeof(PropertyChangeInterceptor),
-                typeof(PropertyChangeInterceptor),
-                typeof(LifecycleInterceptor),
-                typeof(LifecycleInterceptor)
-            ],
-            chain);
-    }
 }

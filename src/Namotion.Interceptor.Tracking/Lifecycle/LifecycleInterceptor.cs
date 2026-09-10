@@ -1,547 +1,920 @@
-using System.Collections;
+using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using Namotion.Interceptor.Interceptors;
+using Namotion.Interceptor.Tracking.Parent;
 
 namespace Namotion.Interceptor.Tracking.Lifecycle;
 
-public class LifecycleInterceptor : IWriteInterceptor, ILifecycleInterceptor
+/// <summary>
+/// Owns structural graph membership for one context: which subjects it holds, through which
+/// occurrence-aware edges, and when a subject that lost its last support leaves.
+/// </summary>
+/// <remarks>
+/// A subject is attached to exactly one context. It is held either by a root anchor (an explicit
+/// attach, or the provisional anchor a context-taking constructor leaves) or by a path of structural
+/// edges from an anchored root. The provisional anchor is consumed by the first edge that supports
+/// the subject independently of that anchor, so construction-time attachment does not create roots
+/// that nothing ever releases; an explicit anchor is only ever cleared explicitly.
+///
+/// All topology changes are serialized by one private reentrant lock. Parent and reference-count
+/// reads deliberately do not take it: they read published per-subject state, because consumers call
+/// them from inside their own locks and from inside lifecycle callbacks.
+///
+/// Sealed because both the ordering seam and the default-lifecycle idempotence check key on this
+/// exact type: a subclass would silently unbind every [RunsBefore]/[RunsAfter] constraint naming
+/// <see cref="LifecycleInterceptor"/> and would satisfy the WithLifecycle() exists check without
+/// being the default lifecycle. Third parties extend through <see cref="ILifecycleInterceptor"/>.
+/// </remarks>
+public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHandler
 {
-    private readonly Dictionary<IInterceptorSubject, PropertyReferenceSet> _attachedSubjects = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<PropertyReference, object?> _lastProcessedValues = new(PropertyReference.Comparer);
+    private readonly IInterceptorSubjectContext _context;
+    private readonly OwnershipGraph _graph;
+    private readonly ReachabilityWalk _reachability;
+    private readonly ReleaseTraversal _release;
+    private readonly StructuralReconciler _reconciler;
+    private readonly AttachTraversal _attach;
+    private readonly LifecycleNotifier _notifier;
+    private readonly PropertyAdmission _admission;
 
-    [ThreadStatic]
-    private static Stack<List<(IInterceptorSubject subject, PropertyReference property, object? index)>>? _listPool;
+    // One reentrant topology lock per lifecycle, and the outermost lock of the structural write
+    // order (see the executor's _attachmentLock note for the full order). Reentrancy is required:
+    // Core enters the gate before the chain is resolved and this interceptor enters it again from
+    // inside the chain. Always taken through EnterGate, never directly, so the
+    // one-transaction-per-thread rule below sees every acquisition.
+    private readonly Lock _gate = new();
 
+    // The one deadlock this design cannot prevent is a gate holder waiting for topology work it
+    // dispatched to another thread: it cannot release the gate until that work finishes and that
+    // work cannot start until the gate is released. Only a thread holding no gate at all ever waits
+    // here, because the rule above rejects a second transaction and a reentrant acquisition never
+    // blocks, so a wait that never ends is that deadlock rather than a lock-ordering one, and is
+    // turned into an exception instead of a hang.
+    //
+    // A waiter tells the deadlock from ordinary contention by looking at the holder rather than at
+    // the clock: a holder that is running is making progress, however long it takes, while a holder
+    // that never runs again can only be one that waits for work needing this gate. So a holder seen
+    // running resets the verdict and no amount of elapsed time alone convicts. Only continuous
+    // blocking does, over a threshold far above any lock a holder legitimately waits on and far
+    // below the point an operator calls the process hung.
+    //
+    // The runtime offers no way to ask what a thread waits on, and a dispatch through a task, a
+    // queue or a pool thread carries no link back to its origin, so sampling the holder's state is
+    // the only in-process signal that exists. It costs nothing on any normal path: a waiter reaches
+    // this only after failing to take the gate within HolderSampleIntervalMilliseconds, and it
+    // parks in the same wait it would have parked in anyway.
+    private const int HolderSampleIntervalMilliseconds = 20;
+    private const int DefaultBlockedHolderThresholdMilliseconds = 30_000;
+
+    // Per instance rather than constant so a test can convict in milliseconds instead of spending
+    // the full threshold per case. Per instance and not static, so tests running in parallel cannot
+    // shorten each other's threshold. Read only by a thread already waiting on a contended gate.
+    internal int BlockedHolderThresholdMilliseconds { get; set; } = DefaultBlockedHolderThresholdMilliseconds;
+
+    // The last resort for what the holder check cannot see at all: a holder looping forever, one
+    // spinning, one blocked inside unmanaged code, and one polling so it never blocks for the whole
+    // threshold above. None of those is distinguishable from work, so this cannot be a judgement
+    // about the holder and is only a bound past which a process is stuck by any reasonable measure.
+    // Sized far above the longest legitimate hold rather than near it: attaching a quarter of a
+    // million subjects measures in seconds, so this keeps two orders of magnitude of room and still
+    // reports before a test harness or an operator calls the process hung.
+    private const int DefaultGateWaitTimeoutMilliseconds = 300_000;
+
+    // Settable for the same reason as the threshold above, and more sharply: at its real size
+    // no test can afford to reach it, so without this the bound would ship untested.
+    internal int GateWaitTimeoutMilliseconds { get; set; } = DefaultGateWaitTimeoutMilliseconds;
+
+    // The thread inside a topology transaction of this lifecycle, null when there is none. Written
+    // under the gate and read without it, by a waiter that is diagnosing its own wait rather than
+    // deciding anything: a stale read costs one sample of a window that needs all of them.
+    private Thread? _gateHolder;
+
+    // How many topology gates the current thread holds, across every lifecycle. Gates have no
+    // order among themselves, so a thread holding one and blocking on another deadlocks against a
+    // thread taking them the other way round: a second transaction on a different lifecycle is
+    // rejected instead of waiting.
     [ThreadStatic]
-    private static Stack<HashSet<IInterceptorSubject>>? _subjectHashSetPool;
+    private static int _heldGateCount;
+
+    // How many threads are inside a topology transaction of this lifecycle. Counted once per
+    // thread, not once per acquisition, because the gate is reentrant. The window between a
+    // terminal store and its reconcile is user-visible and cannot be closed, so readers that would
+    // otherwise convict a subject caught in it ask this instead.
+    private int _transactionsInFlight;
+
+    // Work registered by a reader that withheld a verdict because this lifecycle was mid-transaction,
+    // to be re-run once it is not. A handshake rather than an inference: nothing else guarantees
+    // that the thread which opened the window will recalculate what read through it. Guarded by its
+    // own lock, which is a leaf: it is taken by a thread holding the reader's own lock, and
+    // released before anything registered here runs.
+    private readonly Lock _withheldLock = new();
+    private List<Action>? _withheldRecalculations;
 
     /// <summary>
     /// Raised when a subject is attached to the object graph.
-    /// Handlers must be exception-free and fast (invoked inside lock).
+    /// Handlers must be exception-free and fast (invoked inside lock). Never hand structural
+    /// work to another thread and wait for it from here: the dispatched write needs the very
+    /// gate this thread is holding. Dispatching a read, a scalar write or input and output is
+    /// safe, and so is handing structural work off without waiting.
     /// </summary>
-    public event Action<SubjectLifecycleChange>? SubjectAttached;
+    public event Action<SubjectLifecycleChange>? SubjectAttached
+    {
+        add => _notifier.SubjectAttached += value;
+        remove => _notifier.SubjectAttached -= value;
+    }
 
     /// <summary>
     /// Raised when a subject is about to be detached from the object graph.
     /// Fires BEFORE ILifecycleHandler.HandleLifecycleChange (symmetric with SubjectAttached which fires AFTER).
-    /// At this point, the full object graph is still accessible.
-    /// Handlers must be exception-free and fast (invoked inside lock).
+    /// The subject's ownership record and baselines are already gone by this point, so GetParents()
+    /// answers empty and GetReferenceCount() answers zero; the subject still resolves its context,
+    /// which is what the teardown callbacks need.
+    /// Handlers must be exception-free and fast (invoked inside lock). Never hand structural
+    /// work to another thread and wait for it from here: the dispatched write needs the very
+    /// gate this thread is holding. Dispatching a read, a scalar write or input and output is
+    /// safe, and so is handing structural work off without waiting.
     /// </summary>
-    public event Action<SubjectLifecycleChange>? SubjectDetaching;
-
-    public void AttachSubjectToContext(IInterceptorSubject subject)
+    public event Action<SubjectLifecycleChange>? SubjectDetaching
     {
-        var collectedSubjects = GetList();
-        try
-        {
-            lock (_attachedSubjects)
-            {
-                FindSubjectsInProperties(subject, collectedSubjects, null, LastProcessedValuesMode.Seed);
-
-                foreach (var child in collectedSubjects)
-                {
-                    AttachToProperty(child.subject, subject.Context, child.property, child.index);
-                }
-
-                if (!_attachedSubjects.ContainsKey(subject))
-                {
-                    AttachToContext(subject, subject.Context);
-                }
-            }
-        }
-        finally
-        {
-            ReturnList(collectedSubjects);
-        }
-    }
-
-    public void DetachSubjectFromContext(IInterceptorSubject subject)
-    {
-        var collectedSubjects = GetList();
-        try
-        {
-            lock (_attachedSubjects)
-            {
-                FindSubjectsInProperties(subject, collectedSubjects, null, LastProcessedValuesMode.Use);
-
-                foreach (var child in collectedSubjects)
-                {
-                    DetachFromProperty(child.subject, subject.Context, child.property, child.index);
-                }
-
-                DetachFromContext(subject, subject.Context);
-            }
-        }
-        finally
-        {
-            ReturnList(collectedSubjects);
-        }
+        add => _notifier.SubjectDetaching += value;
+        remove => _notifier.SubjectDetaching -= value;
     }
 
     /// <summary>
-    /// Attaches a subject directly to a context (root subject, no property reference).
+    /// Creates the lifecycle for one context. That context is the single exact context this
+    /// interceptor claims subjects for.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void AttachToContext(IInterceptorSubject subject, IInterceptorSubjectContext context)
+    public LifecycleInterceptor(IInterceptorSubjectContext context)
     {
-        var isFirstAttach = _attachedSubjects.TryAdd(subject, default);
-        if (!isFirstAttach)
-        {
-            return;
-        }
+        _context = context;
+        _notifier = new LifecycleNotifier(context);
+        _graph = new OwnershipGraph(context);
+        _reachability = new ReachabilityWalk(_graph);
+        _attach = new AttachTraversal(_notifier, _graph, _reachability);
+        _release = new ReleaseTraversal(_notifier, _graph, _reachability);
+        _reconciler = new StructuralReconciler(_notifier, _graph, _attach, _release);
+        _admission = new PropertyAdmission(_graph, _reconciler, _attach);
+    }
 
-        var count = subject.GetReferenceCount();
-        var change = new SubjectLifecycleChange
-        {
-            Subject = subject,
-            ReferenceCount = count,
-            IsContextAttach = true
-        };
+    #region Structural writes
 
-        var properties = subject.Properties.Keys;
-        InvokeAddedLifecycleHandlers(subject, context, change);
+    /// <inheritdoc />
+    public void EnterStructuralWriteGate()
+    {
+        EnterGate();
+    }
 
-        SubjectAttached?.Invoke(change);
-        foreach (var propertyName in properties)
-        {
-            subject.AttachSubjectProperty(new PropertyReference(subject, propertyName));
-        }
+    /// <inheritdoc />
+    public void ExitStructuralWriteGate()
+    {
+        ExitGate();
     }
 
     /// <summary>
-    /// Attaches a subject via a property reference.
+    /// Enters the topology gate, rejecting a second transaction on a different lifecycle before it
+    /// can block. Re-entering the gate this thread already holds is legal and load-bearing.
+    /// A thread that has to wait watches the holder, so the one deadlock this design cannot prevent,
+    /// a gate holder waiting for topology work it dispatched to another thread, ends in a named
+    /// exception on the dispatched thread rather than in a permanent hang.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void AttachToProperty(IInterceptorSubject subject, IInterceptorSubjectContext context,
-        PropertyReference property, object? index)
+    private GateScope EnterGate()
     {
-        ref var set = ref CollectionsMarshal.GetValueRefOrAddDefault(_attachedSubjects, subject, out var existed);
-        var isFirstAttach = !existed;
-        if (!set.Add(property))
+        if (_heldGateCount > 0 && !_gate.IsHeldByCurrentThread)
         {
-            return;
+            throw new LifecycleContractViolationException(
+                "A thread runs at most one lifecycle topology transaction at a time, and this one " +
+                "is already inside a transaction of another context. Topology gates have no order " +
+                "among themselves, so waiting for a second one can deadlock against a thread " +
+                "taking them the other way round. Nothing was read and nothing was changed: defer " +
+                "the second operation until the enclosing one completes.");
         }
 
-        var count = subject.IncrementReferenceCount();
-        var change = new SubjectLifecycleChange
+        if (!_gate.TryEnter(HolderSampleIntervalMilliseconds))
         {
-            Subject = subject,
-            Property = property,
-            Index = index,
-            ReferenceCount = count,
-            IsContextAttach = isFirstAttach,
-            IsPropertyReferenceAdded = true
-        };
+            WaitForGate();
+        }
 
-        var properties = subject.Properties.Keys;
-        InvokeAddedLifecycleHandlers(subject, context, change);
-
-        if (isFirstAttach)
+        if (_heldGateCount++ == 0)
         {
-            SubjectAttached?.Invoke(change);
+            _gateHolder = Thread.CurrentThread;
+            // Past the rejection above, a nonzero count means this thread already holds this very
+            // gate, so a reentrant acquisition is not a new transaction.
+            Interlocked.Increment(ref _transactionsInFlight);
+        }
 
-            foreach (var propertyName in properties)
+        return new GateScope(this);
+    }
+
+    private void ExitGate()
+    {
+        // Decrement first, so an unbalanced exit leaves the count too low rather than too high: a
+        // count stranded above zero on a pooled thread would reject that thread's next unrelated
+        // transaction, while one below zero only stops the rule firing.
+        var leftTheTransaction = --_heldGateCount == 0;
+        if (leftTheTransaction)
+        {
+            // Before the gate is released and before the drain below takes the registration lock,
+            // so a reader that registers after this point reads a settled count and is told to
+            // decide for itself rather than to wait for a transaction that has ended.
+            Interlocked.Decrement(ref _transactionsInFlight);
+            _gateHolder = null;
+        }
+
+        _gate.Exit();
+
+        if (leftTheTransaction)
+        {
+            // Unconditionally, without first peeking at the list: a peek outside the registration
+            // lock creates a third outcome for a registration that has passed the count check and
+            // not yet published its entry, which is then neither drained nor refused.
+            RunWithheldRecalculations();
+        }
+    }
+
+    // Its own method, and never inlined, so EnterGate keeps its stack frame: inlined, this method's
+    // locals and the message building are set up on every successful acquisition too.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void WaitForGate()
+    {
+        var deadline = Environment.TickCount64 + GateWaitTimeoutMilliseconds;
+        Thread? blockedHolder = null;
+        var blockedSince = 0L;
+
+        while (true)
+        {
+            // Sampled before the wait rather than after it, so the window is the wait itself and a
+            // holder that releases the gate during it is seen as gone on the next pass.
+            var holder = Volatile.Read(ref _gateHolder);
+            if (holder is not null && (holder.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0)
             {
-                subject.AttachSubjectProperty(new PropertyReference(subject, propertyName));
-            }
-        }
-    }
-    
-    private static void InvokeAddedLifecycleHandlers(IInterceptorSubject subject, IInterceptorSubjectContext context, SubjectLifecycleChange change)
-    {
-        var array = context.GetServices<ILifecycleHandler>();
-        for (var index = 0; index < array.Length; index++)
-        {
-            var handler = array[index];
-            handler.HandleLifecycleChange(change);
-        }
-
-        if (subject is ILifecycleHandler subjectHandler)
-        {
-            subjectHandler.HandleLifecycleChange(change);
-        }
-    }
-
-    /// <summary>
-    /// Detaches a subject from a context (root subject, no property reference).
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void DetachFromContext(IInterceptorSubject subject, IInterceptorSubjectContext context)
-    {
-        if (!_attachedSubjects.Remove(subject))
-        {
-            return;
-        }
-        
-        foreach (var entry in subject.Properties)
-        {
-            var property = new PropertyReference(subject, entry.Key);
-            if (entry.Value is { IsIntercepted: true } && entry.Value.Type.CanContainSubjects())
-                _lastProcessedValues.Remove(property);
-
-            subject.DetachSubjectProperty(property);
-        }
-
-        var count = subject.GetReferenceCount();
-        var change = new SubjectLifecycleChange
-        {
-            Subject = subject,
-            ReferenceCount = count,
-            IsContextDetach = true
-        };
-
-        SubjectDetaching?.Invoke(change);
-        InvokeRemovedLifecycleHandlers(subject, context, change);
-    }
-
-    /// <summary>
-    /// Detaches a subject from a property reference.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void DetachFromProperty(
-        IInterceptorSubject subject, IInterceptorSubjectContext context,
-        PropertyReference property, object? index)
-    {
-        ref var set = ref CollectionsMarshal.GetValueRefOrNullRef(_attachedSubjects, subject);
-        if (Unsafe.IsNullRef(ref set) || !set.Remove(property))
-        {
-            return;
-        }
-
-        var isLastDetach = set.IsEmpty;
-
-        // Collect children and clean up in a single pass over properties
-        List<(IInterceptorSubject subject, PropertyReference property, object? index)>? children = null;
-        if (isLastDetach)
-        {
-            _attachedSubjects.Remove(subject);
-
-            foreach (var entry in subject.Properties)
-            {
-                var subjectProperty = new PropertyReference(subject, entry.Key);
-
-                var metadata = entry.Value;
-                if (metadata is { IsIntercepted: true } && metadata.Type.CanContainSubjects())
+                // Per holder, not per wait: a gate handed from one thread to the next is a queue
+                // draining, and each new holder starts its own window. Measured as elapsed time
+                // rather than as a sample count, so load stretches the sampling rate without
+                // stretching what the threshold means.
+                if (!ReferenceEquals(holder, blockedHolder))
                 {
-                    // Use _lastProcessedValues (what was actually attached) instead of the backing
-                    // store, which may contain unattached children from a concurrent next() call.
-                    if (_lastProcessedValues.TryGetValue(subjectProperty, out var lastProcessed) && lastProcessed is not null)
-                    {
-                        children ??= GetList();
-                        FindSubjectsInProperty(subjectProperty, lastProcessed, children, null);
-                    }
-
-                    _lastProcessedValues.Remove(subjectProperty);
+                    blockedHolder = holder;
+                    blockedSince = Environment.TickCount64;
                 }
-
-                subject.DetachSubjectProperty(subjectProperty);
+                else if (Environment.TickCount64 - blockedSince >= BlockedHolderThresholdMilliseconds)
+                {
+                    ThrowHolderBlocked(BlockedHolderThresholdMilliseconds);
+                }
             }
-        }
-
-        var count = subject.DecrementReferenceCount();
-        var change = new SubjectLifecycleChange
-        {
-            Subject = subject,
-            Property = property,
-            Index = index,
-            ReferenceCount = count,
-            IsPropertyReferenceRemoved = true,
-            IsContextDetach = isLastDetach
-        };
-
-        if (isLastDetach)
-        {
-            SubjectDetaching?.Invoke(change);
-        }
-
-        InvokeRemovedLifecycleHandlers(subject, context, change);
-
-        if (children is not null)
-        {
-            foreach (var child in children)
+            else
             {
-                DetachFromProperty(child.subject, context, child.property, child.index);
+                blockedHolder = null;
             }
 
-            ReturnList(children);
+            if (_gate.TryEnter(HolderSampleIntervalMilliseconds))
+            {
+                return;
+            }
+
+            // The holder check above sees only a thread the runtime reports as blocked, so it
+            // cannot see a holder looping forever, spinning, blocked inside unmanaged code, or
+            // polling in a way that never blocks for the whole threshold. Those hang without this,
+            // so the last resort is a plain bound: nothing legitimate comes near it, and a process
+            // that reaches it is already stuck.
+            if (Environment.TickCount64 >= deadline)
+            {
+                ThrowGateWaitTimedOut(GateWaitTimeoutMilliseconds);
+            }
         }
     }
 
-    private static void InvokeRemovedLifecycleHandlers(IInterceptorSubject subject, IInterceptorSubjectContext context, SubjectLifecycleChange change)
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowHolderBlocked(int thresholdMilliseconds)
     {
-        if (subject is ILifecycleHandler subjectHandler)
-        {
-            subjectHandler.HandleLifecycleChange(change);
-        }
+        throw new LifecycleContractViolationException(
+            "The thread holding the topology gate of this context has been blocked, never once seen " +
+            $"running, for {TimeSpan.FromMilliseconds(thresholdMilliseconds).TotalSeconds:0.##} seconds. " +
+            "A holder that makes progress is never reported here however long it takes, so this is " +
+            "one of two things, " +
+            "and both break the contract that a gate holder is fast and waits on nothing. The first " +
+            "is the deadlock this framework cannot prevent: the thread inside the topology " +
+            "transaction dispatched structural work to another thread and waits for it, so it cannot " +
+            "release the gate until that work finishes and that work cannot start until the gate is " +
+            "released. A dispatch through Task.Run, the thread pool or a queue carries no link back " +
+            "to its origin, so watching the holder is the only way this can be seen at all. Never " +
+            "wait for structural work on another thread from inside a structural write, a lifecycle " +
+            "callback or an interceptor: complete the enclosing operation first and run the work " +
+            "after it returns, or hand it off without waiting. Dispatching a read, a scalar write or " +
+            "input and output and waiting for it is safe and is not this. The second is a holder " +
+            "blocked that long on a sleep, on input or output, or on a lock of its own. Nothing was " +
+            "read and nothing was changed.");
+    }
 
-        var array = context.GetServices<ILifecycleHandler>();
-        for (var index = 0; index < array.Length; index++)
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowGateWaitTimedOut(int timeoutMilliseconds)
+    {
+        throw new LifecycleContractViolationException(
+            $"Timed out after {TimeSpan.FromMilliseconds(timeoutMilliseconds).TotalSeconds:0.##} seconds waiting for the topology " +
+            "gate of this context, which another thread has held for that whole time without ever " +
+            "being seen blocked. Nothing here can tell which it is, because none of the causes is " +
+            "distinguishable from work: a lifecycle callback or an interceptor genuinely running that " +
+            "long, a loop spinning or polling instead of blocking, or a holder waiting inside " +
+            "unmanaged code for topology work it dispatched to another thread. All of them break the " +
+            "contract that a gate holder is fast and waits on nothing. Nothing was read and nothing " +
+            "was changed.");
+    }
+
+    /// <summary>Releases what <see cref="EnterGate"/> took. A struct, so the using costs nothing.</summary>
+    private readonly struct GateScope(LifecycleInterceptor lifecycle) : IDisposable
+    {
+        public void Dispose()
         {
-            var handler = array[index];
-            handler.HandleLifecycleChange(change);
+            lifecycle.ExitGate();
         }
     }
 
     /// <inheritdoc />
     /// <remarks>
-    /// Re-entrant for different properties (lock is re-entrant, each property has its own
-    /// <c>_lastProcessedValues</c> entry). Handlers must NOT write to the same property
-    /// that is currently being reconciled, because this would corrupt the reconciliation baseline.
+    /// Scalar properties never take the topology lock. A structural property validates and claims the
+    /// whole component the proposed value opens up before the backing writer runs, so a write that
+    /// would pull in a subject of another context fails before the property changes. The value the
+    /// terminal actually stored is claimed as well, because a normalizing or hand-written terminal
+    /// can store a graph the caller never proposed.
+    ///
+    /// A terminal that stores a subject the write never proposed is a contract violation, and the
+    /// guarantee has one boundary there: the graph is left untouched, but the backing field holds
+    /// whatever that terminal stored. The framework can only invoke the terminal it was given, and a
+    /// terminal that is not a function of its argument cannot be replayed to restore the prior
+    /// value: replaying it with the pre-write value re-stores the same subject and fails again, and
+    /// going through <c>SetValue</c> is worse, being full chain re-entry with the same substitution
+    /// and therefore unbounded recursion. A terminal that stores what it was given, which is every
+    /// terminal the source generator emits, never reaches the boundary and skips the second claim.
     /// </remarks>
     public void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next)
     {
-        next(ref context);
+        var property = context.Property;
+        var metadata = property.Metadata;
+        if (!metadata.Type.CanContainSubjects<TProperty>() || !metadata.IsIntercepted ||
+            metadata is { IsDerived: true, IsDynamic: true, SetValue: null })
+        {
+            // Scalar, non-intercepted or a derived projection: never a graph edge. Same rule as
+            // OwnershipGraph.IsStructural, which carries the reasoning, restated here because the
+            // generic overload of CanContainSubjects is the write path's type fast path.
+            next(ref context);
+            return;
+        }
 
-        var metadata = context.Property.Metadata;
-        if (!metadata.Type.CanContainSubjects<TProperty>())
+        CallbackReentrancyGuard.ThrowIfInsideCallback();
+
+        var subject = property.Subject;
+        if (!ReferenceEquals(subject.Executor.AttachedContext, _context))
+        {
+            // Not this lifecycle's subject: either unattached, or owned by another context whose own
+            // lifecycle reconciles this write.
+            next(ref context);
+            return;
+        }
+
+        using (EnterGate())
+        {
+            if (!_graph.IsOwned(subject))
+            {
+                // Claimed for this context but not published: a root whose own structural getter
+                // writes back while the explicit attach seeds it at callback depth zero, or a
+                // subject between losing its ownership record and having its claim handed back. The
+                // reconcile would find no owner to publish edges for, and the seed that follows
+                // reads the committed value anyway.
+                next(ref context);
+                return;
+            }
+
+            var claimed = LifecycleScratch.RentSubjectList();
+            try
+            {
+                ClaimProposedComponent(metadata.Type, context.NewValue, claimed);
+
+                try
+                {
+                    next(ref context);
+                }
+                catch (Exception writeException) when (context.IsWritten)
+                {
+                    // A downstream interceptor can throw after the terminal committed its value.
+                    try
+                    {
+                        ReconcileStoredValue(ref context, metadata, claimed);
+                    }
+                    catch (Exception reconciliationException)
+                    {
+                        throw new AggregateException("The write and its lifecycle reconciliation both failed.",
+                            writeException, reconciliationException);
+                    }
+
+                    throw;
+                }
+
+                ReconcileStoredValue(ref context, metadata, claimed);
+            }
+            finally
+            {
+                // Claims that never became ownership are handed back; see
+                // OwnershipGraph.ReleaseUnusedClaims for what leaves them behind.
+                _graph.ReleaseUnusedClaims(claimed);
+                LifecycleScratch.Return(claimed);
+            }
+        }
+    }
+
+    private void ReconcileStoredValue<TProperty>(ref PropertyWriteContext<TProperty> context, SubjectPropertyMetadata metadata, List<IInterceptorSubject> claimed)
+    {
+        var property = context.Property;
+
+        // The authoritative getter output rather than the proposed value: a normalizing or
+        // derived setter may store a different graph than the caller passed.
+        var getValue = metadata.GetValue;
+        var storedValue = getValue is not null ? getValue(property.Subject) : context.NewValue;
+        if (!IsTheProposedValue(storedValue, context.NewValue))
+        {
+            // The terminal stored something else, so the claim above covers a graph that is
+            // not the one now in the property. Claiming what was actually stored keeps the
+            // foreign-subject rejection ahead of every graph mutation: the baseline, the
+            // ownership records and the attach notifications all come after this point.
+            ClaimProposedComponent(metadata.Type, storedValue, claimed);
+        }
+
+        _reconciler.Reconcile(property, metadata, storedValue);
+    }
+
+    /// <summary>
+    /// Whether the terminal stored the value it was given, which is what lets a write skip claiming
+    /// the stored component a second time.
+    /// </summary>
+    /// <remarks>
+    /// The question is always identity of storage, never equality of value. A reference-typed value
+    /// is compared by reference and deliberately not through <see cref="object.Equals(object?)"/>:
+    /// a type that overrides equality could otherwise report a different instance as the same value
+    /// and suppress the claim on subjects nothing validated. A value type has no reference to
+    /// compare, because the authoritative getter boxes it afresh on every call, so the question can
+    /// only be asked of one whose own equality is itself storage identity, which
+    /// <see cref="ImmutableArray{T}"/> is. Every other value type is claimed a second time instead,
+    /// which costs one scan and cannot be wrong.
+    /// </remarks>
+    private static bool IsTheProposedValue<TProperty>(object? storedValue, TProperty proposedValue)
+    {
+        if (default(TProperty) is null)
+        {
+            return ReferenceEquals(storedValue, proposedValue);
+        }
+
+        return StorageIdentity<TProperty>.IsItsOwnEquality &&
+               storedValue is TProperty typedStoredValue &&
+               EqualityComparer<TProperty>.Default.Equals(typedStoredValue, proposedValue);
+    }
+
+    /// <summary>
+    /// Whether a value type's own equality is a comparison of its storage rather than of its
+    /// contents. Resolved once per property type by the runtime, so the write path reads a static.
+    /// </summary>
+    private static class StorageIdentity<TProperty>
+    {
+        internal static readonly bool IsItsOwnEquality =
+            typeof(TProperty).IsGenericType &&
+            typeof(TProperty).GetGenericTypeDefinition() == typeof(ImmutableArray<>);
+    }
+
+    /// <summary>
+    /// Validates every subject the proposed value reaches against this context and claims the
+    /// unattached ones, before the backing writer runs.
+    /// </summary>
+    private void ClaimProposedComponent(Type declaredType, object? proposedValue, List<IInterceptorSubject> claimed)
+    {
+        if (proposedValue is null)
         {
             return;
         }
 
-        lock (_attachedSubjects)
+        var visited = LifecycleScratch.RentSubjectSet();
+        try
         {
-            var lastProcessed = _lastProcessedValues.GetValueOrDefault(context.Property);
+            _graph.DiscoverComponent(declaredType, proposedValue, visited, claimed);
+        }
+        finally
+        {
+            LifecycleScratch.Return(visited);
+        }
 
-            // Read the actual backing store value to handle concurrent writes correctly.
-            // context.NewValue may differ from the backing store if another thread
-            // overwrote the property between our next() call and lock acquisition.
-            var getValue = metadata.GetValue;
-            var newValue = getValue is not null
-                ? getValue(context.Property.Subject)
-                : context.NewValue;
+        if (!_graph.TryClaimDiscovered(claimed, null, SubjectAttachmentAnchorKind.None))
+        {
+            claimed.Clear();
+            throw new InvalidOperationException(
+                "Another context claimed a subject of the assigned graph while this write was validating it. " +
+                "The write was rejected before reaching the backing field.");
+        }
+    }
 
-            if (ReferenceEquals(lastProcessed, newValue))
+    /// <inheritdoc />
+    public bool TryAddProperties(SubjectPropertyRegistration registration)
+    {
+        // EnterGate rejects an admission that would open a second transaction, before the input is
+        // enumerated and before anything blocks. A same-lifecycle callback re-enters this gate and
+        // is the supported dynamic-property-initializer case.
+        using (EnterGate())
+        {
+            var subject = registration.Subject;
+            if (!ReferenceEquals(subject.Executor.AttachedContext, _context))
             {
+                // The attachment moved between the caller's routing read and the gate; the caller
+                // re-routes against the fresh attachment.
+                return false;
+            }
+
+            if (_graph.IsOwned(subject))
+            {
+                _admission.Admit(registration);
+            }
+            else
+            {
+                // Claimed for this context but not owned by the graph: this thread's own attach
+                // descent before it publishes, or a detach callback after the release dropped the
+                // record; see AdmitUnowned for the shapes.
+                _admission.AdmitUnowned(registration);
+            }
+
+            return true;
+        }
+    }
+
+    #endregion
+
+    #region Ordered handler slot (the descent)
+
+    /// <summary>
+    /// The lifecycle's slot in the ordered <see cref="ILifecycleHandler"/> fan-out: when an edge
+    /// pulls a subject into the graph, it seeds that subject's own structural properties, which is
+    /// the recursive attach descent. This slot is the public ordering seam: a handler runs ahead
+    /// of the descent with <c>[RunsBefore(typeof(LifecycleInterceptor))]</c> and behind it with
+    /// <c>[RunsAfter]</c>, and detach changes pass through it unhandled so that the same seam
+    /// orders both directions.
+    /// </summary>
+    public void HandleLifecycleChange(SubjectLifecycleChange change)
+    {
+        if (change is { IsContextAttach: true, Property: not null })
+        {
+            _attach.SeedChildrenIfNeeded(change.Subject);
+        }
+    }
+
+    #endregion
+
+    #region Explicit attach and detach
+
+    /// <inheritdoc />
+    public void AttachSubjectToContext(IInterceptorSubject subject, IInterceptorSubjectContext context, SubjectAttachmentAnchorKind anchor)
+    {
+        CallbackReentrancyGuard.ThrowIfInsideCallback();
+
+        if (!ReferenceEquals(context, _context))
+        {
+            throw new InvalidOperationException("The subject cannot be attached through the lifecycle of another context.");
+        }
+
+        if (anchor == SubjectAttachmentAnchorKind.None)
+        {
+            throw new InvalidOperationException("An attach without a root anchor would be released by the next reachability decision.");
+        }
+
+        using (EnterGate())
+        {
+            var executor = subject.Executor;
+            executor.TryGetAttachment(out var attachedContext, out var currentAnchor, out _);
+            InterceptorSubjectExtensions.ValidateRootAnchor(attachedContext, currentAnchor, context, anchor);
+
+            if (attachedContext is not null)
+            {
+                // Already in this context: promote the anchor without repeating attach callbacks. A
+                // provisional request never promotes, it is only a construction-time default.
+                if (anchor != SubjectAttachmentAnchorKind.Provisional)
+                {
+                    _graph.SetAnchor(subject, anchor);
+                }
+
                 return;
             }
 
-            if ((lastProcessed is not (null or IInterceptorSubject or IEnumerable) || lastProcessed is string) &&
-                (newValue is not (null or IInterceptorSubject or IEnumerable) || newValue is string))
-            {
-                return;
-            }
+            var claimed = LifecycleScratch.RentSubjectList();
+            var consumedAnchors = LifecycleScratch.RentConsumedAnchorList();
 
-            var oldCollectedSubjects = GetList();
-            var newCollectedSubjects = GetList();
-            var oldTouchedSubjects = GetSubjectHashSet();
-            var newTouchedSubjects = GetSubjectHashSet();
+            // Saved and restored rather than assumed null: user code the seed invokes at callback
+            // depth zero can attach another root, and each attach hands back only what it consumed.
+            var enclosingConsumedAnchors = _attach.ConsumedAnchors;
+            _attach.ConsumedAnchors = consumedAnchors;
 
+            var published = false;
             try
             {
-                FindSubjectsInProperty(context.Property, lastProcessed, oldCollectedSubjects, oldTouchedSubjects);
-                FindSubjectsInProperty(context.Property, newValue, newCollectedSubjects, newTouchedSubjects);
-
-                // Detach in reverse order so that collection children are removed from the end first.
-                // RemoveChild searches backwards to match this order for O(1) per removal.
-                for (var i = oldCollectedSubjects.Count - 1; i >= 0; i--)
-                {
-                    var (subject, property, index) = oldCollectedSubjects[i];
-                    if (!newTouchedSubjects.Contains(subject))
-                    {
-                        DetachFromProperty(subject, context.Property.Subject.Context, property, index);
-                    }
-                }
-
-                for (var i = 0; i < newCollectedSubjects.Count; i++)
-                {
-                    var (subject, property, index) = newCollectedSubjects[i];
-                    if (!oldTouchedSubjects.Contains(subject))
-                    {
-                        AttachToProperty(subject, context.Property.Subject.Context, property, index);
-                    }
-                }
-
-                _lastProcessedValues[context.Property] = newValue;
-
-                // Parent was concurrently detached between next() and lock acquisition.
-                // Undo: remove dangling _lastProcessedValues and detach orphaned children.
-                if (!_attachedSubjects.ContainsKey(context.Property.Subject))
-                {
-                    _lastProcessedValues.Remove(context.Property);
-                    for (var i = 0; i < newCollectedSubjects.Count; i++)
-                    {
-                        var (subject, property, index) = newCollectedSubjects[i];
-                        if (!oldTouchedSubjects.Contains(subject))
-                        {
-                            DetachFromProperty(subject, context.Property.Subject.Context, property, index);
-                        }
-                    }
-
-                    return;
-                }
-
-                // Refresh child index metadata for retained subjects whose
-                // positions may have shifted in the new collection.
-                if (newValue is IEnumerable && oldTouchedSubjects.Overlaps(newTouchedSubjects))
-                {
-                    var handlers = context.Property.Subject.Context.GetServices<IPropertyLifecycleHandler>();
-                    for (var i = 0; i < handlers.Length; i++)
-                    {
-                        handlers[i].RefreshCollectionProperty(context.Property, newValue);
-                    }
-                }
+                ClaimComponentForRoot(subject, anchor, claimed);
+                SeedAndAttachComponent(subject);
+                published = true;
             }
             finally
             {
-                ReturnList(oldCollectedSubjects);
-                ReturnList(newCollectedSubjects);
-                ReturnSubjectHashSet(oldTouchedSubjects);
-                ReturnSubjectHashSet(newTouchedSubjects);
+                _attach.ConsumedAnchors = enclosingConsumedAnchors;
+                if (published)
+                {
+                    // Seeding rereads what discovery read, so a structural getter that answers
+                    // differently across the two, or a concurrent write landing in the window
+                    // before the claim, leaves a claimed subject no edge points at. It would be
+                    // attached, unowned and out of reach of every release; handing it back is the
+                    // compensation the write path already applies to the same residue.
+                    _graph.ReleaseUnusedClaims(claimed);
+                }
+                else
+                {
+                    RollbackRejectedAttach(subject, anchor, claimed, consumedAnchors);
+                }
+
+                LifecycleScratch.Return(claimed);
+                LifecycleScratch.Return(consumedAnchors);
             }
         }
     }
 
-    private enum LastProcessedValuesMode
+    /// <summary>
+    /// Hands back everything a rejected attach had already written. Discovery reads user values
+    /// before the claim publishes anything, so a concurrent write can install a child that seeding
+    /// then refuses, and the anchor, the seeded baselines and the claims taken in between must not
+    /// outlive that refusal.
+    /// </summary>
+    /// <remarks>
+    /// Whatever the seed managed to publish hangs off the root's committed baselines, so removing
+    /// those edges releases it the ordinary way, cascade and detach callbacks included. That is also
+    /// the only handle on a subject a concurrent write installed after the scan: it is published but
+    /// was never in the claimed set, so a claim-only rollback would leave it attached.
+    ///
+    /// The order is deliberate: the root keeps its anchor, its baselines and its claim until the
+    /// drain has actually finished, so a rollback that cannot complete leaves the root attached and
+    /// detachable rather than stripped of the very state <c>DetachFromContext</c> needs.
+    ///
+    /// A provisional anchor the seed consumed goes back before the drain, because the edge that
+    /// consumed it is among the edges drained, and without the anchor that removal would release a
+    /// subject that was attached and held before the attach began, together with everything it
+    /// holds. The restore is a compare-and-swap against the revision the consumption produced, so
+    /// a subject whose attachment moved since (promoted, detached, released) keeps what it has.
+    /// </remarks>
+    private void RollbackRejectedAttach(
+        IInterceptorSubject subject,
+        SubjectAttachmentAnchorKind anchor,
+        List<IInterceptorSubject> claimed,
+        List<(IInterceptorSubject Subject, long Revision)> consumedAnchors)
     {
-        /// <summary>Read property values from the backing store (default).</summary>
-        None,
-
-        /// <summary>Read from backing store and seed _lastProcessedValues (used during attach).</summary>
-        Seed,
-
-        /// <summary>Read from _lastProcessedValues instead of backing store (used during detach).</summary>
-        Use
-    }
-
-    private void FindSubjectsInProperties(IInterceptorSubject subject,
-        List<(IInterceptorSubject subject, PropertyReference property, object? index)> collectedSubjects,
-        HashSet<IInterceptorSubject>? touchedSubjects,
-        LastProcessedValuesMode lastProcessedValuesMode = LastProcessedValuesMode.None)
-    {
-        foreach (var property in subject.Properties)
+        var children = LifecycleScratch.RentChildList();
+        try
         {
-            var metadata = property.Value;
-            if (!metadata.IsIntercepted ||
-                !metadata.Type.CanContainSubjects())
+            foreach (var (consumedSubject, revision) in consumedAnchors)
             {
-                continue;
+                consumedSubject.Executor.TryUpdateAttachment(revision, _context, SubjectAttachmentAnchorKind.Provisional, out _);
             }
 
-            var propertyReference = new PropertyReference(subject, property.Key);
-            var propertyValue = lastProcessedValuesMode == LastProcessedValuesMode.Use && _lastProcessedValues.TryGetValue(propertyReference, out var lastProcessed)
-                ? lastProcessed
-                : metadata.GetValue?.Invoke(subject);
-
-            if (lastProcessedValuesMode == LastProcessedValuesMode.Seed)
+            _graph.CollectStructuralChildren(subject, children, seed: false);
+            foreach (var (property, occurrence) in children)
             {
-                _lastProcessedValues[propertyReference] = propertyValue;
+                _release.RemoveEdge(occurrence.Subject, property, occurrence.Index);
             }
 
-            if (propertyValue is not null)
+            _graph.SetAnchor(subject, SubjectAttachmentAnchorKind.None);
+
+            // The drain above ran while the anchor was still set, so a back edge inside the
+            // component kept the root anchor-reachable and nothing released it. Re-evaluate now
+            // that the anchor is gone, or the root stays owned with no anchor and no way to
+            // detach it.
+            var ownership = _graph.TryGetOwnership(subject);
+            if (ownership is null)
             {
-                FindSubjectsInProperty(propertyReference, propertyValue, collectedSubjects, touchedSubjects);
+                _graph.ReleaseClaim(subject);
             }
+            else if (ownership.IncomingCount == 0 || !_reachability.IsAnchorReachable(subject, null))
+            {
+                try
+                {
+                    _release.ReleaseRoot(subject);
+                }
+                catch
+                {
+                    // The release runs detach callbacks, so it can fail partway. Put the anchor
+                    // back: the trace below tells the caller to detach the root explicitly, and
+                    // without an anchor that is exactly what DetachFromContext refuses to do.
+                    _graph.SetAnchor(subject, anchor);
+                    throw;
+                }
+            }
+
+            // An edge that survived the drain (one published from outside the component by user
+            // code the seed invoked) supports its subject exactly as the drained edge did, so the
+            // anchor is consumed again rather than left as a root that nothing ever releases.
+            foreach (var (consumedSubject, _) in consumedAnchors)
+            {
+                if (_graph.TryGetOwnership(consumedSubject) is { IncomingCount: > 0 } &&
+                    _reachability.IsAnchorReachable(consumedSubject, consumedSubject))
+                {
+                    _graph.SetAnchor(consumedSubject, SubjectAttachmentAnchorKind.None, onlyFrom: SubjectAttachmentAnchorKind.Provisional);
+                }
+            }
+
+            foreach (var claimedSubject in claimed)
+            {
+                if (!_graph.IsOwned(claimedSubject))
+                {
+                    _graph.RemoveBaselines(claimedSubject);
+                }
+            }
+
+            _graph.ReleaseUnusedClaims(claimed);
         }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void FindSubjectsInProperty(PropertyReference property,
-        object? value,
-        List<(IInterceptorSubject subject, PropertyReference property, object? index)> collectedSubjects,
-        HashSet<IInterceptorSubject>? touchedSubjects)
-    {
-        // Hot paths (IDictionary, ICollection) come before string/IEnumerable so common
-        // writes don't pay extra type checks. The IEnumerable case at the end handles read-only
-        // types that implement neither ICollection nor IDictionary (e.g. custom IReadOnlyList /
-        // IReadOnlyDictionary wrappers that opt out of the non-generic container interfaces).
-        switch (value)
+        catch (Exception exception)
         {
-            case null:
-                return;
+            // This runs while the attach's own exception is in flight, and that one is the
+            // diagnostic worth keeping: it says why the attach was refused, where this one only
+            // says the cleanup after it went wrong. So the original wins and this is traced instead
+            // of thrown, the rollback stops where it stood, and the root keeps the anchor and claim
+            // an explicit detach needs.
+            Trace.TraceError(
+                $"LifecycleInterceptor: rolling back a rejected attach of {subject.GetType().Name} " +
+                $"failed with {exception.GetType().Name}: {exception.Message}. The attach's own " +
+                "exception is propagating and this one is not, so part of the attach is still " +
+                "published and the root is still attached; detach it explicitly to clean up.");
+        }
+        finally
+        {
+            LifecycleScratch.Return(children);
+        }
+    }
 
-            case IInterceptorSubject subject:
-                touchedSubjects?.Add(subject);
-                collectedSubjects.Add((subject, property, null));
-                return;
+    /// <inheritdoc />
+    public void DetachSubjectFromContext(IInterceptorSubject subject, IInterceptorSubjectContext context)
+    {
+        CallbackReentrancyGuard.ThrowIfInsideCallback();
 
-            case IDictionary dictionary:
-                foreach (DictionaryEntry entry in dictionary)
-                {
-                    if (entry.Value is IInterceptorSubject subjectItem)
-                    {
-                        touchedSubjects?.Add(subjectItem);
-                        collectedSubjects.Add((subjectItem, property, entry.Key));
-                    }
-                }
-                return;
+        if (!ReferenceEquals(context, _context))
+        {
+            throw new InvalidOperationException("The subject cannot be detached through the lifecycle of another context.");
+        }
 
-            case ICollection collection:
+        using (EnterGate())
+        {
+            var executor = subject.Executor;
+            executor.TryGetAttachment(out var attachedContext, out var anchor, out _);
+            InterceptorSubjectExtensions.ValidateDetach(attachedContext, anchor, context);
+
+            _graph.SetAnchor(subject, SubjectAttachmentAnchorKind.None);
+
+            var ownership = _graph.TryGetOwnership(subject);
+            if (ownership is null)
             {
-                var i = 0;
-                foreach (var item in collection)
-                {
-                    if (item is IInterceptorSubject subjectItem)
-                    {
-                        touchedSubjects?.Add(subjectItem);
-                        collectedSubjects.Add((subjectItem, property, i));
-                    }
-                    i++;
-                }
+                _graph.ReleaseClaim(subject);
                 return;
             }
 
-            case string:
-                return;
-
-            case IEnumerable enumerable:
+            if (ownership.IncomingCount == 0 || !_reachability.IsAnchorReachable(subject, null))
             {
-                // A pair carries its key, but a dictionary type is free to enumerate as its values
-                // instead, and a broad declaration (object, plain interface) never classifies as a
-                // dictionary, so the value's own type has to answer when the declared one cannot.
-                var isKeyed = property.Metadata.Type.IsSubjectDictionaryType() ||
-                              enumerable.GetType().IsSubjectDictionaryType();
-                var index = 0;
-                foreach (var item in enumerable)
-                {
-                    if (isKeyed && item is not null &&
-                        SubjectLookup.TryGetSubjectFromKeyValuePair(item, out var key, out var keyedItem))
-                    {
-                        touchedSubjects?.Add(keyedItem);
-                        collectedSubjects.Add((keyedItem, property, key));
-                    }
-                    else if (item is IInterceptorSubject subjectItem)
-                    {
-                        touchedSubjects?.Add(subjectItem);
-                        collectedSubjects.Add((subjectItem, property, index));
-                    }
-                    index++;
-                }
-                return;
+                _release.ReleaseRoot(subject);
             }
         }
     }
 
-    #region  Performance
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static List<(IInterceptorSubject subject, PropertyReference property, object? index)> GetList()
+    /// <summary>
+    /// Seeds and publishes a freshly claimed root's component. Runs under <see cref="_gate"/>.
+    /// </summary>
+    private void SeedAndAttachComponent(IInterceptorSubject subject)
     {
-        _listPool ??= new Stack<List<(IInterceptorSubject, PropertyReference, object?)>>();
-        return _listPool.Count > 0 ? _listPool.Pop() : new List<(IInterceptorSubject, PropertyReference, object?)>(8);
+        _attach.SeedAndAttachChildren(subject);
+
+        // A back edge inside the seeded component can attach the subject before this point, in
+        // which case it already published its context attach through that edge.
+        if (!_graph.IsOwned(subject))
+        {
+            _attach.AttachRoot(subject);
+        }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static HashSet<IInterceptorSubject> GetSubjectHashSet()
+    /// <summary>
+    /// Validates the component the subject opens up and claims every unattached subject in it, with
+    /// the requested anchor on the root. The claims and the anchor are the only things it writes,
+    /// and <see cref="RollbackRejectedAttach"/> is what hands them back when the attach is refused
+    /// after this point.
+    /// </summary>
+    private void ClaimComponentForRoot(IInterceptorSubject subject, SubjectAttachmentAnchorKind anchor, List<IInterceptorSubject> unattached)
     {
-        _subjectHashSetPool ??= new Stack<HashSet<IInterceptorSubject>>();
-        return _subjectHashSetPool.Count > 0 ? _subjectHashSetPool.Pop() : new HashSet<IInterceptorSubject>(8, ReferenceEqualityComparer.Instance);
+        var visited = LifecycleScratch.RentSubjectSet();
+        try
+        {
+            _graph.DiscoverComponent(subject, visited, unattached);
+            if (!_graph.TryClaimDiscovered(unattached, subject, anchor))
+            {
+                throw new InvalidOperationException(
+                    "Another context claimed a subject of this graph while the attach was validating it.");
+            }
+        }
+        finally
+        {
+            LifecycleScratch.Return(visited);
+        }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ReturnList(List<(IInterceptorSubject, PropertyReference, object?)> list)
+    #endregion
+
+    #region Committed state queries
+
+    // Internal for tests only: committed baselines have no public observer, and the
+    // released-parent regression tests must assert that none survives a subject's release.
+    internal OwnershipGraph Graph => _graph;
+
+    /// <summary>
+    /// Asks whether there is an in-flight transaction to wait for, and registers work to run once it
+    /// ends. Returns false when there is nothing in flight, in which case nothing was registered and
+    /// the caller decides on the value it is holding. A null <paramref name="recalculation"/> asks
+    /// the question without registering, for a caller whose earlier booking is still outstanding.
+    /// </summary>
+    /// <remarks>
+    /// The question and the registration share one lock, and the transaction count is decremented
+    /// before the drain takes that lock, so the two cannot both miss: a registration that lands
+    /// before the drain's swap is drained, and one that lands after it reads a count of zero and is
+    /// refused. That is also why every caller has to ask here rather than answering from state of
+    /// its own. Nothing registered here runs under this lock, and the caller may hold its own lock
+    /// while registering, so this stays a leaf.
+    /// </remarks>
+    internal bool TryRunWhenTransactionEnds(Action? recalculation)
     {
-        list.Clear();
-        _listPool ??= new Stack<List<(IInterceptorSubject, PropertyReference, object?)>>();
-        _listPool.Push(list);
+        lock (_withheldLock)
+        {
+            if (Volatile.Read(ref _transactionsInFlight) <= (_gate.IsHeldByCurrentThread ? 1 : 0))
+            {
+                return false;
+            }
+
+            if (recalculation is not null)
+            {
+                (_withheldRecalculations ??= []).Add(recalculation);
+            }
+
+            return true;
+        }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ReturnSubjectHashSet(HashSet<IInterceptorSubject> hashSet)
+    /// <summary>
+    /// Runs everything a reader deferred until this transaction ended. The gate is already released,
+    /// so the work is free to take it again, and this lifecycle holds no lock while it runs.
+    /// </summary>
+    /// <remarks>
+    /// Exceptions do not escape: this is reached from a <c>finally</c>, so a conviction that
+    /// surfaces here would replace the exception of a transaction that is already failing, and the
+    /// reader that produced the value has long returned. It is traced instead, and raised against a
+    /// caller on the next evaluation with nothing in flight. Nothing schedules that evaluation, so
+    /// this is best effort and not a guarantee: a derived property whose dependencies are written
+    /// once at startup, or one orphaned by the last write of a batch, is reported only into the
+    /// trace, which is silent unless a listener is configured.
+    /// </remarks>
+    private void RunWithheldRecalculations()
     {
-        hashSet.Clear();
-        _subjectHashSetPool ??= new Stack<HashSet<IInterceptorSubject>>();
-        _subjectHashSetPool.Push(hashSet);
+        List<Action>? withheld;
+        lock (_withheldLock)
+        {
+            withheld = _withheldRecalculations;
+            _withheldRecalculations = null;
+        }
+
+        if (withheld is null)
+        {
+            return;
+        }
+
+        foreach (var recalculation in withheld)
+        {
+            try
+            {
+                recalculation();
+            }
+            catch (Exception exception)
+            {
+                Trace.TraceError(
+                    "LifecycleInterceptor: a recalculation deferred until this topology transaction " +
+                    $"ended failed with {exception.GetType().Name}: {exception.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets the number of committed incoming edge occurrences, which is the subject's reference
+    /// count. An anchored root with no edge reports zero, so this is not an attachment predicate.
+    /// </summary>
+    /// <remarks>Takes no lock: consumers call it from inside lifecycle callbacks and their own locks.</remarks>
+    public int GetReferenceCount(IInterceptorSubject subject)
+    {
+        return _graph.TryGetOwnership(subject)?.IncomingCount ?? 0;
+    }
+
+    /// <summary>
+    /// Gets the subject's occurrence-aware parents. The first call on a subject activates parent
+    /// publication for it; a subject nobody asks about never allocates a snapshot.
+    /// </summary>
+    /// <remarks>Takes no lock; see <see cref="OwnershipGraph.GetParents"/> for why that is required.</remarks>
+    public ImmutableArray<SubjectParent> GetParents(IInterceptorSubject subject)
+    {
+        return _graph.GetParents(subject);
     }
 
     #endregion

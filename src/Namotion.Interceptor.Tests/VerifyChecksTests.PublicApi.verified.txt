@@ -57,21 +57,18 @@ namespace Namotion.Interceptor
     }
     public interface IInterceptorSubject
     {
-        Namotion.Interceptor.IInterceptorSubjectContext Context { get; }
         [System.Runtime.CompilerServices.TupleElementNames(new string[] {
                 "property",
                 "key"})]
         System.Collections.Concurrent.ConcurrentDictionary<System.ValueTuple<string?, string>, object?> Data { get; }
+        Namotion.Interceptor.Interceptors.IInterceptorExecutor Executor { get; }
         System.Collections.Generic.IReadOnlyDictionary<string, Namotion.Interceptor.SubjectPropertyMetadata> Properties { get; }
-        object SyncRoot { get; }
         void AddProperties(System.Collections.Generic.IEnumerable<Namotion.Interceptor.SubjectPropertyMetadata> properties);
     }
     public interface IInterceptorSubjectContext
     {
-        bool AddFallbackContext(Namotion.Interceptor.IInterceptorSubjectContext context);
         void AddService<TService>(TService service);
         System.Collections.Immutable.ImmutableArray<TInterface> GetServices<TInterface>();
-        bool RemoveFallbackContext(Namotion.Interceptor.IInterceptorSubjectContext context);
         bool TryAddService<TService>(System.Func<TService> factory, System.Func<TService, bool> exists);
         TInterface? TryGetService<TInterface>();
     }
@@ -79,13 +76,11 @@ namespace Namotion.Interceptor
     {
         void RaisePropertyChanged(string propertyName);
     }
-    public class InterceptorSubjectContext : Namotion.Interceptor.IInterceptorSubjectContext
+    public interface ISingletonContextService<TContract> { }
+    public sealed class InterceptorSubjectContext : Namotion.Interceptor.IInterceptorSubjectContext
     {
-        public virtual bool AddFallbackContext(Namotion.Interceptor.IInterceptorSubjectContext context) { }
         public void AddService<TService>(TService service) { }
         public System.Collections.Immutable.ImmutableArray<TInterface> GetServices<TInterface>() { }
-        protected bool HasFallbackContext(Namotion.Interceptor.IInterceptorSubjectContext context) { }
-        public virtual bool RemoveFallbackContext(Namotion.Interceptor.IInterceptorSubjectContext context) { }
         public bool TryAddService<TService>(System.Func<TService> factory, System.Func<TService, bool> exists) { }
         public TInterface? TryGetService<TInterface>() { }
         public static Namotion.Interceptor.InterceptorSubjectContext Create() { }
@@ -98,8 +93,13 @@ namespace Namotion.Interceptor
     }
     public static class InterceptorSubjectExtensions
     {
+        public static void AttachToContext(this Namotion.Interceptor.IInterceptorSubject subject, Namotion.Interceptor.IInterceptorSubjectContext context) { }
+        public static void AttachToContext(this Namotion.Interceptor.IInterceptorSubject subject, Namotion.Interceptor.IInterceptorSubjectContext context, Namotion.Interceptor.SubjectAttachmentAnchorKind anchor) { }
+        public static void DetachFromContext(this Namotion.Interceptor.IInterceptorSubject subject, Namotion.Interceptor.IInterceptorSubjectContext context) { }
+        public static Namotion.Interceptor.IInterceptorSubjectContext GetContext(this Namotion.Interceptor.IInterceptorSubject subject) { }
         public static void SetData(this Namotion.Interceptor.IInterceptorSubject subject, string key, object? value) { }
         public static bool TryAddData(this Namotion.Interceptor.IInterceptorSubject subject, string key, object? value) { }
+        public static Namotion.Interceptor.IInterceptorSubjectContext? TryGetContext(this Namotion.Interceptor.IInterceptorSubject subject) { }
         public static bool TryGetData(this Namotion.Interceptor.IInterceptorSubject subject, string key, out object? value) { }
     }
     public static class PropertyChangedEventArgsCache
@@ -141,7 +141,12 @@ namespace Namotion.Interceptor
     public static class PropertyReferenceExtensions
     {
         public static Namotion.Interceptor.PropertyReference GetPropertyReference(this Namotion.Interceptor.IInterceptorSubject subject, string propertyName) { }
-        public static void SetPropertyValueWithInterception(this Namotion.Interceptor.PropertyReference property, object? newValue, object? currentValue, System.Action<Namotion.Interceptor.IInterceptorSubject, object?> writeValue) { }
+    }
+    public enum SubjectAttachmentAnchorKind
+    {
+        None = 0,
+        Provisional = 1,
+        Explicit = 2,
     }
     public readonly struct SubjectChangeContext
     {
@@ -173,16 +178,25 @@ namespace Namotion.Interceptor
 }
 namespace Namotion.Interceptor.Interceptors
 {
-    public interface IInterceptorExecutor : Namotion.Interceptor.IInterceptorSubjectContext
+    public interface IInterceptorExecutor
     {
+        Namotion.Interceptor.IInterceptorSubjectContext? AttachedContext { get; }
+        Namotion.Interceptor.SubjectAttachmentAnchorKind AttachmentAnchor { get; }
+        long AttachmentRevision { get; }
+        void AddProperties(Namotion.Interceptor.Interceptors.SubjectPropertyRegistration registration);
         TProperty GetPropertyValue<TProperty>(string propertyName, System.Func<Namotion.Interceptor.IInterceptorSubject, TProperty> readValue);
         object? InvokeMethod(string methodName, object?[] parameters, System.Func<Namotion.Interceptor.IInterceptorSubject, object?[], object?> invokeMethod);
         bool SetPropertyValue<TProperty>(string propertyName, TProperty newValue, TProperty currentValue, System.Action<Namotion.Interceptor.IInterceptorSubject, TProperty> writeValue);
+        bool TryGetAttachment(out Namotion.Interceptor.IInterceptorSubjectContext? context, out Namotion.Interceptor.SubjectAttachmentAnchorKind anchor, out long revision);
+        bool TryUpdateAttachment(long expectedRevision, Namotion.Interceptor.IInterceptorSubjectContext? context, Namotion.Interceptor.SubjectAttachmentAnchorKind anchor, out long currentRevision);
     }
-    public interface ILifecycleInterceptor
+    public interface ILifecycleInterceptor : Namotion.Interceptor.ISingletonContextService<Namotion.Interceptor.Interceptors.ILifecycleInterceptor>, Namotion.Interceptor.Interceptors.IWriteInterceptor
     {
-        void AttachSubjectToContext(Namotion.Interceptor.IInterceptorSubject subject);
-        void DetachSubjectFromContext(Namotion.Interceptor.IInterceptorSubject subject);
+        void AttachSubjectToContext(Namotion.Interceptor.IInterceptorSubject subject, Namotion.Interceptor.IInterceptorSubjectContext context, Namotion.Interceptor.SubjectAttachmentAnchorKind anchor);
+        void DetachSubjectFromContext(Namotion.Interceptor.IInterceptorSubject subject, Namotion.Interceptor.IInterceptorSubjectContext context);
+        void EnterStructuralWriteGate();
+        void ExitStructuralWriteGate();
+        bool TryAddProperties(Namotion.Interceptor.Interceptors.SubjectPropertyRegistration registration);
     }
     public interface IMethodInterceptor
     {
@@ -196,14 +210,18 @@ namespace Namotion.Interceptor.Interceptors
     {
         void WriteProperty<TProperty>(ref Namotion.Interceptor.Interceptors.PropertyWriteContext<TProperty> context, Namotion.Interceptor.Interceptors.WriteInterceptionDelegate<TProperty> next);
     }
-    public sealed class InterceptorExecutor : Namotion.Interceptor.InterceptorSubjectContext, Namotion.Interceptor.IInterceptorSubjectContext, Namotion.Interceptor.Interceptors.IInterceptorExecutor
+    public sealed class InterceptorExecutor : Namotion.Interceptor.Interceptors.IInterceptorExecutor
     {
         public InterceptorExecutor(Namotion.Interceptor.IInterceptorSubject subject) { }
-        public override bool AddFallbackContext(Namotion.Interceptor.IInterceptorSubjectContext context) { }
+        public Namotion.Interceptor.IInterceptorSubjectContext? AttachedContext { get; }
+        public Namotion.Interceptor.SubjectAttachmentAnchorKind AttachmentAnchor { get; }
+        public long AttachmentRevision { get; }
+        public void AddProperties(Namotion.Interceptor.Interceptors.SubjectPropertyRegistration registration) { }
         public TProperty GetPropertyValue<TProperty>(string propertyName, System.Func<Namotion.Interceptor.IInterceptorSubject, TProperty> readValue) { }
         public object? InvokeMethod(string methodName, object?[] parameters, System.Func<Namotion.Interceptor.IInterceptorSubject, object?[], object?> invokeMethod) { }
-        public override bool RemoveFallbackContext(Namotion.Interceptor.IInterceptorSubjectContext context) { }
         public bool SetPropertyValue<TProperty>(string propertyName, TProperty newValue, TProperty currentValue, System.Action<Namotion.Interceptor.IInterceptorSubject, TProperty> writeValue) { }
+        public bool TryGetAttachment(out Namotion.Interceptor.IInterceptorSubjectContext? context, out Namotion.Interceptor.SubjectAttachmentAnchorKind anchor, out long revision) { }
+        public bool TryUpdateAttachment(long expectedRevision, Namotion.Interceptor.IInterceptorSubjectContext? context, Namotion.Interceptor.SubjectAttachmentAnchorKind anchor, out long currentRevision) { }
         public static Namotion.Interceptor.Interceptors.IInterceptorExecutor GetOrCreate(ref Namotion.Interceptor.Interceptors.IInterceptorExecutor? context, Namotion.Interceptor.IInterceptorSubject subject) { }
     }
     public delegate object? InvokeMethodInterceptionDelegate(ref Namotion.Interceptor.Interceptors.MethodInvocationContext context);
@@ -228,5 +246,23 @@ namespace Namotion.Interceptor.Interceptors
         public TProperty GetFinalValue() { }
     }
     public delegate TProperty ReadInterceptionDelegate<TProperty>(ref Namotion.Interceptor.Interceptors.PropertyReadContext<TProperty> context);
+    public sealed class SubjectPropertyRegistration
+    {
+        public SubjectPropertyRegistration(Namotion.Interceptor.IInterceptorSubject subject, System.Collections.Generic.IEnumerable<Namotion.Interceptor.SubjectPropertyMetadata> properties, System.Action<System.Collections.Generic.IReadOnlyDictionary<string, Namotion.Interceptor.SubjectPropertyMetadata>> publishProperties) { }
+        public Namotion.Interceptor.IInterceptorSubject Subject { get; }
+        public System.Collections.Generic.IReadOnlyList<Namotion.Interceptor.SubjectPropertyMetadata> GetProperties() { }
+        public void Publish() { }
+    }
     public delegate void WriteInterceptionDelegate<TProperty>(ref Namotion.Interceptor.Interceptors.PropertyWriteContext<TProperty> context);
+}
+namespace Namotion.Interceptor.Tracking
+{
+    public static class SubjectPropertyTypeExtensions
+    {
+        public static bool CanContainSubjects(this System.Type type) { }
+        public static bool CanContainSubjects<TProperty>(this System.Type type) { }
+        public static bool IsSubjectCollectionType(this System.Type type) { }
+        public static bool IsSubjectDictionaryType(this System.Type type) { }
+        public static bool IsSubjectReferenceType(this System.Type type) { }
+    }
 }

@@ -123,10 +123,9 @@ internal static class SubjectMemberConflicts
 
     /// <summary>
     /// Public members, and explicit interface implementations, that would take an IInterceptorSubject
-    /// slot from the root under interface re-implementation. Context is the severe one: hijacking it
+    /// slot from the root under interface re-implementation. Executor is the severe one: hijacking it
     /// leaves the inherited helpers reading a context that is never populated, so interception stops
-    /// silently and the unguarded IInterceptorExecutor casts in DynamicSubjectFactory and
-    /// RegisteredSubject throw.
+    /// silently.
     /// </summary>
     /// <remarks>
     /// The walk runs the whole chain rather than stopping at the contract provider, because the

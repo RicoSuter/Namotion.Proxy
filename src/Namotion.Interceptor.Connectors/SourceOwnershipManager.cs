@@ -44,8 +44,7 @@ public class SourceOwnershipManager : IDisposable
         _onReleasing = onReleasing;
         _onSubjectDetaching = onSubjectDetaching;
 
-        var context = source.RootSubject.Context;
-        _lifecycle = context.TryGetLifecycleInterceptor()
+        _lifecycle = source.RootSubject.TryGetContext()?.TryGetLifecycleInterceptor()
             ?? throw new InvalidOperationException(
                 $"LifecycleInterceptor not configured for {source.GetType().Name}. " +
                 "Call WithLifecycle() on the context to enable automatic cleanup when subjects are detached.");

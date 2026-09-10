@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
+using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Connectors;
 using Namotion.Interceptor.OpcUa.Mapping;
 using Namotion.Interceptor.Registry;
@@ -132,7 +133,7 @@ internal class OpcUaSubjectLoader
                     }
                     else
                     {
-                        await LoadSubjectReferenceAsync(property, nodeReference, resolvedNodeId, subject, session, monitoredItems, loadedSubjects, subjectsByNodeId, cancellationToken).ConfigureAwait(false);
+                        await LoadSubjectReferenceAsync(property, nodeReference, resolvedNodeId, session, monitoredItems, loadedSubjects, subjectsByNodeId, cancellationToken).ConfigureAwait(false);
                     }
                 }
                 else if (property.IsSubjectCollection)
@@ -253,7 +254,6 @@ internal class OpcUaSubjectLoader
     private async Task LoadSubjectReferenceAsync(RegisteredSubjectProperty property,
         ReferenceDescription nodeReference,
         NodeId nodeId,
-        IInterceptorSubject subject,
         ISession session,
         List<MonitoredItem> monitoredItems,
         HashSet<IInterceptorSubject> loadedSubjects,
@@ -277,7 +277,10 @@ internal class OpcUaSubjectLoader
 
         if (isNewSubject)
         {
-            subjectToLoad.Context.AddFallbackContext(subject.Context);
+            // Assign before loading, as the collection and dictionary paths below do: the
+            // assignment is what attaches the subject, and the load is registry-driven, so it
+            // silently does nothing for a subject that is not in the graph yet.
+            property.SetValueFromSource(_source, null, null, subjectToLoad);
         }
 
         // Pre-attached children participate in the dedup cache too: any later sibling
@@ -286,11 +289,6 @@ internal class OpcUaSubjectLoader
         subjectsByNodeId.TryAdd(nodeId, subjectToLoad);
 
         await LoadSubjectAsync(subjectToLoad, nodeReference, session, monitoredItems, loadedSubjects, subjectsByNodeId, cancellationToken).ConfigureAwait(false);
-
-        if (isNewSubject)
-        {
-            property.SetValueFromSource(_source, null, null, subjectToLoad);
-        }
     }
 
     private async Task LoadSubjectCollectionAsync(RegisteredSubjectProperty property,

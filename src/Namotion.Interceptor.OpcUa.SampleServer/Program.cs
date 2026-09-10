@@ -14,7 +14,6 @@ var context = InterceptorSubjectContext
     .Create()
     .WithFullPropertyTracking()
     .WithRegistry()
-    .WithParents()
     .WithLifecycle()
     .WithDataAnnotationValidation()
     .WithHostedServices(builder.Services);

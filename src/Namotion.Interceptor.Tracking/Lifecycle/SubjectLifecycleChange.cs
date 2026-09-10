@@ -14,7 +14,7 @@ public readonly struct SubjectLifecycleChange
     /// <summary>Gets the index defining the place of the subject in the property's dictionary or collection.</summary>
     public object? Index { get; init; }
 
-    /// <summary>Gets the number of properties pointing to the referenced subject.</summary>
+    /// <summary>Gets the number of structural edge occurrences pointing to the referenced subject.</summary>
     public required int ReferenceCount { get; init; }
 
     /// <summary>True when the subject first entered the graph.</summary>

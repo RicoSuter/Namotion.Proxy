@@ -44,29 +44,29 @@ var interceptors = context.GetServices<IWriteInterceptor>();
 var registry = context.TryGetService<SubjectRegistry>();
 ```
 
-Services are cached after first resolution. The cache is invalidated when services or fallback contexts change.
+Services are cached after first resolution. Every registration publishes a fresh context state with empty caches, so a cached resolution can never survive the registration that would change it.
 
-## Fallback Contexts
+## One Context Per Subject
 
-Contexts can be linked in a hierarchy where child contexts inherit services from parent contexts:
+A subject belongs to exactly one context, and that context is what it resolves services through. There is no per-subject service registration, no subtree scoping, and no composition of one context onto another.
 
 ```csharp
-var parentContext = InterceptorSubjectContext
+var context = InterceptorSubjectContext
     .Create()
     .WithFullPropertyTracking();
 
-var childContext = InterceptorSubjectContext.Create();
-childContext.AddFallbackContext(parentContext);
-
-// childContext now has access to all services from parentContext
+var person = new Person(context);
+person.Children = [new Person { FirstName = "Alice" }];
 ```
 
-This is used internally by `WithContextInheritance()` to automatically assign the parent's context to child subjects.
+Alice is attached to the same context as her parent, so both resolve the same services. Attaching a subject into a graph attaches it to that graph's context; this is intrinsic to the lifecycle rather than a separate opt-in. Read `person.TryGetContext()` for the context a subject is attached to, or `GetContext()` when attachment is required.
 
-**Resolution order:**
-1. Services registered directly on the context
-2. Services from fallback contexts (recursively)
-3. Results are deduplicated and ordered
+A subject that has never been attached resolves nothing, and its property writes are not intercepted at all. That is why a subject built with a context-taking constructor is attached from construction.
+
+**Resolution order** within the one context:
+
+1. Services registered on the context, deduplicated by instance
+2. Ordered by their `RunsFirst`, `RunsBefore` and `RunsAfter` attributes
 
 ## Service Ordering
 
@@ -98,7 +98,7 @@ public class LateHandler : IWriteInterceptor { }
 
 - Services are partitioned into three groups: `[RunsFirst]` → Middle → `[RunsLast]`
 - Within each group, `[RunsBefore]` and `[RunsAfter]` define the topological order
-- A reference to a type with multiple registered instances binds against every instance, for example when a context aggregates fallback contexts that each register the same service type
+- A reference to a type with multiple registered instances binds against every instance, for example when the same handler type is registered twice on one context
 - Instances of the same type keep their registration order relative to each other
 - Without ordering attributes, registration order is preserved
 - Missing dependency types are silently ignored (supports optional dependencies)

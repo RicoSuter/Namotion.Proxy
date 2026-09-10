@@ -98,8 +98,10 @@ public class HostedServiceHandlerTests
             await AsyncTestHelpers.WaitUntilAsync(() => person.FirstName == "John" && person.LastName == "Doe");
             Assert.Single(attachedHostedServices);
 
-            // Act
-            ((IInterceptorSubject)person).Context.RemoveFallbackContext(context);
+            // Act: promote the constructor's provisional anchor and give it up, which releases
+            // the root from the context.
+            person.AttachToContext(context);
+            ((IInterceptorSubject)person).DetachFromContext(context);
             attachedHostedServices = person.GetAttachedHostedServices();
 
             // Assert

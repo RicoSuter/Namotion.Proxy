@@ -1,4 +1,5 @@
 using Moq;
+using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Tracking.Lifecycle;
 
 namespace Namotion.Interceptor.Connectors.Tests;
@@ -70,12 +71,12 @@ public class SourceOwnershipManagerCountTests
 
     private static (LifecycleInterceptor Lifecycle, SourceOwnershipManager Manager) CreateSourceWithManager()
     {
-        var lifecycleInterceptor = new LifecycleInterceptor();
+        var lifecycleInterceptor = new LifecycleInterceptor(InterceptorSubjectContext.Create());
 
         var subjectMock = new Mock<IInterceptorSubject>();
         var contextMock = new Mock<IInterceptorSubjectContext>();
         contextMock.Setup(c => c.TryGetService<LifecycleInterceptor>()).Returns(lifecycleInterceptor);
-        subjectMock.Setup(s => s.Context).Returns(contextMock.Object);
+        subjectMock.Setup(s => s.Executor).Returns(CreateAttachedExecutor(contextMock.Object));
 
         var sourceMock = new Mock<ISubjectSource>();
         sourceMock.Setup(s => s.RootSubject).Returns(subjectMock.Object);
@@ -84,11 +85,23 @@ public class SourceOwnershipManagerCountTests
         return (lifecycleInterceptor, new SourceOwnershipManager(sourceMock.Object));
     }
 
+
+    /// <summary>
+    /// An executor stub exposing only the exact attached context, which is the one member the
+    /// production code reads from these mocks.
+    /// </summary>
+    private static IInterceptorExecutor CreateAttachedExecutor(IInterceptorSubjectContext? context)
+    {
+        var executorMock = new Mock<IInterceptorExecutor>();
+        executorMock.Setup(e => e.AttachedContext).Returns(context);
+        return executorMock.Object;
+    }
+
     private static IInterceptorSubject CreateSubject()
     {
         var subjectMock = new Mock<IInterceptorSubject>();
         subjectMock.Setup(s => s.Data).Returns(new System.Collections.Concurrent.ConcurrentDictionary<(string?, string), object?>());
-        subjectMock.Setup(s => s.Context).Returns(InterceptorSubjectContext.Create());
+        subjectMock.Setup(s => s.Executor).Returns(CreateAttachedExecutor(InterceptorSubjectContext.Create()));
         return subjectMock.Object;
     }
 

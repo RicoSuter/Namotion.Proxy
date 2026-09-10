@@ -239,60 +239,6 @@ public class SourceWaitTests
     }
 
     [Fact]
-    public void WhenTwoMonitorsAreReachable_ThenCompleteSourceRegistrationSignalsAll()
-    {
-        // Arrange
-        var parent = InterceptorSubjectContext.Create()
-            .WithFullPropertyTracking()
-            .WithLifecycle()
-            .WithSourceMonitoring();
-        var child = InterceptorSubjectContext.Create().WithSourceMonitoring();
-        child.AddFallbackContext(parent);
-
-        var parentMonitor = parent.GetSourceMonitor();
-        var childMonitor = child.GetServices<SourceMonitor>()[0];
-
-        // Act
-        child.CompleteSourceRegistration();
-
-        // Assert
-        Assert.True(parentMonitor.IsRegistrationComplete);
-        Assert.True(childMonitor.IsRegistrationComplete);
-    }
-
-    [Fact]
-    public void WhenDeferWaitCompletionIsCalledWithTwoMonitors_ThenBothHoldsAreReleased()
-    {
-        // Arrange
-        var parent = InterceptorSubjectContext.Create()
-            .WithFullPropertyTracking()
-            .WithLifecycle()
-            .WithSourceMonitoring();
-        var child = InterceptorSubjectContext.Create().WithSourceMonitoring();
-        child.AddFallbackContext(parent);
-
-        var parentMonitor = parent.GetSourceMonitor();
-        var childMonitor = child.GetServices<SourceMonitor>()[0];
-
-        parentMonitor.CompleteSourceRegistration();
-        childMonitor.CompleteSourceRegistration();
-
-        // Act
-        var hold = child.DeferWaitCompletion();
-
-        // Assert - both should be incomplete while holds are out
-        Assert.False(parentMonitor.IsRegistrationComplete);
-        Assert.False(childMonitor.IsRegistrationComplete);
-
-        // Act - release the holds
-        hold.Dispose();
-
-        // Assert - both should be complete
-        Assert.True(parentMonitor.IsRegistrationComplete);
-        Assert.True(childMonitor.IsRegistrationComplete);
-    }
-
-    [Fact]
     public async Task WhenRegistrationIsIncomplete_ThenTheWaitDoesNotComplete()
     {
         // Arrange
@@ -420,7 +366,7 @@ public class SourceWaitTests
         // every re-evaluation pass. An earlier version of this test drove the throw from a
         // one-shot diagnostic warning instead, which meant nothing threw on the second pass and
         // the test passed with the per-wait isolation removed.
-        var poisonWait = new PoisonAnchor(context).WaitForSynchronizationAsync(CancellationToken.None);
+        var poisonWait = monitor.WaitForSynchronizationAsync(new PoisonAnchor(), CancellationToken.None);
         Assert.False(poisonWait.IsCompleted);
 
         // A second, later wait whose own re-evaluation never touches the poison anchor: its scope
@@ -488,7 +434,7 @@ public class SourceWaitTests
         monitor.CompleteSourceRegistration();
 
         var hold = monitor.DeferWaitCompletion();
-        var poisonWait = new PoisonAnchor(context).WaitForSynchronizationAsync(CancellationToken.None);
+        var poisonWait = monitor.WaitForSynchronizationAsync(new PoisonAnchor(), CancellationToken.None);
         Assert.False(poisonWait.IsCompleted);
         Assert.Throws<InvalidOperationException>(() => hold.Dispose());
 
@@ -606,7 +552,7 @@ public class SourceWaitTests
 
         // Assert
         // This is the test that catches handler-ordering defects. If the monitor ran before
-        // ParentTrackingHandler it would re-evaluate against moving's stale parent set, still find
+        // the lifecycle's parent publication it would re-evaluate against moving's stale parent set, still find
         // blocking in scope, and never look again - the wait would hang.
         await wait.WaitAsync(TimeSpan.FromSeconds(5));
     }
@@ -779,40 +725,29 @@ public class SourceWaitTests
     }
 
     [Fact]
-    public void WhenOneMonitorsReleaseThrows_ThenTheOtherMonitorIsStillReleased()
+    public void WhenReleaseReEvaluationThrows_ThenRegistrationStillCompletes()
     {
         // Arrange
-        var parent = InterceptorSubjectContext.Create()
-            .WithFullPropertyTracking()
-            .WithLifecycle()
-            .WithSourceMonitoring();
-        var child = InterceptorSubjectContext.Create().WithSourceMonitoring();
-        child.AddFallbackContext(parent);
+        var context = CreateContext();
+        var monitor = context.GetSourceMonitor();
+        monitor.CompleteSourceRegistration();
 
-        var parentMonitor = parent.GetSourceMonitor();
-        var childMonitor = child.GetServices<SourceMonitor>()[0];
-
-        parentMonitor.CompleteSourceRegistration();
-        childMonitor.CompleteSourceRegistration();
-
-        var root = new Person(child);
+        var root = new Person(context);
         var throwing = new ThrowingScopeSource(root);
-        childMonitor.Register(throwing);
+        monitor.Register(throwing);
 
-        // Re-arms both monitors and gives each a pending wait, so the release below has something
-        // to re-evaluate: it is that re-evaluation, not the release itself, that throws.
-        var hold = child.DeferWaitCompletion();
+        // Re-arms the monitor and gives it a pending wait, so the release below has something to
+        // re-evaluate: it is that re-evaluation, not the release itself, that throws.
+        var hold = context.DeferWaitCompletion();
         var wait = root.WaitForSynchronizationAsync(CancellationToken.None);
         Assert.False(wait.IsCompleted);
 
         // Act
         var exception = Assert.Throws<InvalidOperationException>(() => hold.Dispose());
 
-        // Assert - the throwing monitor's own count still dropped, and the other monitor's hold was
-        // not stranded by the first one's exception.
+        // Assert - the hold's own count still dropped, so the exception cannot wedge registration.
         Assert.Equal("scope check failed", exception.Message);
-        Assert.True(parentMonitor.IsRegistrationComplete);
-        Assert.True(childMonitor.IsRegistrationComplete);
+        Assert.True(monitor.IsRegistrationComplete);
     }
 }
 
@@ -873,20 +808,22 @@ internal sealed class RecordingLoggerFactory(RecordingLogger logger) : ILoggerFa
 }
 
 /// <summary>
-/// A subject whose <see cref="Data"/> getter throws, so any parent walk that reaches it fails.
+/// A subject whose <see cref="Data"/> and executor getters throw, so any parent walk that reaches it
+/// fails.
 /// </summary>
 /// <remarks>
 /// Used as a wait anchor to make one wait's re-evaluation throw on every pass while leaving every
-/// other wait unaffected. GetParents() reads Data, and SourceScope's walk starts from the anchor, so
-/// the throw lands inside that wait's own IsBranchSynchronized and nowhere else. A throwing source would not
-/// work here: IsBranchSynchronized iterates the shared source list for every wait, so one poison source makes
-/// every wait's evaluation throw.
+/// other wait unaffected. GetParents() reads the subject's attachment, and SourceScope's walk starts
+/// from the anchor, so the throw lands inside that wait's own IsBranchSynchronized and nowhere else.
+/// The wait is registered on the monitor directly: WaitForSynchronizationAsync's extension resolves
+/// the monitor through the subject's attached context, which is exactly the poisoned read.
+/// A throwing source would not work here: IsBranchSynchronized iterates the shared source list for
+/// every wait, so one poison source makes every wait's evaluation throw.
 /// </remarks>
-internal sealed class PoisonAnchor(IInterceptorSubjectContext context) : IInterceptorSubject
+internal sealed class PoisonAnchor : IInterceptorSubject
 {
-    public object SyncRoot { get; } = new();
-
-    public IInterceptorSubjectContext Context { get; } = context;
+    Namotion.Interceptor.Interceptors.IInterceptorExecutor IInterceptorSubject.Executor =>
+        throw new InvalidOperationException("scope walk is broken");
 
     public ConcurrentDictionary<(string? property, string key), object?> Data =>
         throw new InvalidOperationException("scope walk is broken");

@@ -16,7 +16,6 @@ public class FaultTargetResolverTests
             .Create()
             .WithFullPropertyTracking()
             .WithRegistry()
-            .WithParents()
             .WithLifecycle();
 
     private sealed class FakeConnector : ISubjectConnector, IFaultInjectable

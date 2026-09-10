@@ -20,9 +20,10 @@ var context = InterceptorSubjectContext
 Wrap your content in a `TrackingScope` to automatically re-render when tracked properties change:
 
 ```razor
+@using Namotion.Interceptor
 @using Namotion.Interceptor.Blazor
 
-<TrackingScope Context="@person.Context">
+<TrackingScope Context="@person.TryGetContext()">
     <p>@person.FirstName @person.LastName</p>
     <p>Age: @person.Age</p>
 </TrackingScope>

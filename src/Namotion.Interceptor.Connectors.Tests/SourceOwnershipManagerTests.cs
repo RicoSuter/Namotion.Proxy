@@ -1,4 +1,5 @@
 using Moq;
+using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Tracking.Lifecycle;
 
 namespace Namotion.Interceptor.Connectors.Tests;
@@ -42,7 +43,7 @@ public class SourceOwnershipManagerTests
     public void ClaimSource_WhenOwnedByDifferentSource_ReturnsFalse()
     {
         // Arrange
-        var lifecycleInterceptor = new LifecycleInterceptor();
+        var lifecycleInterceptor = new LifecycleInterceptor(InterceptorSubjectContext.Create());
         var (_, manager1) = CreateSourceWithManager(lifecycleInterceptor);
         var (_, manager2) = CreateSourceWithManager(lifecycleInterceptor);
         var property = CreatePropertyReference();
@@ -149,10 +150,10 @@ public class SourceOwnershipManagerTests
         // Create subjects and properties (subjects need Data for PropertyReference to work)
         var subject1Mock = new Mock<IInterceptorSubject>();
         subject1Mock.Setup(s => s.Data).Returns(new System.Collections.Concurrent.ConcurrentDictionary<(string?, string), object?>());
-        subject1Mock.Setup(s => s.Context).Returns(InterceptorSubjectContext.Create());
+        subject1Mock.Setup(s => s.Executor).Returns(CreateAttachedExecutor(InterceptorSubjectContext.Create()));
         var subject2Mock = new Mock<IInterceptorSubject>();
         subject2Mock.Setup(s => s.Data).Returns(new System.Collections.Concurrent.ConcurrentDictionary<(string?, string), object?>());
-        subject2Mock.Setup(s => s.Context).Returns(InterceptorSubjectContext.Create());
+        subject2Mock.Setup(s => s.Executor).Returns(CreateAttachedExecutor(InterceptorSubjectContext.Create()));
         var property1 = new PropertyReference(subject1Mock.Object, "Prop1");
         var property2 = new PropertyReference(subject2Mock.Object, "Prop2");
         var property3 = new PropertyReference(subject1Mock.Object, "Prop3");
@@ -181,7 +182,7 @@ public class SourceOwnershipManagerTests
         var subjectMock = new Mock<IInterceptorSubject>();
         var contextMock = new Mock<IInterceptorSubjectContext>();
         contextMock.Setup(c => c.TryGetService<LifecycleInterceptor>()).Returns((LifecycleInterceptor?)null);
-        subjectMock.Setup(s => s.Context).Returns(contextMock.Object);
+        subjectMock.Setup(s => s.Executor).Returns(CreateAttachedExecutor(contextMock.Object));
 
         var sourceMock = new Mock<ISubjectSource>();
         sourceMock.Setup(s => s.RootSubject).Returns(subjectMock.Object);
@@ -197,7 +198,7 @@ public class SourceOwnershipManagerTests
     public void SetSource_AfterRelease_AllowsNewClaim()
     {
         // Arrange
-        var lifecycleInterceptor = new LifecycleInterceptor();
+        var lifecycleInterceptor = new LifecycleInterceptor(InterceptorSubjectContext.Create());
         var (_, manager1) = CreateSourceWithManager(lifecycleInterceptor);
         var (_, manager2) = CreateSourceWithManager(lifecycleInterceptor);
         var property = CreatePropertyReference();
@@ -221,12 +222,12 @@ public class SourceOwnershipManagerTests
         Action<PropertyReference>? onReleasing = null,
         Action<IInterceptorSubject>? onSubjectDetaching = null)
     {
-        lifecycleInterceptor ??= new LifecycleInterceptor();
+        lifecycleInterceptor ??= new LifecycleInterceptor(InterceptorSubjectContext.Create());
 
         var subjectMock = new Mock<IInterceptorSubject>();
         var contextMock = new Mock<IInterceptorSubjectContext>();
         contextMock.Setup(c => c.TryGetService<LifecycleInterceptor>()).Returns(lifecycleInterceptor);
-        subjectMock.Setup(s => s.Context).Returns(contextMock.Object);
+        subjectMock.Setup(s => s.Executor).Returns(CreateAttachedExecutor(contextMock.Object));
 
         var sourceMock = new Mock<ISubjectSource>();
         sourceMock.Setup(s => s.RootSubject).Returns(subjectMock.Object);
@@ -236,11 +237,23 @@ public class SourceOwnershipManagerTests
         return (lifecycleInterceptor, manager);
     }
 
+
+    /// <summary>
+    /// An executor stub exposing only the exact attached context, which is the one member the
+    /// production code reads from these mocks.
+    /// </summary>
+    private static IInterceptorExecutor CreateAttachedExecutor(IInterceptorSubjectContext? context)
+    {
+        var executorMock = new Mock<IInterceptorExecutor>();
+        executorMock.Setup(e => e.AttachedContext).Returns(context);
+        return executorMock.Object;
+    }
+
     private static PropertyReference CreatePropertyReference(string name = "TestProperty")
     {
         var subjectMock = new Mock<IInterceptorSubject>();
         subjectMock.Setup(s => s.Data).Returns(new System.Collections.Concurrent.ConcurrentDictionary<(string?, string), object?>());
-        subjectMock.Setup(s => s.Context).Returns(InterceptorSubjectContext.Create());
+        subjectMock.Setup(s => s.Executor).Returns(CreateAttachedExecutor(InterceptorSubjectContext.Create()));
         return new PropertyReference(subjectMock.Object, name);
     }
 }
@@ -250,11 +263,14 @@ internal static class LifecycleInterceptorExtensions
 {
     public static void RaiseSubjectDetaching(this LifecycleInterceptor interceptor, IInterceptorSubject subject)
     {
-        // Use reflection to raise the event since it's internal
-        var eventField = typeof(LifecycleInterceptor)
-            .GetField("SubjectDetaching", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+        // Reflection, because the event can be subscribed to but not raised from outside. Two hops:
+        // the interceptor's event forwards its add and remove to an internal notifier, so the
+        // subscriber list lives there rather than on a backing field of the interceptor itself.
+        const System.Reflection.BindingFlags flags =
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
 
-        if (eventField?.GetValue(interceptor) is Action<SubjectLifecycleChange> handler)
+        var notifier = typeof(LifecycleInterceptor).GetField("_notifier", flags)?.GetValue(interceptor);
+        if (notifier?.GetType().GetField("SubjectDetaching", flags)?.GetValue(notifier) is Action<SubjectLifecycleChange> handler)
         {
             handler.Invoke(new SubjectLifecycleChange { Subject = subject, ReferenceCount = 0 });
         }

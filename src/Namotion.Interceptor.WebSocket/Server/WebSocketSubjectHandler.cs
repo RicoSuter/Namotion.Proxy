@@ -67,7 +67,7 @@ public sealed class WebSocketSubjectHandler
         _subject = subject;
         _configuration = configuration;
         _logger = logger;
-        Context = subject.Context;
+        Context = subject.GetContext();
         _processors = configuration.Processors;
     }
     

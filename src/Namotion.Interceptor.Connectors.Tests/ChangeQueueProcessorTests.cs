@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Namotion.Interceptor.Connectors.Tests.Models;
+using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Testing;
 using Namotion.Interceptor.Tracking;
@@ -1306,7 +1307,7 @@ public class ChangeQueueProcessorTests
         var dataAccessEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseDataAccess = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var completionReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var subject = new BlockingDataSubject(context, dataAccessEntered, releaseDataAccess);
+        var subject = new BlockingDataSubject(dataAccessEntered, releaseDataAccess);
         var property = new PropertyReference(subject, nameof(Person.FirstName));
         var writeHandlerEntered = false;
 
@@ -2488,15 +2489,14 @@ public class ChangeQueueProcessorTests
     private sealed class WriteFailureException : Exception;
 
     private sealed class BlockingDataSubject(
-        IInterceptorSubjectContext context,
         TaskCompletionSource dataAccessEntered,
         TaskCompletionSource releaseDataAccess) : IInterceptorSubject
     {
         private readonly ConcurrentDictionary<(string? property, string key), object?> _data = new();
 
-        public object SyncRoot { get; } = new();
+        private IInterceptorExecutor? _executor;
 
-        public IInterceptorSubjectContext Context { get; } = context;
+        public IInterceptorExecutor Executor => InterceptorExecutor.GetOrCreate(ref _executor, this);
 
         public ConcurrentDictionary<(string? property, string key), object?> Data
         {

@@ -23,7 +23,6 @@ public class SnapshotComparerTests
             .Create()
             .WithFullPropertyTracking()
             .WithRegistry()
-            .WithParents()
             .WithLifecycle();
 
     private static TestNode CreateLeaf(IInterceptorSubjectContext context, string stringValue, int intValue)

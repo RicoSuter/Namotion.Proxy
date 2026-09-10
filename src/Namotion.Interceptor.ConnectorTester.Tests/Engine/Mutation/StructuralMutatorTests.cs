@@ -13,7 +13,6 @@ public class StructuralMutatorTests
             .Create()
             .WithFullPropertyTracking()
             .WithRegistry()
-            .WithParents()
             .WithLifecycle();
 
     [Fact]

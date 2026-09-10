@@ -138,7 +138,7 @@ public class MqttMappingCacheTests
         var subject = CreateRootSubject();
         await using var client = CreateClient(subject, mapper);
         var property = subject.TryGetRegisteredSubject()!.TryGetProperty(nameof(MqttCacheTestRoot.Name))!;
-        ((IInterceptorSubject)subject).Context.TryGetLifecycleInterceptor()!.DetachSubjectFromContext(subject);
+        subject.DetachFromContext(subject.GetContext());
 
         // Act
         client.TryGetTopicForProperty(property.Reference, property);
@@ -305,7 +305,7 @@ public class MqttMappingCacheTests
         root.Child = child;
 
         var property = child.TryGetRegisteredSubject()!.TryGetProperty(nameof(MqttCacheTestChild.Value))!;
-        var lifecycle = ((IInterceptorSubject)root).Context.TryGetLifecycleInterceptor()!;
+        var lifecycle = root.GetContext().TryGetLifecycleInterceptor()!;
 
         string? observed = null;
 

@@ -1,4 +1,5 @@
 using System.Reflection;
+using Namotion.Interceptor.Attributes;
 using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Testing;
 
@@ -19,8 +20,9 @@ public class ContextFunctionCacheTests
         // source-generated property for every slot. They race both arrays on one state.
         const int propertyTypeCount = 32;
         var propertyTypes = CreatePropertyTypes(propertyTypeCount);
-        var subject = new ContextProbeSubject();
-        var executor = Assert.IsType<InterceptorExecutor>(((IInterceptorSubject)subject).Context);
+        var context = InterceptorSubjectContext.Create();
+        var subject = new ContextProbeSubject(context);
+        var executor = Assert.IsType<InterceptorExecutor>(((IInterceptorSubject)subject).Executor);
 
         using var ready = new CountdownEvent(propertyTypeCount);
         using var start = new ManualResetEventSlim(false);
@@ -47,8 +49,8 @@ public class ContextFunctionCacheTests
         }
 
         // Assert
-        var readFunctions = GetReadFunctions(executor);
-        var writeFunctions = GetWriteFunctions(executor);
+        var readFunctions = GetReadFunctions(context);
+        var writeFunctions = GetWriteFunctions(context);
         Assert.NotNull(readFunctions);
         Assert.NotNull(writeFunctions);
 
@@ -70,15 +72,16 @@ public class ContextFunctionCacheTests
         var propertyTypeIndices = propertyTypes.Select(GetPropertyTypeIndex).ToArray();
         var highPropertyType = propertyTypes[^1];
         var highPropertyTypeIndex = propertyTypeIndices[^1];
-        var subject = new ContextProbeSubject();
-        var executor = Assert.IsType<InterceptorExecutor>(((IInterceptorSubject)subject).Context);
+        var context = InterceptorSubjectContext.Create();
+        var subject = new ContextProbeSubject(context);
+        var executor = Assert.IsType<InterceptorExecutor>(((IInterceptorSubject)subject).Executor);
 
         // Act
         ExerciseFunctionCachesMethod.MakeGenericMethod(highPropertyType).Invoke(null, [executor]);
 
         // Assert
-        var readFunctions = Assert.IsType<Delegate?[]>(GetReadFunctions(executor));
-        var writeFunctions = Assert.IsType<Delegate?[]>(GetWriteFunctions(executor));
+        var readFunctions = Assert.IsType<Delegate?[]>(GetReadFunctions(context));
+        var writeFunctions = Assert.IsType<Delegate?[]>(GetWriteFunctions(context));
         Assert.True(readFunctions.Length > highPropertyTypeIndex);
         Assert.True(writeFunctions.Length > highPropertyTypeIndex);
         Assert.Single(readFunctions, function => function is not null);
@@ -155,18 +158,40 @@ public class ContextFunctionCacheTests
         Assert.True(secondIndex + 1 < (firstIndex + 1) * 2,
             $"Index {secondIndex} is beyond double of {firstIndex}, so this cannot tell the two sizing rules apart.");
 
-        var subject = new ContextProbeSubject();
-        var executor = Assert.IsType<InterceptorExecutor>(((IInterceptorSubject)subject).Context);
+        var context = InterceptorSubjectContext.Create();
+        var subject = new ContextProbeSubject(context);
+        var executor = Assert.IsType<InterceptorExecutor>(((IInterceptorSubject)subject).Executor);
 
         // Act: the first fill sizes the array to its own index, the second has to grow it.
         ExerciseFunctionCachesMethod.MakeGenericMethod(propertyTypes[^2]).Invoke(null, [executor]);
-        var lengthAfterFirst = Assert.IsType<Delegate?[]>(GetReadFunctions(executor)).Length;
+        var lengthAfterFirst = Assert.IsType<Delegate?[]>(GetReadFunctions(context)).Length;
         ExerciseFunctionCachesMethod.MakeGenericMethod(propertyTypes[^1]).Invoke(null, [executor]);
 
         // Assert
         Assert.Equal(firstIndex + 1, lengthAfterFirst);
-        Assert.Equal(lengthAfterFirst * 2, Assert.IsType<Delegate?[]>(GetReadFunctions(executor)).Length);
-        Assert.Equal(lengthAfterFirst * 2, Assert.IsType<Delegate?[]>(GetWriteFunctions(executor)).Length);
+        Assert.Equal(lengthAfterFirst * 2, Assert.IsType<Delegate?[]>(GetReadFunctions(context)).Length);
+        Assert.Equal(lengthAfterFirst * 2, Assert.IsType<Delegate?[]>(GetWriteFunctions(context)).Length);
+    }
+
+    /// <summary>
+    /// Pins the invariant the cache design is derived from: a mutation installs a fresh state
+    /// object, so a compiled chain or service query cached on the previous state can never serve
+    /// the new topology. A registration that kept the same state object when it carried no caches
+    /// would pass every other test here.
+    /// </summary>
+    [Fact]
+    public void WhenServiceIsAdded_ThenTheStateObjectIsReplaced()
+    {
+        // Arrange: no query, so the state carries no caches and is the one a mutation could be
+        // tempted to keep.
+        var context = InterceptorSubjectContext.Create();
+        var stateBefore = GetState(context);
+
+        // Act
+        context.AddService(new object());
+
+        // Assert
+        Assert.NotSame(stateBefore, GetState(context));
     }
 
     private static Type[] CreatePropertyTypes(int count)
@@ -218,4 +243,14 @@ public class ContextFunctionCacheTests
     private sealed class DoublingPropertyType<TProperty>;
 
     private sealed class DoublingPropertyTypeRoot;
+}
+
+[InterceptorSubject]
+public partial class ContextProbeSubject
+{
+    public partial int Value { get; set; }
+
+    public partial string? Text { get; set; }
+
+    protected int EchoWithoutInterceptor(int input) => input;
 }

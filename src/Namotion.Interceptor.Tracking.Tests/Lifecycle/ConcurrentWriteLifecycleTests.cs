@@ -20,8 +20,7 @@ public class ConcurrentWriteLifecycleTests
         var context = InterceptorSubjectContext
             .Create()
             .WithLifecycle()
-            .WithRegistry()
-            .WithContextInheritance();
+            .WithRegistry();
 
         var root = new Person(context) { FirstName = "Root" };
         var initialChildren = Enumerable.Range(0, 5)
@@ -110,8 +109,7 @@ public class ConcurrentWriteLifecycleTests
         var context = InterceptorSubjectContext
             .Create()
             .WithLifecycle()
-            .WithRegistry()
-            .WithContextInheritance();
+            .WithRegistry();
 
         var root = new Person(context) { FirstName = "Root" };
         var initialFather = new Person { FirstName = "InitialFather" };
@@ -179,8 +177,7 @@ public class ConcurrentWriteLifecycleTests
         var context = InterceptorSubjectContext
             .Create()
             .WithLifecycle()
-            .WithRegistry()
-            .WithContextInheritance();
+            .WithRegistry();
 
         var root = new Person(context) { FirstName = "Root" };
 

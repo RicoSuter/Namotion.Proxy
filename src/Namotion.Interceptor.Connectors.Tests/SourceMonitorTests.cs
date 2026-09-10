@@ -363,19 +363,6 @@ public class SourceMonitorTests
     }
 
     [Fact]
-    public void WhenTwoMonitorsAreReachable_ThenGetSourceMonitorThrows()
-    {
-        // Arrange
-        var parent = InterceptorSubjectContext.Create().WithFullPropertyTracking().WithLifecycle().WithSourceMonitoring();
-        var child = InterceptorSubjectContext.Create().WithSourceMonitoring();
-        child.AddFallbackContext(parent);
-
-        // Act & Assert
-        var exception = Assert.Throws<InvalidOperationException>(() => child.GetSourceMonitor());
-        Assert.Contains("GetServices", exception.Message);
-    }
-
-    [Fact]
     public async Task WhenAStoppedSourceIsStartedAgain_ThenThePumpDoesNotRun()
     {
         // Arrange
@@ -561,16 +548,15 @@ public class SourceMonitorTests
         var shared = new Person();
         firstRoot.Mother = shared;
 
-        // Act
-        secondRoot.Mother = shared;
+        // Act & Assert
+        // A subject belongs to exactly one context, so the second tree cannot adopt it at all: the
+        // assignment is rejected before the backing property changes rather than producing a subject
+        // that is half visible to two monitors.
+        Assert.Throws<InvalidOperationException>(() => secondRoot.Mother = shared);
+        Assert.Null(secondRoot.Mother);
+        Assert.Same(firstTree, ((IInterceptorSubject)shared).TryGetContext());
 
-        // Assert
-        // Characterization, not aspiration: ContextInheritanceHandler adds a parent fallback only on
-        // the FIRST attach ({ ReferenceCount: 1, IsContextAttach: true }), so the second tree's
-        // monitor never becomes reachable and this design claims no multi-tree coverage. If context
-        // inheritance ever starts tracking every parent, this test fails and the limitation, the
-        // topology-aware CurrentState, and the docs all need revisiting together.
-        var reachable = ((IInterceptorSubject)shared).Context.GetServices<SourceMonitor>();
+        var reachable = ((IInterceptorSubject)shared).GetContext().GetServices<SourceMonitor>();
         Assert.Single(reachable);
         Assert.Same(firstTree.GetSourceMonitor(), reachable[0]);
     }
@@ -580,7 +566,7 @@ public class SourceMonitorTests
     {
         // Arrange
         // Note: a monitor-bearing context ALWAYS has the lifecycle interceptor, because
-        // WithSourceMonitoring implies WithParents and WithParents returns WithLifecycle. So the
+        // WithSourceMonitoring implies WithLifecycle. So the
         // reachable robustness case is a tree where nothing attaches, not one with no interceptor.
         var context = InterceptorSubjectContext.Create().WithFullPropertyTracking().WithSourceMonitoring();
         var monitor = context.GetSourceMonitor();

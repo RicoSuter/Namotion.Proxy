@@ -21,8 +21,7 @@ public class NullableStructuralPropertyTests
         // Arrange
         var context = InterceptorSubjectContext
             .Create()
-            .WithRegistry()
-            .WithContextInheritance();
+            .WithRegistry();
 
         var holder = new NullableStructuralHolder(context);
         var car1 = new Car { Name = "Car1" };
@@ -48,8 +47,7 @@ public class NullableStructuralPropertyTests
         // Arrange
         var context = InterceptorSubjectContext
             .Create()
-            .WithRegistry()
-            .WithContextInheritance();
+            .WithRegistry();
 
         var holder = new NullableStructuralHolder(context)
         {
@@ -74,8 +72,7 @@ public class NullableStructuralPropertyTests
         // Arrange
         var context = InterceptorSubjectContext
             .Create()
-            .WithLifecycle()
-            .WithContextInheritance();
+            .WithLifecycle();
 
         var holder = new NullableStructuralHolder(context);
 

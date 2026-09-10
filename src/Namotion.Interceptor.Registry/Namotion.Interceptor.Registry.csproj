@@ -20,4 +20,8 @@
         <ProjectReference Include="..\Namotion.Interceptor.Tracking\Namotion.Interceptor.Tracking.csproj" />
     </ItemGroup>
 
+    <ItemGroup>
+      <Compile Include="..\Shared\TypedPropertyWriteFactory.cs" Link="Shared\TypedPropertyWriteFactory.cs" />
+    </ItemGroup>
+
 </Project>

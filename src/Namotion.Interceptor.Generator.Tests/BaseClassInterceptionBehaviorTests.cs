@@ -57,9 +57,9 @@ public partial class HierarchyLeaf : HierarchyMiddle
 
 /// <summary>
 /// The only fixture with a hand-written ": base(context)" constructor. Everywhere else the
-/// generator emits "Leaf(IInterceptorSubjectContext context) : this()", which runs
-/// AddFallbackContext after the whole this() chain and therefore cannot intercept anything written
-/// during construction.
+/// generator emits "Leaf(IInterceptorSubjectContext context) : this()", which attaches to the
+/// context after the whole this() chain and therefore cannot intercept anything written during
+/// construction.
 /// </summary>
 [InterceptorSubject]
 public partial class HierarchyContextLeaf : HierarchyMiddle
@@ -176,11 +176,12 @@ public class BaseClassInterceptionBehaviorTests
         var leaf = new HierarchyLeaf();
 
         // Assert: this is the allocation claim. Every extra level used to cost one
-        // ConcurrentDictionary and one object per instance.
-        Assert.Equal(1, CountInstanceFields(leaf.GetType(), "_context"));
+        // ConcurrentDictionary and one object per instance. SyncRoot is asserted absent because
+        // the terminal lock moved onto the executor, so subjects no longer allocate one at all.
+        Assert.Equal(1, CountInstanceFields(leaf.GetType(), "_executor"));
         Assert.Equal(1, CountInstanceFields(leaf.GetType(), "_properties"));
         Assert.Equal(1, CountBackingFields(leaf.GetType(), "Data"));
-        Assert.Equal(1, CountBackingFields(leaf.GetType(), "SyncRoot"));
+        Assert.Equal(0, CountBackingFields(leaf.GetType(), "SyncRoot"));
     }
 
     [Fact]
@@ -248,11 +249,11 @@ public class BaseClassInterceptionBehaviorTests
     [Fact]
     public void WhenConstructorChainsToTheBaseContextConstructor_ThenItsOwnBodyWritesAreIntercepted()
     {
-        // Arrange: ((IInterceptorSubject)this).Context dispatches virtually, so a ": base(context)"
-        // constructor publishes the executor inside the BASE constructor. A base-declared write in
-        // the derived constructor body afterwards is therefore intercepted now, where it took the
-        // uninterceptable fast path before. This is the fix working, and it is pinned so it does not
-        // read as an accident later.
+        // Arrange: the constructor attach reads the subject's Executor through the interface, which
+        // dispatches virtually, so a ": base(context)" constructor publishes the executor and the
+        // attachment inside the BASE constructor. A base-declared write in the derived constructor
+        // body afterwards is therefore intercepted now, where it took the uninterceptable fast path
+        // before. This is the fix working, and it is pinned so it does not read as an accident later.
         var writeInterceptor = new RecordingWriteInterceptor();
         var context = InterceptorSubjectContext
             .Create()

@@ -34,6 +34,11 @@ public struct PropertyReadContext<TProperty>
     // per-call state belongs on the per-call context, which is also robust against reentrant reads.
     internal Func<IInterceptorSubject, TProperty>? Terminal;
 
+    // The executor that started this read, and always the executor of Property.Subject. Threaded
+    // through the context so the terminal can take the per-subject SyncRoot without resolving the
+    // subject's executor (an interface dispatch plus a type test) on every locked read.
+    internal readonly InterceptorExecutor Executor;
+
     /// <summary>
     /// Gets the property to read a value from.
     /// </summary>
@@ -41,8 +46,9 @@ public struct PropertyReadContext<TProperty>
 
     // Internal so every meaningfully constructed context comes from the library's execution entry
     // points, which always thread the per-call chain state (such as the terminal) through it.
-    internal PropertyReadContext(PropertyReference property)
+    internal PropertyReadContext(InterceptorExecutor executor, PropertyReference property)
     {
+        Executor = executor;
         Property = property;
     }
 }

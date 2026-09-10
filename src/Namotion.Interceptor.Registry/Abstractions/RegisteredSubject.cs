@@ -1,10 +1,10 @@
-﻿using System.Collections.Frozen;
+using System.Collections.Frozen;
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.Json.Serialization;
 using Namotion.Interceptor.Attributes;
-using Namotion.Interceptor.Interceptors;
+using Namotion.Interceptor.Tracking;
 using Namotion.Interceptor.Tracking.Lifecycle;
 
 namespace Namotion.Interceptor.Registry.Abstractions;
@@ -29,8 +29,8 @@ public class RegisteredSubject
     [JsonIgnore] public IInterceptorSubject Subject { get; }
 
     /// <summary>
-    /// Gets the current reference count (number of parent references).
-    /// Returns 0 if subject is not attached or lifecycle tracking is not enabled.
+    /// Gets the current reference count (number of parent references), or 0 when the subject is
+    /// not attached, because no edge can point at an unattached subject.
     /// </summary>
     public int ReferenceCount => Subject.GetReferenceCount();
 
@@ -329,34 +329,128 @@ public class RegisteredSubject
         Action<IInterceptorSubject, object?>? setValue,
         params Attribute[] attributes)
     {
+        if (Subject.Properties.TryGetValue(name, out var existingMetadata))
+        {
+            // The subject keeps its metadata across detach and reattach while Registry's
+            // projection is rebuilt per attach, and initializers rerun their AddProperty on every
+            // attach. Admission rejects a name the subject already carries, so without this the
+            // rerun would throw and no subject holding a dynamic property could reattach.
+            //
+            // The first registration wins and the caller's delegates are discarded, rather than
+            // the last: the metadata backs captured RegisteredSubjectProperty projections and the
+            // committed baselines keyed off it, so swapping accessors underneath a live subject
+            // would leave both resolving through delegates their registration never saw. A
+            // different shape is a genuine duplicate and is rejected like any duplicate name.
+            if (existingMetadata.Type != type || !AttributesMatch(existingMetadata.Attributes, attributes))
+            {
+                throw new InvalidOperationException(
+                    $"A property named '{name}' is already defined on the subject " +
+                    $"'{Subject.GetType().Name}' with a different shape. Only an identically " +
+                    "shaped re-registration, the reattach case, is supported.");
+            }
+
+            var existingProperty = GetOrAddPropertyProjection(name, existingMetadata.Type, existingMetadata.Attributes);
+            PublishInitialValue(existingProperty);
+            return existingProperty;
+        }
+
         Subject.AddProperties(new SubjectPropertyMetadata(
             name,
             type,
             attributes,
-            getValue is not null ? s => ((IInterceptorExecutor)s.Context).GetPropertyValue(name, getValue) : null,
-            setValue is not null ? (s, v) => ((IInterceptorExecutor)s.Context).SetPropertyValue(name, v, getValue?.Invoke(s), setValue) : null,
+            getValue is not null ? s => s.Executor.GetPropertyValue(name, getValue) : null,
+            setValue is not null
+                // The value arrives boxed here, so a TProperty-routed write would classify every
+                // dynamic property as structural and put scalar writes (source telemetry, say)
+                // through the lifecycle gate on every update. The declared type is known at
+                // registration time, so the setter is built once to call the typed write entry
+                // with that type as the generic argument, agreeing with how the lifecycle
+                // classifies the property inside the chain.
+                ? TypedPropertyWriteFactory.CreateSetter(type, name, getValue, setValue)
+                : null,
             isIntercepted: true,
             isDynamic: true));
 
-        var property = AddPropertyInternal(name, type, attributes);
+        var property = GetOrAddPropertyProjection(name, type, attributes);
 
-        // Fires a null→value transition for lifecycle tracking of subject-valued initial values.
-        // TODO(perf): For derived-with-setter this re-enters RecalculateDerivedProperty (total
-        // 3 getter invocations: AttachProperty + invoke below + recalc), but AttachProperty has
-        // already seeded LastKnownValue. Consider a dedicated lifecycle notification for derived,
-        // or passing currentValue so PropertyValueEqualityCheckHandler short-circuits the write.
-        property.Reference.SetPropertyValueWithInterception(getValue?.Invoke(Subject) ?? null,
-            null, delegate { });
-
+        // No explicit callback fan-out here. An attached subject's admission already invoked the
+        // property lifecycle callbacks, and SubjectRegistry.AttachProperty created this projection
+        // from inside that fan-out. An unattached subject resolves no context and therefore no
+        // handlers, so there is nothing to notify.
+        PublishInitialValue(property);
         return property;
     }
 
-    private RegisteredSubjectProperty AddPropertyInternal(string name, Type type, Attribute[] attributes)
+    /// <summary>
+    /// Publishes a dynamic property's initial value as a null-to-value write: the transition from
+    /// "the property did not exist" to what it now holds. Nothing else reports that to change
+    /// tracking or to the other write interceptors.
+    /// </summary>
+    /// <remarks>
+    /// Fires on every registration, including the re-registration an initializer performs on each
+    /// attach, because a reattached subject presents its dynamic properties to the graph afresh and
+    /// an observer that missed the first registration has no other way to learn their values. The
+    /// value is already in the caller's backing store, so the write carries a no-op writer and only
+    /// traverses the chain.
+    ///
+    /// A property that can hold subjects is excluded: admission captures and commits its initial
+    /// value, which left this write a no-op traversal that could only throw, through the callback
+    /// write guard, when a lifecycle handler added one.
+    /// </remarks>
+    private void PublishInitialValue(RegisteredSubjectProperty property)
     {
-        var subjectProperty = new RegisteredSubjectProperty(this, name, type, attributes);
+        if (property.Type.CanContainSubjects())
+        {
+            return;
+        }
 
+        TypedPropertyWriteFactory
+            .CreateSetter(property.Type, property.Name, getValue: null, setValue: static (_, _) => { })
+            .Invoke(Subject, property.GetValue());
+    }
+
+    /// <summary>
+    /// Whether a re-registration carries the same observable shape as the existing metadata.
+    /// Accessor delegates cannot be compared (initializers create fresh closures on every
+    /// attach), so shape is the declared type and the attribute list, compared pairwise with
+    /// <see cref="Attribute"/> value equality.
+    /// </summary>
+    private static bool AttributesMatch(IReadOnlyCollection<Attribute> existingAttributes, Attribute[] requestedAttributes)
+    {
+        if (existingAttributes.Count != requestedAttributes.Length)
+        {
+            return false;
+        }
+
+        var index = 0;
+        foreach (var attribute in existingAttributes)
+        {
+            if (!Equals(attribute, requestedAttributes[index++]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Gets the projection for the named property, creating and publishing it when missing. Called
+    /// by <c>AddProperty</c> and, for properties admitted through
+    /// <see cref="IInterceptorSubject.AddProperties"/>, by the registry's property attach callback,
+    /// which is what makes the projection exist before the property's initial structural edge
+    /// notifications resolve it.
+    /// </summary>
+    internal RegisteredSubjectProperty GetOrAddPropertyProjection(string name, Type type, IReadOnlyCollection<Attribute> attributes)
+    {
         lock (_lock)
         {
+            if (_properties.TryGetValue(name, out var existingProperty))
+            {
+                return existingProperty;
+            }
+
+            var subjectProperty = new RegisteredSubjectProperty(this, name, type, attributes);
             var newProperties = _properties
                 .Append(KeyValuePair.Create(subjectProperty.Name, subjectProperty))
                 .ToFrozenDictionary(p => p.Key, p => p.Value);
@@ -367,9 +461,8 @@ public class RegisteredSubject
             {
                 property.AttributesCache = null;
             }
-        }
 
-        Subject.AttachSubjectProperty(subjectProperty.Reference);
-        return subjectProperty;
+            return subjectProperty;
+        }
     }
 }

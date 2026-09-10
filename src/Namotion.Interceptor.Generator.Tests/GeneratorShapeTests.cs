@@ -779,6 +779,87 @@ namespace Repro
     }
 
     [Fact]
+    public void WhenAnInterceptedMethodParameterIsAnEscapedKeyword_ThenGeneratedCodeCompiles()
+    {
+        // Arrange: the wrapper restates the parameter list, so dropping the escape emits the
+        // keyword "event" where an identifier belongs.
+        const string source = """
+            using Namotion.Interceptor.Attributes;
+
+            namespace Repro
+            {
+                [InterceptorSubject]
+                public partial class Service
+                {
+                    public void DoWorkWithoutInterceptor(string @event)
+                    {
+                    }
+
+                    public partial string Name { get; set; }
+                }
+            }
+            """;
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.Empty(generated.CompilationErrors);
+    }
+
+    [Fact]
+    public void WhenTheSubjectClassNameIsAnEscapedKeyword_ThenGeneratedCodeCompiles()
+    {
+        // Arrange: the class name is restated on the generated partial declaration, on every cast
+        // and on each generated constructor.
+        const string source = """
+            using Namotion.Interceptor.Attributes;
+
+            namespace Repro
+            {
+                [InterceptorSubject]
+                public partial class @class
+                {
+                    public partial string Name { get; set; }
+                }
+            }
+            """;
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.Empty(generated.CompilationErrors);
+    }
+
+    [Fact]
+    public void WhenAContainingTypeNameIsAnEscapedKeyword_ThenGeneratedCodeCompiles()
+    {
+        // Arrange: the generated file reopens every containing type by name.
+        const string source = """
+            using Namotion.Interceptor.Attributes;
+
+            namespace Repro
+            {
+                public partial class @class
+                {
+                    [InterceptorSubject]
+                    public partial class Service
+                    {
+                        public partial string Name { get; set; }
+                    }
+                }
+            }
+            """;
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.Empty(generated.CompilationErrors);
+    }
+
+    [Fact]
     public void WhenTheOnlyDeclaredConstructorIsStatic_ThenBothConstructorsAreGenerated()
     {
         // Arrange: a static constructor is not an instance constructor, so nothing can chain to it

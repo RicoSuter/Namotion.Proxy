@@ -340,7 +340,7 @@ public class GeneratorShapeBehaviorTests
         //
         // Both properties are asserted against the interceptors. "FirstName" used to be asserted
         // against value, PropertyChanged and the registry instead, because every subject in a
-        // hierarchy emitted its own _context and only the most derived one was ever populated, so
+        // hierarchy emitted its own _executor and only the most derived one was ever populated, so
         // base-declared properties took the no-interception fast path. The interception
         // members now live once in the root, so a base-declared write is observable like any other.
         var readInterceptor = new RecordingReadInterceptor();

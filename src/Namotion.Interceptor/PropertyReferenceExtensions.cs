@@ -9,13 +9,6 @@ public static class PropertyReferenceExtensions
         return new PropertyReference(subject, propertyName);
     }
 
-    public static void SetPropertyValueWithInterception(this PropertyReference property, object? newValue,
-        object? currentValue, Action<IInterceptorSubject, object?> writeValue)
-    {
-        var executor = property.Subject.Context as IInterceptorExecutor;
-        executor?.SetPropertyValue(property.Name, newValue, currentValue, writeValue);
-    }
-
     /// <summary>
     /// Cascade re-entry path: invokes the write chain with a pre-resolved raw timestamp so the
     /// new <see cref="PropertyWriteContext{TProperty}"/>'s cache is seeded directly. Bypasses
@@ -25,7 +18,10 @@ public static class PropertyReferenceExtensions
     internal static void SetPropertyValueWithInterception(this PropertyReference property, object? newValue,
         object? currentValue, Action<IInterceptorSubject, object?> writeValue, long rawTimestamp)
     {
-        var executor = property.Subject.Context as InterceptorExecutor;
-        executor?.SetPropertyValue(property.Name, newValue, currentValue, writeValue, rawTimestamp);
+        // Hard cast: IInterceptorExecutor is not independently implementable (the chain terminals
+        // and the commit revision live on the built-in executor), and silently skipping this write
+        // would drop a derived-property cascade.
+        var executor = (InterceptorExecutor)property.Subject.Executor;
+        executor.SetPropertyValue(property.Name, newValue, currentValue, writeValue, rawTimestamp);
     }
 }

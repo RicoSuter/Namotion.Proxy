@@ -8,7 +8,8 @@ namespace Namotion.Interceptor.Tracking;
 /// and only calls the next interceptor when the property has actually changed.
 /// </summary>
 [RunsFirst]
-public class PropertyValueEqualityCheckHandler : IWriteInterceptor
+public class PropertyValueEqualityCheckHandler : IWriteInterceptor,
+    ISingletonContextService<PropertyValueEqualityCheckHandler>
 {
     /// <inheritdoc />
     public void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next)

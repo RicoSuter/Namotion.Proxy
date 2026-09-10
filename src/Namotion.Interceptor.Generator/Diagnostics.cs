@@ -161,5 +161,5 @@ internal static class Diagnostics
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
-        description: "Hijacking Context leaves the inherited helpers reading a context that is never populated, so interception silently stops.");
+        description: "Hijacking Executor leaves the inherited helpers reading a context that is never populated, so interception silently stops.");
 }

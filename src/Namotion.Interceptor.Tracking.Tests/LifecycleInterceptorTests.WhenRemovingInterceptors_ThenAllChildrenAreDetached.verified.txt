@@ -2,7 +2,7 @@
   + NA (attached, refs: 0),
   + Mother1.Mother -> Mother2 (refs: 1, attached),
   + Mother2.Mother -> Mother3 (refs: 1, attached),
+  - Mother1 (detached, refs: 0),
   - Mother1.Mother -> Mother2 (refs: 0, detached),
-  - Mother2.Mother -> Mother3 (refs: 0, detached),
-  - Mother1 (detached, refs: 0)
+  - Mother2.Mother -> Mother3 (refs: 0, detached)
 ]

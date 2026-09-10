@@ -7,12 +7,14 @@ namespace Namotion.Interceptor.Dynamic;
 
 public class DynamicSubject : IInterceptorSubject
 {
-    private IInterceptorExecutor? _context;
+    private IInterceptorExecutor? _executor;
     private IReadOnlyDictionary<string, SubjectPropertyMetadata> _properties;
 
     public DynamicSubject(IInterceptorSubjectContext context) : this()
     {
-        ((IInterceptorSubject)this).Context.AddFallbackContext(context);
+        // A provisional root anchor, matching the generated context-taking constructor; see
+        // SubjectAttachmentAnchorKind for why constructors do not create explicit roots.
+        this.AttachToContext(context, SubjectAttachmentAnchorKind.Provisional);
     }
 
     public DynamicSubject()
@@ -25,10 +27,12 @@ public class DynamicSubject : IInterceptorSubject
         _properties = properties.ToFrozenDictionary(p => p.Name, p => p);
     }
     
-    [JsonIgnore] object IInterceptorSubject.SyncRoot { get; } = new();
-
+    // Explicit implementation, like Data below: DynamicSubjectFactory reflects
+    // over GetProperties(Instance | Public | NonPublic) and turns every unknown property into an
+    // intercepted subject property, so a public or protected Executor would become a phantom
+    // property on every Castle-proxied subject.
     [JsonIgnore]
-    IInterceptorSubjectContext IInterceptorSubject.Context => InterceptorExecutor.GetOrCreate(ref _context, this);
+    IInterceptorExecutor IInterceptorSubject.Executor => InterceptorExecutor.GetOrCreate(ref _executor, this);
 
     [JsonIgnore] ConcurrentDictionary<(string? property, string key), object?> IInterceptorSubject.Data { get; } = new();
 
@@ -36,11 +40,10 @@ public class DynamicSubject : IInterceptorSubject
 
     public void AddProperties(params IEnumerable<SubjectPropertyMetadata> properties)
     {
-        lock (((IInterceptorSubject)this).SyncRoot)
-        {
-            _properties = _properties
-                .Concat(properties.Select(p => new KeyValuePair<string, SubjectPropertyMetadata>(p.Name, p)))
-                .ToFrozenDictionary();
-        }
+        // Routed through the executor so an attached subject's lifecycle can admit metadata,
+        // ownership edges and property callbacks as one atomic publication.
+        var subject = (IInterceptorSubject)this;
+        subject.Executor.AddProperties(new SubjectPropertyRegistration(
+            subject, properties, published => _properties = published));
     }
 }

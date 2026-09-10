@@ -84,29 +84,19 @@ public static class SourcePropertyExtensions
     private static void PublishOwnershipChange(
         PropertyReference property, ISubjectSource source, SourceEventKind kind)
     {
-        // Usually length 0 or 1 and cached on the context's copy-on-write state snapshot, so a tree
-        // without monitoring pays one array check per claim and nothing else.
-        var monitors = property.Subject.Context.GetSourceMonitors();
-        if (monitors.IsEmpty)
+        // Cached on the context's copy-on-write state snapshot, so a tree without monitoring pays
+        // one lookup per claim and nothing else. With no subscribers this skips the clock, the
+        // event and the monitor's lock entirely, which is the common shape.
+        var monitor = property.Subject.TryGetContext()?.TryGetService<SourceMonitor>();
+        if (monitor is null || !monitor.HasSubscribers)
         {
             return;
         }
 
-        // With no subscribers this skips the clock, the event and the monitor's lock entirely,
-        // which is the common shape. The event is identical per monitor, so build it at most once.
-        SourceEvent? sourceEvent = null;
-        foreach (var monitor in monitors)
-        {
-            if (!monitor.HasSubscribers)
-            {
-                continue;
-            }
+        var sourceEvent = kind == SourceEventKind.PropertyClaimed
+            ? new SourceEvent(kind, source, property, SourceState.Unclaimed, source.State, DateTimeOffset.UtcNow)
+            : new SourceEvent(kind, source, property, source.State, SourceState.Unclaimed, DateTimeOffset.UtcNow);
 
-            sourceEvent ??= kind == SourceEventKind.PropertyClaimed
-                ? new SourceEvent(kind, source, property, SourceState.Unclaimed, source.State, DateTimeOffset.UtcNow)
-                : new SourceEvent(kind, source, property, source.State, SourceState.Unclaimed, DateTimeOffset.UtcNow);
-
-            monitor.PublishUnderLock(sourceEvent.Value);
-        }
+        monitor.PublishUnderLock(sourceEvent);
     }
 }

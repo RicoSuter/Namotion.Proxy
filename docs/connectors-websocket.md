@@ -104,7 +104,6 @@ var context = InterceptorSubjectContext
     .Create()
     .WithFullPropertyTracking()
     .WithRegistry()
-    .WithContextInheritance()
     .WithHostedServices(builder.Services);
 
 var device = new Device(context);

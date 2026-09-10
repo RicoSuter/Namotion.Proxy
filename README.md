@@ -109,7 +109,7 @@ var person = new Person(context);
 person.Children = [new Person { FirstName = "Alice" }];  // Alice inherits the context automatically
 ```
 
-Inheritance requires `WithContextInheritance()` on the context, which is bundled into `WithFullPropertyTracking()`.
+Inheritance is intrinsic to the lifecycle, so any context with `WithLifecycle()`, which `WithFullPropertyTracking()` and `WithRegistry()` both install, does this.
 
 For the patterns that work, the patterns that don't (collection mutation, explicit interface implementation, abstract properties), and the rules around constructors and initialization, see the [Subject Design Guidelines](docs/subject-guidelines.md).
 
@@ -122,7 +122,7 @@ For each partial property, the generator expands the declaration into a real get
 Concretely, for each `[InterceptorSubject]` class the generator emits:
 
 - A backing field paired with the expanded getter and setter for every partial property.
-- A constructor accepting `IInterceptorSubjectContext` (when no user constructor exists).
+- A constructor accepting `IInterceptorSubjectContext`, plus a mirror of every constructor you declare with that parameter appended.
 - `IInterceptorSubject`, `INotifyPropertyChanged`, and `IRaisePropertyChanged` implementations.
 - Static metadata describing the class's properties.
 
@@ -161,7 +161,7 @@ var context = InterceptorSubjectContext
 
 Methods can be intercepted similarly: implement `IMethodInterceptor` and suffix your method name with `WithoutInterceptor`. The generator emits a wrapper (with the suffix dropped) that routes through the chain.
 
-Interceptor ordering, fallback contexts, and the read/write pipeline diagrams are documented in [Interceptors and Contexts](docs/interceptor.md).
+Interceptor ordering, the one-context-per-subject model, and the read/write pipeline diagrams are documented in [Interceptors and Contexts](docs/interceptor.md).
 
 ## Tracking
 
@@ -338,7 +338,7 @@ var context = InterceptorSubjectContext
 builder.Services.AddSingleton(new Sensor(context));
 builder.Services.AddMqttSubjectClientSource<Sensor>(
     brokerHost: "mqtt.example.com",
-    pathProviderName: "mqtt",
+    connectorName: "mqtt",
     topicPrefix: "sensors/room1");
 
 var host = builder.Build();

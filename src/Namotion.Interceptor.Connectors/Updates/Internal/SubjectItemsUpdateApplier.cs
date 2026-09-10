@@ -14,13 +14,13 @@ internal static class SubjectItemsUpdateApplier
     /// Applies a collection (array/list) update to a property.
     /// </summary>
     internal static void ApplyCollectionUpdate(
-        IInterceptorSubject parent,
         RegisteredSubjectProperty property,
         SubjectPropertyUpdate propertyUpdate,
         SubjectUpdateApplyContext context)
     {
         var workingItems = SubjectValueConvert.ToSubjectMutableList(property.GetValue());
         var structureChanged = false;
+        List<PendingItem>? pendingItems = null;
 
         // Apply structural operations in two phases:
         // Phase 1: Remove and Insert operations (applied sequentially)
@@ -45,7 +45,7 @@ internal static class SubjectItemsUpdateApplier
                     case SubjectCollectionOperationType.Insert:
                         if (operation.Id is not null && context.Subjects.TryGetValue(operation.Id, out var itemProps))
                         {
-                            var newItem = CreateAndApplyItem(parent, property, index, operation.Id, itemProps, context);
+                            var newItem = CreateItem(property, index, operation.Id, itemProps, context, ref pendingItems);
                             if (index >= workingItems.Count)
                                 workingItems.Add(newItem);
                             else
@@ -98,16 +98,17 @@ internal static class SubjectItemsUpdateApplier
                 {
                     if (index >= 0 && index < workingItems.Count)
                     {
-                        // Update existing item
-                        if (context.TryMarkAsProcessed(collectionUpdate.Id))
-                        {
-                            SubjectUpdateApplier.ApplyPropertyUpdates(workingItems[index], itemProps, context);
-                        }
+                        // Update existing item. Queued rather than applied here, because the item
+                        // at this index may itself have been created by an insert in this same
+                        // update and so is not in the graph until the assignment below. What makes
+                        // that safe is the drain's attachment check, not this loop being unable to
+                        // drop a queued item: do not rely on the latter when changing this loop.
+                        QueueItem(workingItems[index], collectionUpdate.Id, itemProps, ref pendingItems);
                     }
                     else if (index >= 0 && index <= workingItems.Count)
                     {
                         // Create new item at append position (for complete updates rebuilding the collection)
-                        var newItem = CreateAndApplyItem(parent, property, index, collectionUpdate.Id, itemProps, context);
+                        var newItem = CreateItem(property, index, collectionUpdate.Id, itemProps, context, ref pendingItems);
                         if (index >= workingItems.Count)
                             workingItems.Add(newItem);
                         else
@@ -123,13 +124,14 @@ internal static class SubjectItemsUpdateApplier
             var collection = context.SubjectFactory.CreateSubjectCollection(property.Type, workingItems);
             context.SetPropertyValue(property, propertyUpdate.Timestamp, collection);
         }
+
+        ApplyPendingItems(pendingItems, context);
     }
 
     /// <summary>
     /// Applies a dictionary update to a property.
     /// </summary>
     internal static void ApplyDictionaryUpdate(
-        IInterceptorSubject parent,
         RegisteredSubjectProperty property,
         SubjectPropertyUpdate propertyUpdate,
         SubjectUpdateApplyContext context)
@@ -137,6 +139,7 @@ internal static class SubjectItemsUpdateApplier
         var targetKeyType = property.Type.GenericTypeArguments[0];
         var workingDictionary = new Dictionary<object, IInterceptorSubject>();
         var structureChanged = false;
+        List<PendingItem>? pendingItems = null;
 
         var existingValue = property.GetValue();
         if (existingValue is not null)
@@ -164,7 +167,7 @@ internal static class SubjectItemsUpdateApplier
                     case SubjectCollectionOperationType.Insert:
                         if (operation.Id is not null && context.Subjects.TryGetValue(operation.Id, out var itemProps))
                         {
-                            var newItem = CreateAndApplyItem(parent, property, key, operation.Id, itemProps, context);
+                            var newItem = CreateItem(property, key, operation.Id, itemProps, context, ref pendingItems);
                             workingDictionary[key] = newItem;
                             structureChanged = true;
                         }
@@ -185,14 +188,14 @@ internal static class SubjectItemsUpdateApplier
                 {
                     if (workingDictionary.TryGetValue(key, out var existing))
                     {
-                        if (context.TryMarkAsProcessed(collUpdate.Id))
-                        {
-                            SubjectUpdateApplier.ApplyPropertyUpdates(existing, itemProps, context);
-                        }
+                        // Queued for the same reason as the collection case: this key may have
+                        // been filled by an insert in this same update, and as there it is the
+                        // drain's attachment check that makes queueing safe.
+                        QueueItem(existing, collUpdate.Id, itemProps, ref pendingItems);
                     }
                     else
                     {
-                        var newItem = CreateAndApplyItem(parent, property, key, collUpdate.Id, itemProps, context);
+                        var newItem = CreateItem(property, key, collUpdate.Id, itemProps, context, ref pendingItems);
                         workingDictionary[key] = newItem;
                         structureChanged = true;
                     }
@@ -205,6 +208,8 @@ internal static class SubjectItemsUpdateApplier
             var dictionary = context.SubjectFactory.CreateSubjectDictionary(property.Type, workingDictionary);
             context.SetPropertyValue(property, propertyUpdate.Timestamp, dictionary);
         }
+
+        ApplyPendingItems(pendingItems, context);
     }
 
     private static int ConvertIndexToInt(object index) => index switch
@@ -217,20 +222,64 @@ internal static class SubjectItemsUpdateApplier
     private static object ConvertDictionaryKey(object key, Type targetKeyType)
         => DictionaryKeyConverter.Convert(key, targetKeyType);
 
-    private static IInterceptorSubject CreateAndApplyItem(
-        IInterceptorSubject parent,
+    private static IInterceptorSubject CreateItem(
         RegisteredSubjectProperty property,
         object indexOrKey,
         string subjectId,
         Dictionary<string, SubjectPropertyUpdate> properties,
-        SubjectUpdateApplyContext context)
+        SubjectUpdateApplyContext context,
+        ref List<PendingItem>? pendingItems)
     {
         var newItem = context.SubjectFactory.CreateCollectionSubject(property, indexOrKey);
-        newItem.Context.AddFallbackContext(parent.Context);
-        if (context.TryMarkAsProcessed(subjectId))
-        {
-            SubjectUpdateApplier.ApplyPropertyUpdates(newItem, properties, context);
-        }
+        QueueItem(newItem, subjectId, properties, ref pendingItems);
         return newItem;
     }
+
+    /// <summary>
+    /// Defers an item's population to after the assignment. Unlike a single object property, a
+    /// collection is assigned once as a whole at the end, so no item it contains is guaranteed to be
+    /// in the graph before then, and the population is registry-driven. Every item this update
+    /// touches goes through here, so which of them are new is not a question the callers must answer.
+    /// </summary>
+    private static void QueueItem(
+        IInterceptorSubject subject,
+        string subjectId,
+        Dictionary<string, SubjectPropertyUpdate> properties,
+        ref List<PendingItem>? pendingItems)
+    {
+        (pendingItems ??= []).Add(new PendingItem(subject, subjectId, properties));
+    }
+
+    /// <summary>
+    /// Populates every queued item, after the assignment that put the new ones into the graph.
+    /// Deliberately outside the structural-change branch: a sparse update that only touches items
+    /// already present queues them without changing the structure, so a queued item does not imply
+    /// that an assignment ran.
+    /// </summary>
+    private static void ApplyPendingItems(List<PendingItem>? pendingItems, SubjectUpdateApplyContext context)
+    {
+        if (pendingItems is null)
+        {
+            return;
+        }
+
+        foreach (var pendingItem in pendingItems)
+        {
+            // This attachment check is the safety property of the whole queue rather than a
+            // corner case: any item the update dropped before the assignment, by a later remove or
+            // by a move overwriting its slot, stays unattached, so there is nothing to populate and
+            // no id to consume. Callers therefore never have to establish that what they queued
+            // survived to the assignment.
+            if (pendingItem.Subject.TryGetContext() is not null &&
+                context.TryMarkAsProcessed(pendingItem.SubjectId))
+            {
+                SubjectUpdateApplier.ApplyPropertyUpdates(pendingItem.Subject, pendingItem.Properties, context);
+            }
+        }
+    }
+
+    private readonly record struct PendingItem(
+        IInterceptorSubject Subject,
+        string SubjectId,
+        Dictionary<string, SubjectPropertyUpdate> Properties);
 }

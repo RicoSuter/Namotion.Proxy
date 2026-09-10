@@ -18,9 +18,8 @@ public class BroadlyDeclaredStructuralPropertyTests
         var context = InterceptorSubjectContext
             .Create()
             .WithRegistry()
-            .WithParents()
-            .WithService(() => handler)
-            .WithContextInheritance();
+            .WithLifecycle()
+            .WithService(() => handler);
 
         return (new BroadlyDeclaredHolder(context), handler);
     }

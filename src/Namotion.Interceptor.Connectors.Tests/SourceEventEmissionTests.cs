@@ -165,12 +165,11 @@ public class SourceEventEmissionTests
     {
         // Arrange
         // "No monitor reachable" itself has nothing to observe directly: PublishOwnershipChange's
-        // early return on an empty monitor list is behaviourally identical to letting the (then
-        // empty) foreach run, so no assertion here can distinguish the guard existing from it being
-        // deleted - removing it changes nothing observable. What IS a real, checkable claim is that
-        // this claim, made in a context with no monitor anywhere in its fallback chain, never
-        // reaches an unrelated, independently monitored context - i.e. GetSourceMonitors() stays
-        // correctly scoped to property.Subject.Context rather than leaking somewhere global.
+        // null-monitor early return publishes nothing, so no assertion here can distinguish the
+        // guard existing from it being deleted. What IS a real, checkable claim is that this claim,
+        // made in a context with no monitor, never reaches an
+        // unrelated, independently monitored context: the monitor lookup stays correctly scoped to
+        // the property's subject's attached context rather than leaking somewhere global.
         var isolatedContext = InterceptorSubjectContext.Create().WithFullPropertyTracking();
         var isolatedPerson = new Person(isolatedContext);
         var isolatedProperty = new PropertyReference(isolatedPerson, nameof(Person.FirstName));

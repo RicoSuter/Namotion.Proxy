@@ -54,7 +54,7 @@ internal class SearchTool
         var pathProvider = _configuration.PathProvider as PathProviderBase
             ?? throw new InvalidOperationException("PathProvider must extend PathProviderBase.");
 
-        var registry = _rootSubjectProvider().Context.TryGetService<ISubjectRegistry>();
+        var registry = _rootSubjectProvider().TryGetContext()?.TryGetService<ISubjectRegistry>();
         if (registry is null)
         {
             return Task.FromResult<object?>(new { error = "Subject registry is not available." });

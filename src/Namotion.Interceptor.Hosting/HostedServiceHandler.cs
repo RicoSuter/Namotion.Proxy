@@ -7,8 +7,9 @@ using Namotion.Interceptor.Tracking.Lifecycle;
 
 namespace Namotion.Interceptor.Hosting;
 
-[RunsAfter(typeof(ContextInheritanceHandler))]
-internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDisposable
+[RunsAfter(typeof(LifecycleInterceptor))]
+internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDisposable,
+    ISingletonContextService<HostedServiceHandler>
 {
     private ILogger? _logger;
 
@@ -38,12 +39,12 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
         {
             if (change.Subject is IHostedService hostedService)
             {
-                AttachHostedService(hostedService, change.Subject.Context);
+                AttachHostedService(hostedService, change.Subject.GetContext());
             }
 
             foreach (var hostedService2 in change.Subject.GetAttachedHostedServices())
             {
-                AttachHostedService(hostedService2, change.Subject.Context);
+                AttachHostedService(hostedService2, change.Subject.GetContext());
             }
         }
         else if (change.IsContextDetach)
@@ -58,8 +59,8 @@ internal class HostedServiceHandler : IHostedService, ILifecycleHandler, IDispos
                 // The extension, not this handler's own method: it also clears the subject's
                 // attached-services data, which a plain stop would leave behind (pinned by
                 // HostedServiceHandlerTests.WhenSubjectServiceIsDetached_ThenHostedServiceIsStopped).
-                // It re-resolves the handler through the subject's context, so a subject whose own
-                // context has already lost its fallback stops resolving one; that is pre-existing and
+                // It re-resolves the handler through the subject's attached context, so a subject
+                // already released from its context stops resolving one; that is pre-existing and
                 // narrower than losing the data cleanup.
                 change.Subject.DetachHostedService(attachedHostedService);
             }

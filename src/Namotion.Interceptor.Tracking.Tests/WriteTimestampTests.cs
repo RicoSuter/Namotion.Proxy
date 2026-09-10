@@ -165,15 +165,25 @@ public class WriteTimestampTests
             .WithFullPropertyTracking();
 
         var person = new Person(context);
-        var syncRoot = ((IInterceptorSubject)person).SyncRoot;
 
-        // Each thread writes a unique value with a matching unique timestamp.
-        // After each write, we read value + timestamp under the same lock to verify
-        // they belong to the same write operation.
+        // Each thread writes a unique value with a matching unique timestamp. Every published
+        // change event captures value and timestamp inside the write, and the stored pair is
+        // checked once the writers settle; both observations go through supported surfaces, so
+        // no external lock on the write path is needed.
+        var observedChanges = new System.Collections.Concurrent.ConcurrentQueue<SubjectPropertyChange>();
+        context
+            .GetPropertyChangeObservable(ImmediateScheduler.Instance)
+            .Subscribe(change =>
+            {
+                if (change.Property.Name == nameof(Person.FirstName))
+                {
+                    observedChanges.Enqueue(change);
+                }
+            });
+
         const int threadCount = 8;
         const int iterationsPerThread = 5_000;
         var barrier = new Barrier(threadCount);
-        var failures = 0;
 
         // Act
         var threads = Enumerable.Range(0, threadCount).Select(threadIndex => new Thread(() =>
@@ -188,31 +198,25 @@ public class WriteTimestampTests
                 {
                     person.FirstName = $"Name{index}";
                 }
-
-                // Read value + timestamp under the same lock that protects writes
-                lock (syncRoot)
-                {
-                    var storedTimestamp = person.GetPropertyReference("FirstName").TryGetWriteTimestamp();
-                    var storedValue = person.FirstName;
-
-                    if (storedTimestamp.HasValue)
-                    {
-                        var expectedIndex = (int)(storedTimestamp.Value.UtcTicks - 1);
-                        var expectedValue = $"Name{expectedIndex}";
-                        if (storedValue != expectedValue)
-                        {
-                            Interlocked.Increment(ref failures);
-                        }
-                    }
-                }
             }
         })).ToArray();
 
         foreach (var thread in threads) thread.Start();
         foreach (var thread in threads) thread.Join();
 
-        // Assert
-        Assert.Equal(0, failures);
+        // Assert: every observed change pairs the value with the timestamp of the same write.
+        Assert.NotEmpty(observedChanges);
+        foreach (var change in observedChanges)
+        {
+            var expectedIndex = (int)(change.ChangedTimestamp.UtcTicks - 1);
+            Assert.Equal($"Name{expectedIndex}", change.GetNewValue<string>());
+        }
+
+        // Assert: once the writers settle, the stored value and timestamp belong to one write.
+        var storedTimestamp = person.GetPropertyReference("FirstName").TryGetWriteTimestamp();
+        Assert.NotNull(storedTimestamp);
+        var storedIndex = (int)(storedTimestamp!.Value.UtcTicks - 1);
+        Assert.Equal($"Name{storedIndex}", person.FirstName);
     }
 
     [Fact]

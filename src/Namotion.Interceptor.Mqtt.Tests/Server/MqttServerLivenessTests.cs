@@ -177,7 +177,7 @@ public partial class MqttServerLivenessTests
             initialStateDelay: TimeSpan.FromMinutes(5),
             withLifecycle: true);
 
-        var lifecycleInterceptor = server.RootSubject.Context.TryGetLifecycleInterceptor()!;
+        var lifecycleInterceptor = server.RootSubject.GetContext().TryGetLifecycleInterceptor()!;
         var baselineHandlerCount = GetSubjectDetachingHandlerCount(lifecycleInterceptor);
 
         using var client = new MqttClientFactory().CreateMqttClient();
@@ -751,12 +751,16 @@ public partial class MqttServerLivenessTests
     private static Task[] GetInitialStateTasks(MqttSubjectServer server) =>
         server.GetRunningInitialStateTasksSnapshot();
 
-    private static int GetSubjectDetachingHandlerCount(LifecycleInterceptor lifecycleInterceptor) =>
-        ((Delegate?)typeof(LifecycleInterceptor)
-            .GetField("SubjectDetaching", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .GetValue(lifecycleInterceptor))?
-        .GetInvocationList()
-        .Length ?? 0;
+    private static int GetSubjectDetachingHandlerCount(LifecycleInterceptor lifecycleInterceptor)
+    {
+        // Two hops: the interceptor's event forwards its add and remove to an internal notifier,
+        // so the subscriber list lives there rather than on a backing field of the interceptor.
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+        var notifier = typeof(LifecycleInterceptor).GetField("_notifier", flags)?.GetValue(lifecycleInterceptor);
+        var handler = (Delegate?)notifier?.GetType().GetField("SubjectDetaching", flags)?.GetValue(notifier);
+        return handler?.GetInvocationList().Length ?? 0;
+    }
 
     private static bool IsDisposed(MqttServer server)
     {

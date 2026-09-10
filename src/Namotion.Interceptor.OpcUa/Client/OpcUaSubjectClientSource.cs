@@ -112,7 +112,7 @@ internal sealed class OpcUaSubjectClientSource : SubjectSourceBase, IOpcUaSubjec
 
     public OpcUaSubjectClientSource(IInterceptorSubject subject, OpcUaClientConfiguration configuration, ILogger logger)
         : base(
-            subject.Context,
+            subject.GetContext(),
             logger,
             configuration.BufferTime,
             configuration.RetryTime,

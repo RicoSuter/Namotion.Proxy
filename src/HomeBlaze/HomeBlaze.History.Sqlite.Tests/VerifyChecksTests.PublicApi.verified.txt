@@ -41,6 +41,7 @@ namespace HomeBlaze.History.Sqlite
     public class SqliteHistoryStoreSubject : Microsoft.Extensions.Hosting.BackgroundService, HomeBlaze.Abstractions.IConfigurable, HomeBlaze.Abstractions.ITitleProvider, HomeBlaze.History.Abstractions.IHistoryStore, Namotion.Interceptor.IInterceptorSubject, Namotion.Interceptor.IRaisePropertyChanged, Namotion.Interceptor.Tracking.Lifecycle.ILifecycleHandler, System.ComponentModel.INotifyPropertyChanged
     {
         public SqliteHistoryStoreSubject(Microsoft.Extensions.Logging.ILogger<HomeBlaze.History.Sqlite.SqliteHistoryStoreSubject> logger) { }
+        public SqliteHistoryStoreSubject(Microsoft.Extensions.Logging.ILogger<HomeBlaze.History.Sqlite.SqliteHistoryStoreSubject> logger, Namotion.Interceptor.IInterceptorSubjectContext context) { }
         [HomeBlaze.Abstractions.Attributes.Configuration]
         public int BufferTimeMilliseconds { get; set; }
         public System.Collections.Immutable.ImmutableArray<HomeBlaze.History.Abstractions.HistoryCoverage> CoverageRanges { get; }

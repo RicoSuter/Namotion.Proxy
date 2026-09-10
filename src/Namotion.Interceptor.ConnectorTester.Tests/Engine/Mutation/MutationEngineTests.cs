@@ -17,7 +17,6 @@ public class MutationEngineTests
             .Create()
             .WithFullPropertyTracking()
             .WithRegistry()
-            .WithParents()
             .WithLifecycle();
 
     [Fact]

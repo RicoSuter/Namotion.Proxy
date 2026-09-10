@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Namotion.Interceptor.Connectors.Tests.Models;
+using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Registry.Abstractions;
+using Namotion.Interceptor.Tracking;
 
 namespace Namotion.Interceptor.Connectors.Tests;
 
@@ -16,9 +18,7 @@ public class DefaultSubjectFactoryTests
             Injected = injected;
         }
         
-        object IInterceptorSubject.SyncRoot { get; } = new();
-
-        public IInterceptorSubjectContext Context { get; } = null!;
+        IInterceptorExecutor IInterceptorSubject.Executor => null!;
 
         public ConcurrentDictionary<(string? property, string key), object?> Data { get; } = null!;
 
@@ -37,7 +37,7 @@ public class DefaultSubjectFactoryTests
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddSingleton<object>(42);
 
-        var context = InterceptorSubjectContext.Create();
+        var context = InterceptorSubjectContext.Create().WithLifecycle();
         context.AddService(serviceCollection.BuildServiceProvider());
 
         var person = new Person(context);

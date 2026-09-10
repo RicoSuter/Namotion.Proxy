@@ -105,7 +105,7 @@ public class SubjectSourceBenchmark
             // The executor the chain would thread through; this benchmark stops at the stub terminal
             // below, so it is only carried, never used.
             var context = new PropertyWriteContext<int>(
-                (InterceptorExecutor)((IInterceptorSubject)_car).Context,
+                (InterceptorExecutor)((IInterceptorSubject)_car).Executor,
                 new PropertyReference(_car, _propertyNames[i]),
                 0,
                 i);

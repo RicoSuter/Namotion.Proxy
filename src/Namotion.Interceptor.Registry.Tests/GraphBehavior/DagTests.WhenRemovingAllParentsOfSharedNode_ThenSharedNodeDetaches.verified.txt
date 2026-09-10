@@ -1,4 +1,4 @@
 ﻿[
-  - B.Mother -> Shared (refs: 0, detached),
-  - Root.Mother -> B (refs: 0, detached)
+  - Root.Mother -> B (refs: 0, detached),
+  - B.Mother -> Shared (refs: 0, detached)
 ]

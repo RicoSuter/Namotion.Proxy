@@ -16,7 +16,10 @@ internal static class ReadInterceptorFactory<TProperty>
             interceptors,
             static (ref context, innerReadValue) =>
             {
-                lock (context.Property.Subject.SyncRoot)
+                // The executor threaded through the context belongs to the subject being read, so
+                // its SyncRoot is the per-subject terminal lock; see the field's note on the
+                // executor.
+                lock (context.Executor.SyncRoot)
                 {
                     return innerReadValue(context.Property.Subject);
                 }

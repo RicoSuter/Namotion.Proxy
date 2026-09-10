@@ -28,6 +28,8 @@ public class RootManagerRootLoadedTests : IDisposable
 
         // Assert
         Assert.Same(rootManager.Root, root);
+        Assert.Same(root, root.GetContext().GetService<IInterceptorSubject>());
+        Assert.Same(root, root.TryGetRegisteredSubject()!.Subject);
     }
 
     [Fact]

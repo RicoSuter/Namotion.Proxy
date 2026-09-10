@@ -94,7 +94,7 @@ else
 
         try
         {
-            var observable = Subject.Context.GetPropertyChangeObservable();
+            var observable = Subject.GetContext().GetPropertyChangeObservable();
             _changeSubscription = observable
                 .Subscribe(
                     onNext: change =>

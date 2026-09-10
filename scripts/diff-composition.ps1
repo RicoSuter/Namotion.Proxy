@@ -29,8 +29,22 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$numstat = git diff --numstat @($Range -split '\s+')
+$numstat = @(git diff --numstat @($Range -split '\s+'))
 if ($LASTEXITCODE -ne 0) { throw "git diff failed for range '$Range'." }
+
+# A single-revision range (for example "HEAD") diffs the working tree against that revision,
+# and git diff never lists untracked files, so a pre-commit measurement would silently omit
+# every newly added file. Count them as pure additions; binary files stay skipped because the
+# probe reports "-" for them like any other numstat line.
+$rangeTokens = @($Range -split '\s+' | Where-Object { $_ })
+if ($rangeTokens.Length -eq 1 -and $rangeTokens[0] -notmatch '\.\.') {
+    foreach ($untracked in @(git ls-files --others --exclude-standard)) {
+        $probe = @(git diff --numstat --no-index -- /dev/null $untracked)
+        if (-not $probe) { continue }
+        $added = (@($probe)[0] -split "`t")[0]
+        $numstat += "$added`t0`t$untracked"
+    }
+}
 
 function Get-Area {
     param([string] $Path)

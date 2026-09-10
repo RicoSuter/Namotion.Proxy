@@ -113,9 +113,9 @@ internal static class GeneratorTestHost
     /// loaded next to those of other runs without two of them sharing an identity. Use together with
     /// <see cref="GeneratorRunResult.LoadAssembly"/>.
     /// </summary>
-    public static GeneratorRunResult RunForExecution(string source)
+    public static GeneratorRunResult RunForExecution(string source, bool allowUnsafe = false)
     {
-        return RunCore(source, References, "TestAssembly_" + Guid.NewGuid().ToString("N"));
+        return RunCore(source, References, "TestAssembly_" + Guid.NewGuid().ToString("N"), allowUnsafe);
     }
 
     /// <summary>
@@ -200,7 +200,8 @@ internal static class GeneratorTestHost
     private static GeneratorRunResult RunCore(
         string source,
         IReadOnlyList<MetadataReference> references,
-        string assemblyName)
+        string assemblyName,
+        bool allowUnsafe = false)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(source);
 
@@ -208,7 +209,7 @@ internal static class GeneratorTestHost
             assemblyName: assemblyName,
             syntaxTrees: [syntaxTree],
             references: references,
-            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: allowUnsafe));
 
         GeneratorDriver driver = CSharpGeneratorDriver.Create(new InterceptorSubjectGenerator());
         driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var outputCompilation, out _);

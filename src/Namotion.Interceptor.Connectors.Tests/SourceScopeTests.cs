@@ -11,7 +11,6 @@ public class SourceScopeTests
         InterceptorSubjectContext.Create()
             .WithFullPropertyTracking()
             .WithLifecycle()
-            .WithParents()
             .WithSourceMonitoring();
 
     [Fact]
@@ -103,7 +102,7 @@ public class SourceScopeTests
     {
         // Arrange
         // A same-tree reparent gives every node exactly one parent while still forming a cycle:
-        // nothing in ParentTrackingHandler rejects it. An unguarded single-parent walk that starts
+        // nothing in the lifecycle's parent tracking rejects it. An unguarded single-parent walk that starts
         // from a node in the cycle and never finds its (unrelated) candidate would ping-pong between
         // the two nodes forever instead of terminating.
         var context = CreateContext();

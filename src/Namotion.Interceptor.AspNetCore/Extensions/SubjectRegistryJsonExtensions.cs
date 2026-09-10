@@ -13,15 +13,15 @@ namespace Namotion.Interceptor.AspNetCore.Extensions;
 public static class SubjectRegistryJsonExtensions
 {
     /// <summary>
-    /// Gets the JSON path for a property, requires the ParentTrackingHandler
-    /// to be registered (WithParents()) and uses optionally the registry.
+    /// Gets the JSON path for a property, requires the lifecycle's parent tracking
+    /// to be registered (WithLifecycle()) and uses optionally the registry.
     /// </summary>
     /// <param name="property">The property.</param>
     /// <param name="jsonSerializerOptions">The serializer options.</param>
     /// <returns>The path.</returns>
     public static string GetJsonPath(this PropertyReference property, JsonSerializerOptions jsonSerializerOptions)
     {
-        var registry = property.Subject.Context.TryGetService<ISubjectRegistry>();
+        var registry = property.Subject.TryGetContext()?.TryGetService<ISubjectRegistry>();
         if (registry is not null)
         {
             // TODO: avoid endless recursion

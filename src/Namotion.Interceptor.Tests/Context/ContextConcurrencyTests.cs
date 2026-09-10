@@ -1,3 +1,4 @@
+using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Testing;
 
 namespace Namotion.Interceptor.Tests.Context;
@@ -8,37 +9,19 @@ public class ContextConcurrencyTests
     private const int Mutations = 50;
 
     /// <summary>
-    /// Every mutator has to release the context lock before invalidating the contexts above it,
-    /// so all four are covered: a regression in any single one reintroduces the deadlock.
+    /// Registering services publishes a fresh state while attached subjects resolve compiled
+    /// chains from the previous one; neither side may block the other, and once the writes
+    /// settle a write must reach exactly the final interceptor set (quiescent consistency, so a
+    /// chain compiled from a pre-mutation state cannot survive the mutation).
     /// </summary>
     [Theory]
     [InlineData(nameof(IInterceptorSubjectContext.AddService))]
     [InlineData(nameof(IInterceptorSubjectContext.TryAddService))]
-    [InlineData(nameof(IInterceptorSubjectContext.AddFallbackContext))]
-    [InlineData(nameof(IInterceptorSubjectContext.RemoveFallbackContext))]
-    public async Task WhenFallbackContextIsMutatedWhileSubjectIsWritten_ThenNoDeadlockOccurs(string mutation)
+    public async Task WhenContextIsMutatedWhileSubjectIsWritten_ThenNoDeadlockOccursAndTheFinalChainIsComplete(string mutation)
     {
-        // Arrange: the subject context keeps an own service so that it maintains an own service
-        // cache and walks into the fallback context instead of delegating to it.
         for (var attempt = 1; attempt <= Attempts; attempt++)
         {
-            var fallbackContext = InterceptorSubjectContext.Create();
             var subjectContext = InterceptorSubjectContext.Create();
-            subjectContext.AddService(new MarkerService());
-            subjectContext.AddFallbackContext(fallbackContext);
-
-            var attachedContexts = Enumerable
-                .Range(0, Mutations)
-                .Select(_ => InterceptorSubjectContext.Create())
-                .ToArray();
-
-            if (mutation == nameof(IInterceptorSubjectContext.RemoveFallbackContext))
-            {
-                foreach (var attachedContext in attachedContexts)
-                {
-                    fallbackContext.AddFallbackContext(attachedContext);
-                }
-            }
 
             var car = new Car(subjectContext);
             using var start = new ManualResetEventSlim(false);
@@ -60,19 +43,11 @@ public class ContextConcurrencyTests
                     switch (mutation)
                     {
                         case nameof(IInterceptorSubjectContext.AddService):
-                            fallbackContext.AddService(new MarkerService());
+                            subjectContext.AddService<IWriteInterceptor>(new CountingWriteInterceptor());
                             break;
 
                         case nameof(IInterceptorSubjectContext.TryAddService):
-                            fallbackContext.TryAddService(() => new MarkerService(), _ => false);
-                            break;
-
-                        case nameof(IInterceptorSubjectContext.AddFallbackContext):
-                            fallbackContext.AddFallbackContext(attachedContexts[index]);
-                            break;
-
-                        case nameof(IInterceptorSubjectContext.RemoveFallbackContext):
-                            fallbackContext.RemoveFallbackContext(attachedContexts[index]);
+                            subjectContext.TryAddService<IWriteInterceptor>(() => new CountingWriteInterceptor(), _ => false);
                             break;
 
                         default:
@@ -81,7 +56,7 @@ public class ContextConcurrencyTests
                 }
             }, TaskCreationOptions.LongRunning);
 
-            // Act & Assert
+            // Act
             start.Set();
             var both = Task.WhenAll(writer, mutator);
             try
@@ -92,9 +67,38 @@ public class ContextConcurrencyTests
             {
                 throw new TimeoutException(
                     $"Deadlock on attempt {attempt} of {Attempts}: writing a property and calling {mutation} " +
-                    "on a fallback context acquired the two context locks in opposite orders.",
+                    "on the subject's context blocked each other.",
                     exception);
             }
+
+            // Assert: one settled write runs every registered interceptor exactly once.
+            var interceptors = new List<CountingWriteInterceptor>();
+            foreach (var interceptor in subjectContext.GetServices<IWriteInterceptor>())
+            {
+                interceptors.Add((CountingWriteInterceptor)interceptor);
+            }
+
+            Assert.Equal(Mutations, interceptors.Count);
+
+            var countsBefore = interceptors.ConvertAll(interceptor => interceptor.WriteCount);
+            car.Speed = -1;
+            for (var index = 0; index < interceptors.Count; index++)
+            {
+                Assert.Equal(countsBefore[index] + 1, interceptors[index].WriteCount);
+            }
+        }
+    }
+
+    private sealed class CountingWriteInterceptor : IWriteInterceptor
+    {
+        private int _writeCount;
+
+        internal int WriteCount => Volatile.Read(ref _writeCount);
+
+        public void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next)
+        {
+            Interlocked.Increment(ref _writeCount);
+            next(ref context);
         }
     }
 
@@ -102,27 +106,17 @@ public class ContextConcurrencyTests
     /// Pins the guarantee TryAddService actually makes: the exists check and the add are atomic
     /// against another mutator of the SAME context, because both serialize on its mutation lock.
     /// Two callers therefore have exactly one winner.
-    ///
-    /// Deliberately not a differential test. The same holds on the implementation this replaced,
-    /// which took one lock across the same pair, so this cannot distinguish the two and is a
-    /// contract guard rather than a regression guard for this rewrite. The case it does not cover
-    /// is a concurrent registration on a DIFFERENT context of the same chain, which neither
-    /// implementation serializes and which can still admit a duplicate; that is issue #403, and a
-    /// test asserting one winner there would fail by design.
     /// </summary>
     [Fact]
-    public async Task WhenTwoThreadsTryAddTheSameServiceOnDelegatingContext_ThenOnlyOneSucceeds()
+    public async Task WhenTwoThreadsTryAddTheSameService_ThenOnlyOneSucceeds()
     {
-        // Arrange: a context that owns no service and resolves everything through one fallback, so
-        // the check runs the delegation walk rather than reading local services.
+        // Arrange
         const int concurrentAttempts = 3_000;
         var violations = 0;
 
         for (var attempt = 1; attempt <= concurrentAttempts; attempt++)
         {
-            var fallbackContext = InterceptorSubjectContext.Create();
             var context = InterceptorSubjectContext.Create();
-            context.AddFallbackContext(fallbackContext);
 
             using var start = new Barrier(2);
             var results = new bool[2];
@@ -230,72 +224,6 @@ public class ContextConcurrencyTests
     }
 
     [Fact]
-    public async Task WhenFallbackGraphContainsCycle_ThenQueriesAndMutationsDoNotDeadlock()
-    {
-        // Arrange: both contexts keep an own service so that neither one purely delegates to
-        // the other, then the fallback graph is closed into a cycle.
-        const int addedServicesPerContext = 100;
-
-        var contextA = InterceptorSubjectContext.Create();
-        var contextB = InterceptorSubjectContext.Create();
-        contextA.AddService(new MarkerService());
-        contextB.AddService(new MarkerService());
-        contextA.AddFallbackContext(contextB);
-        contextB.AddFallbackContext(contextA);
-
-        using var start = new ManualResetEventSlim(false);
-
-        Task StartWorker(Action work) => Task.Factory.StartNew(() =>
-        {
-            start.Wait();
-            work();
-        }, TaskCreationOptions.LongRunning);
-
-        var workers = new[]
-        {
-            StartWorker(() =>
-            {
-                for (var index = 0; index < 1_000; index++)
-                {
-                    _ = contextA.GetServices<MarkerService>();
-                }
-            }),
-            StartWorker(() =>
-            {
-                for (var index = 0; index < 1_000; index++)
-                {
-                    _ = contextB.GetServices<MarkerService>();
-                }
-            }),
-            StartWorker(() =>
-            {
-                for (var index = 0; index < addedServicesPerContext; index++)
-                {
-                    contextA.AddService(new MarkerService());
-                }
-            }),
-            StartWorker(() =>
-            {
-                for (var index = 0; index < addedServicesPerContext; index++)
-                {
-                    contextB.AddService(new MarkerService());
-                }
-            })
-        };
-
-        // Act
-        start.Set();
-        await AsyncTestHelpers.WaitUntilAsync(() => workers.All(worker => worker.IsCompleted),
-            message: "Queries or mutations on a cyclic fallback graph deadlocked");
-        await Task.WhenAll(workers);
-
-        // Assert: both contexts aggregate every service of the whole cycle once writes settled.
-        const int totalServices = 2 + 2 * addedServicesPerContext;
-        Assert.Equal(totalServices, contextA.GetServices<MarkerService>().Length);
-        Assert.Equal(totalServices, contextB.GetServices<MarkerService>().Length);
-    }
-
-    [Fact]
     public async Task WhenServicesAreAddedConcurrentlyWithQueries_ThenQuiescentStateSeesAllServices()
     {
         // Arrange
@@ -325,8 +253,8 @@ public class ContextConcurrencyTests
             {
                 start.Wait();
 
-                // Keeps refilling the service cache while writers invalidate it, so that a cache
-                // entry surviving a mutation would poison the final query below.
+                // Keeps refilling the service cache while writers publish fresh states, so that a
+                // cache entry surviving a mutation would poison the final query below.
                 while (Volatile.Read(ref activeWriters) != 0)
                 {
                     context.GetServices<MarkerService>();
@@ -344,241 +272,6 @@ public class ContextConcurrencyTests
 
         // Assert
         Assert.Equal(writerCount * servicesPerWriter, context.GetServices<MarkerService>().Length);
-    }
-
-    [Fact]
-    public async Task WhenTwoContextsAddEachOtherAsFallbackConcurrently_ThenNoDeadlockOccurs()
-    {
-        // Arrange: both contexts keep an own service so that neither one purely delegates to the
-        // other. Each thread mutates its own context and registers into the other one, which is
-        // the interleaving that a per-context using-set lock has to survive.
-        const int mutualRegistrations = 2_000;
-
-        var contextA = InterceptorSubjectContext.Create();
-        var contextB = InterceptorSubjectContext.Create();
-        contextA.AddService(new MarkerService());
-        contextB.AddService(new MarkerService());
-
-        using var start = new Barrier(2);
-
-        Task StartMutator(InterceptorSubjectContext context, InterceptorSubjectContext other) =>
-            Task.Factory.StartNew(() =>
-            {
-                start.SignalAndWait();
-                for (var index = 0; index < mutualRegistrations; index++)
-                {
-                    context.AddFallbackContext(other);
-                    context.RemoveFallbackContext(other);
-                }
-            }, TaskCreationOptions.LongRunning);
-
-        var mutators = new[]
-        {
-            StartMutator(contextA, contextB),
-            StartMutator(contextB, contextA)
-        };
-
-        // Act
-        await AsyncTestHelpers.WaitUntilAsync(() => mutators.All(mutator => mutator.IsCompleted),
-            message: "Two contexts registering into each other concurrently deadlocked");
-        await Task.WhenAll(mutators);
-
-        // Assert: every registration was undone again, and a fresh mutual registration is still
-        // observed on both sides, so no add or remove was lost to the concurrent set access.
-        Assert.Single(contextA.GetServices<MarkerService>());
-        Assert.Single(contextB.GetServices<MarkerService>());
-
-        contextA.AddFallbackContext(contextB);
-        contextB.AddFallbackContext(contextA);
-
-        Assert.Equal(2, contextA.GetServices<MarkerService>().Length);
-        Assert.Equal(2, contextB.GetServices<MarkerService>().Length);
-    }
-
-    [Fact]
-    public async Task WhenSameFallbackIsAddedAndRemovedConcurrently_ThenFinalTopologyAndInvalidationAgree()
-    {
-        // Arrange: own services keep the source context from delegating, so it owns a service cache
-        // whose invalidation also checks the reverse edge maintained by add and remove.
-        const int mutationsPerWorker = 2_000;
-
-        var context = InterceptorSubjectContext.Create();
-        context.AddService(new MarkerService());
-
-        var fallbackContext = InterceptorSubjectContext.Create();
-        fallbackContext.AddService(new MarkerService());
-
-        using var start = new Barrier(2);
-        var successfulAdds = 0;
-        var successfulRemoves = 0;
-
-        var adder = Task.Factory.StartNew(() =>
-        {
-            start.SignalAndWait();
-            for (var index = 0; index < mutationsPerWorker; index++)
-            {
-                if (context.AddFallbackContext(fallbackContext))
-                {
-                    successfulAdds++;
-                }
-            }
-        }, TaskCreationOptions.LongRunning);
-
-        var remover = Task.Factory.StartNew(() =>
-        {
-            start.SignalAndWait();
-            for (var index = 0; index < mutationsPerWorker; index++)
-            {
-                if (context.RemoveFallbackContext(fallbackContext))
-                {
-                    successfulRemoves++;
-                }
-            }
-        }, TaskCreationOptions.LongRunning);
-
-        // Act
-        var workers = new[] { adder, remover };
-        await AsyncTestHelpers.WaitUntilAsync(() => workers.All(worker => worker.IsCompleted),
-            message: "Concurrent add and remove of the same fallback context did not finish");
-        await Task.WhenAll(workers);
-
-        var fallbackIsPresent = successfulAdds == successfulRemoves + 1;
-        var servicesBeforeMutation = context.GetServices<MarkerService>();
-        fallbackContext.AddService(new MarkerService());
-        var servicesAfterMutation = context.GetServices<MarkerService>();
-
-        // Assert: successful transitions determine the final edge exactly. If the edge remains,
-        // the fallback mutation must also invalidate the source cache through its reverse edge.
-        Assert.True(successfulAdds == successfulRemoves || fallbackIsPresent);
-        Assert.Equal(fallbackIsPresent ? 2 : 1, servicesBeforeMutation.Length);
-        Assert.Equal(fallbackIsPresent ? 3 : 1, servicesAfterMutation.Length);
-    }
-
-    [Fact]
-    public async Task WhenManyContextsAddTheSameFallbackConcurrently_ThenAllSeeLaterTopologyChanges()
-    {
-        // Arrange: the fan-in shape, all children register into the using set of one parent.
-        const int childCount = 32;
-
-        var parentContext = InterceptorSubjectContext.Create();
-        parentContext.AddService(new MarkerService());
-
-        var childContexts = Enumerable
-            .Range(0, childCount)
-            .Select(_ =>
-            {
-                // The own service keeps the child from delegating to the parent, so it maintains
-                // an own service cache that the parent has to invalidate.
-                var childContext = InterceptorSubjectContext.Create();
-                childContext.AddService(new MarkerService());
-                return childContext;
-            })
-            .ToArray();
-
-        using var start = new Barrier(childCount);
-
-        var registrations = childContexts
-            .Select(childContext => Task.Factory.StartNew(() =>
-            {
-                start.SignalAndWait();
-                childContext.AddFallbackContext(parentContext);
-
-                // Fills the child service cache so that an entry surviving the topology change
-                // below would hide it.
-                childContext.GetServices<MarkerService>();
-            }, TaskCreationOptions.LongRunning))
-            .ToArray();
-
-        // Act: the barrier releases as soon as all registering threads arrived.
-        await AsyncTestHelpers.WaitUntilAsync(() => registrations.All(registration => registration.IsCompleted),
-            message: "Concurrent registrations into one shared parent context did not finish");
-        await Task.WhenAll(registrations);
-
-        // Assert: every child sees both services the registering threads added.
-        Assert.All(childContexts, childContext => Assert.Equal(2, childContext.GetServices<MarkerService>().Length));
-
-        // Act: a later mutation on the shared parent has to reach every child that registered.
-        parentContext.AddService(new MarkerService());
-
-        // Assert: every child was registered, so every child observes the new parent topology.
-        Assert.All(childContexts, childContext => Assert.Equal(3, childContext.GetServices<MarkerService>().Length));
-    }
-
-    [Fact]
-    public async Task WhenFallbackIsRemovedWhileInvalidationWalksTheSameSet_ThenNoInvalidationIsLost()
-    {
-        // Arrange: the writer invalidates through the using set of the parent context while the
-        // churning child adds and removes itself from that very set.
-        const int stableChildCount = 8;
-        const int addedServices = 200;
-        const int churnIterations = 200;
-
-        var parentContext = InterceptorSubjectContext.Create();
-        parentContext.AddService(new MarkerService());
-
-        var childContexts = Enumerable
-            .Range(0, stableChildCount + 1)
-            .Select(_ =>
-            {
-                var childContext = InterceptorSubjectContext.Create();
-                childContext.AddService(new MarkerService());
-                childContext.AddFallbackContext(parentContext);
-                return childContext;
-            })
-            .ToArray();
-
-        var churningChildContext = childContexts[^1];
-
-        using var start = new ManualResetEventSlim(false);
-        var activeWriters = 1;
-
-        var writer = Task.Factory.StartNew(() =>
-        {
-            start.Wait();
-            for (var index = 0; index < addedServices; index++)
-            {
-                parentContext.AddService(new MarkerService());
-            }
-
-            Interlocked.Decrement(ref activeWriters);
-        }, TaskCreationOptions.LongRunning);
-
-        var churner = Task.Factory.StartNew(() =>
-        {
-            start.Wait();
-            for (var index = 0; index < churnIterations; index++)
-            {
-                churningChildContext.RemoveFallbackContext(parentContext);
-                churningChildContext.AddFallbackContext(parentContext);
-            }
-        }, TaskCreationOptions.LongRunning);
-
-        var readers = childContexts
-            .Select(childContext => Task.Factory.StartNew(() =>
-            {
-                start.Wait();
-
-                // Keeps refilling the child caches while the writer invalidates them, so that an
-                // entry surviving a mutation would poison the final queries below.
-                while (Volatile.Read(ref activeWriters) != 0)
-                {
-                    childContext.GetServices<MarkerService>();
-                }
-            }, TaskCreationOptions.LongRunning))
-            .ToArray();
-
-        var workers = new[] { writer, churner }.Concat(readers).ToArray();
-
-        // Act
-        start.Set();
-        await AsyncTestHelpers.WaitUntilAsync(() => workers.All(worker => worker.IsCompleted),
-            message: "Removing a fallback while an invalidation walked the same set deadlocked");
-        await Task.WhenAll(workers);
-
-        // Assert: the churn ends on a registration, so every child resolves its own service plus
-        // every service of the parent context.
-        const int totalServicesPerChild = 1 + 1 + addedServices;
-        Assert.All(childContexts, childContext => Assert.Equal(totalServicesPerChild, childContext.GetServices<MarkerService>().Length));
     }
 
     private sealed class MarkerService;

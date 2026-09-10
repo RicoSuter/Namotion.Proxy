@@ -135,6 +135,21 @@ public class SubjectLookupTests
     }
 
     [Fact]
+    public void WhenReadOnlyDictionaryIsProbedWithAWrongTypedKey_ThenReturnsNull()
+    {
+        // Arrange: a reconcile probes one value of a property with the other value's occurrence
+        // index, so an ordinal reaches a keyed lookup whenever the property changed shape.
+        var wrapper = new ReadOnlyDictionaryWrapper<string, Person>(
+            new Dictionary<string, Person> { ["exists"] = new() { FirstName = "A" } });
+
+        // Act
+        var result = SubjectLookup.FindSubjectInDictionary(wrapper, 0);
+
+        // Assert: answers null like the IDictionary path rather than throwing on the conversion.
+        Assert.Null(result);
+    }
+
+    [Fact]
     public void WhenReadOnlyDictionaryKeyMissing_ThenReturnsNull()
     {
         // Arrange

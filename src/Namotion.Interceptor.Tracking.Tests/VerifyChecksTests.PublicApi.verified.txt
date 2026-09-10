@@ -8,7 +8,7 @@ namespace Namotion.Interceptor.Tracking.Change
             typeof(Namotion.Interceptor.Tracking.Change.PropertyChangeInterceptor)})]
     [Namotion.Interceptor.Attributes.RunsBefore(new System.Type[] {
             typeof(Namotion.Interceptor.Tracking.Lifecycle.LifecycleInterceptor)})]
-    public class DerivedPropertyChangeHandler : Namotion.Interceptor.Interceptors.IReadInterceptor, Namotion.Interceptor.Interceptors.IWriteInterceptor, Namotion.Interceptor.Tracking.Lifecycle.IPropertyLifecycleHandler
+    public class DerivedPropertyChangeHandler : Namotion.Interceptor.ISingletonContextService<Namotion.Interceptor.Tracking.Change.DerivedPropertyChangeHandler>, Namotion.Interceptor.Interceptors.IReadInterceptor, Namotion.Interceptor.Interceptors.IWriteInterceptor, Namotion.Interceptor.Tracking.Lifecycle.IPropertyLifecycleHandler
     {
         public DerivedPropertyChangeHandler() { }
         public void AttachProperty(Namotion.Interceptor.Tracking.Lifecycle.SubjectPropertyLifecycleChange change) { }
@@ -31,7 +31,7 @@ namespace Namotion.Interceptor.Tracking.Change
             typeof(Namotion.Interceptor.Tracking.Transactions.SubjectTransactionInterceptor)})]
     [Namotion.Interceptor.Attributes.RunsBefore(new System.Type[] {
             typeof(Namotion.Interceptor.Tracking.Lifecycle.LifecycleInterceptor)})]
-    public sealed class PropertyChangeInterceptor : Namotion.Interceptor.Interceptors.IWriteInterceptor, System.IObservable<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange>
+    public sealed class PropertyChangeInterceptor : Namotion.Interceptor.ISingletonContextService<Namotion.Interceptor.Tracking.Change.PropertyChangeInterceptor>, Namotion.Interceptor.Interceptors.IWriteInterceptor, System.IObservable<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange>
     {
         public PropertyChangeInterceptor() { }
         public System.IDisposable Subscribe(System.IObserver<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange> observer) { }
@@ -110,12 +110,10 @@ namespace Namotion.Interceptor.Tracking
     {
         public static Namotion.Interceptor.Tracking.Change.PropertyChangeQueueSubscription CreatePropertyChangeQueueSubscription(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
         public static System.IObservable<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange> GetPropertyChangeObservable(this Namotion.Interceptor.IInterceptorSubjectContext context, System.Reactive.Concurrency.IScheduler? scheduler = null) { }
-        public static Namotion.Interceptor.IInterceptorSubjectContext WithContextInheritance(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
         public static Namotion.Interceptor.IInterceptorSubjectContext WithDerivedPropertyChangeDetection(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
         public static Namotion.Interceptor.IInterceptorSubjectContext WithEqualityCheck(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
         public static Namotion.Interceptor.IInterceptorSubjectContext WithFullPropertyTracking(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
         public static Namotion.Interceptor.IInterceptorSubjectContext WithLifecycle(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
-        public static Namotion.Interceptor.IInterceptorSubjectContext WithParents(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
         public static Namotion.Interceptor.IInterceptorSubjectContext WithPropertyChangeSubscriptions(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
         public static Namotion.Interceptor.IInterceptorSubjectContext WithReadPropertyRecorder(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
         public static Namotion.Interceptor.IInterceptorSubjectContext WithTransactions(this Namotion.Interceptor.IInterceptorSubjectContext context) { }
@@ -127,7 +125,7 @@ namespace Namotion.Interceptor.Tracking
         public static T GetOrAddPropertyData<T>(this Namotion.Interceptor.PropertyReference property, string key, System.Func<T> valueFactory) { }
     }
     [Namotion.Interceptor.Attributes.RunsFirst]
-    public class PropertyValueEqualityCheckHandler : Namotion.Interceptor.Interceptors.IWriteInterceptor
+    public class PropertyValueEqualityCheckHandler : Namotion.Interceptor.ISingletonContextService<Namotion.Interceptor.Tracking.PropertyValueEqualityCheckHandler>, Namotion.Interceptor.Interceptors.IWriteInterceptor
     {
         public PropertyValueEqualityCheckHandler() { }
         public void WriteProperty<TProperty>(ref Namotion.Interceptor.Interceptors.PropertyWriteContext<TProperty> context, Namotion.Interceptor.Interceptors.WriteInterceptionDelegate<TProperty> next) { }
@@ -138,23 +136,9 @@ namespace Namotion.Interceptor.Tracking
         public static Namotion.Interceptor.IInterceptorSubject? FindSubjectInDictionary(object value, object key) { }
         public static bool TryGetSubjectFromKeyValuePair(object keyValuePair, out object? key, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out Namotion.Interceptor.IInterceptorSubject? subject) { }
     }
-    public static class SubjectPropertyTypeExtensions
-    {
-        public static bool CanContainSubjects(this System.Type type) { }
-        public static bool CanContainSubjects<TProperty>(this System.Type type) { }
-        public static bool IsSubjectCollectionType(this System.Type type) { }
-        public static bool IsSubjectDictionaryType(this System.Type type) { }
-        public static bool IsSubjectReferenceType(this System.Type type) { }
-    }
 }
 namespace Namotion.Interceptor.Tracking.Lifecycle
 {
-    public class ContextInheritanceHandler : Namotion.Interceptor.Tracking.Lifecycle.ILifecycleHandler
-    {
-        public ContextInheritanceHandler() { }
-        public override bool Equals(object? obj) { }
-        public void HandleLifecycleChange(Namotion.Interceptor.Tracking.Lifecycle.SubjectLifecycleChange change) { }
-    }
     public interface ILifecycleHandler
     {
         void HandleLifecycleChange(Namotion.Interceptor.Tracking.Lifecycle.SubjectLifecycleChange change);
@@ -165,13 +149,23 @@ namespace Namotion.Interceptor.Tracking.Lifecycle
         void DetachProperty(Namotion.Interceptor.Tracking.Lifecycle.SubjectPropertyLifecycleChange change);
         void RefreshCollectionProperty(Namotion.Interceptor.PropertyReference property, object? value);
     }
-    public class LifecycleInterceptor : Namotion.Interceptor.Interceptors.ILifecycleInterceptor, Namotion.Interceptor.Interceptors.IWriteInterceptor
+    public sealed class LifecycleContractViolationException : System.InvalidOperationException
     {
-        public LifecycleInterceptor() { }
+        public LifecycleContractViolationException(string message) { }
+    }
+    public sealed class LifecycleInterceptor : Namotion.Interceptor.ISingletonContextService<Namotion.Interceptor.Interceptors.ILifecycleInterceptor>, Namotion.Interceptor.Interceptors.ILifecycleInterceptor, Namotion.Interceptor.Interceptors.IWriteInterceptor, Namotion.Interceptor.Tracking.Lifecycle.ILifecycleHandler
+    {
+        public LifecycleInterceptor(Namotion.Interceptor.IInterceptorSubjectContext context) { }
         public event System.Action<Namotion.Interceptor.Tracking.Lifecycle.SubjectLifecycleChange>? SubjectAttached;
         public event System.Action<Namotion.Interceptor.Tracking.Lifecycle.SubjectLifecycleChange>? SubjectDetaching;
-        public void AttachSubjectToContext(Namotion.Interceptor.IInterceptorSubject subject) { }
-        public void DetachSubjectFromContext(Namotion.Interceptor.IInterceptorSubject subject) { }
+        public void AttachSubjectToContext(Namotion.Interceptor.IInterceptorSubject subject, Namotion.Interceptor.IInterceptorSubjectContext context, Namotion.Interceptor.SubjectAttachmentAnchorKind anchor) { }
+        public void DetachSubjectFromContext(Namotion.Interceptor.IInterceptorSubject subject, Namotion.Interceptor.IInterceptorSubjectContext context) { }
+        public void EnterStructuralWriteGate() { }
+        public void ExitStructuralWriteGate() { }
+        public System.Collections.Immutable.ImmutableArray<Namotion.Interceptor.Tracking.Parent.SubjectParent> GetParents(Namotion.Interceptor.IInterceptorSubject subject) { }
+        public int GetReferenceCount(Namotion.Interceptor.IInterceptorSubject subject) { }
+        public void HandleLifecycleChange(Namotion.Interceptor.Tracking.Lifecycle.SubjectLifecycleChange change) { }
+        public bool TryAddProperties(Namotion.Interceptor.Interceptors.SubjectPropertyRegistration registration) { }
         public void WriteProperty<TProperty>(ref Namotion.Interceptor.Interceptors.PropertyWriteContext<TProperty> context, Namotion.Interceptor.Interceptors.WriteInterceptionDelegate<TProperty> next) { }
     }
     public static class LifecycleInterceptorExtensions
@@ -201,13 +195,6 @@ namespace Namotion.Interceptor.Tracking.Lifecycle
 }
 namespace Namotion.Interceptor.Tracking.Parent
 {
-    [Namotion.Interceptor.Attributes.RunsBefore(new System.Type[] {
-            typeof(Namotion.Interceptor.Tracking.Lifecycle.ContextInheritanceHandler)})]
-    public class ParentTrackingHandler : Namotion.Interceptor.Tracking.Lifecycle.ILifecycleHandler
-    {
-        public ParentTrackingHandler() { }
-        public void HandleLifecycleChange(Namotion.Interceptor.Tracking.Lifecycle.SubjectLifecycleChange change) { }
-    }
     public static class ParentsHandlerExtensions
     {
         public static System.Collections.Immutable.ImmutableArray<Namotion.Interceptor.Tracking.Parent.SubjectParent> GetParents(this Namotion.Interceptor.IInterceptorSubject subject) { }
@@ -233,7 +220,7 @@ namespace Namotion.Interceptor.Tracking.Performance
 }
 namespace Namotion.Interceptor.Tracking.Recorder
 {
-    public class ReadPropertyRecorder : Namotion.Interceptor.Interceptors.IReadInterceptor
+    public class ReadPropertyRecorder : Namotion.Interceptor.ISingletonContextService<Namotion.Interceptor.Tracking.Recorder.ReadPropertyRecorder>, Namotion.Interceptor.Interceptors.IReadInterceptor
     {
         public ReadPropertyRecorder() { }
         public TProperty ReadProperty<TProperty>(ref Namotion.Interceptor.Interceptors.PropertyReadContext<TProperty> context, Namotion.Interceptor.Interceptors.ReadInterceptionDelegate<TProperty> next) { }
@@ -247,7 +234,7 @@ namespace Namotion.Interceptor.Tracking.Recorder
 }
 namespace Namotion.Interceptor.Tracking.Transactions
 {
-    public interface ITransactionWriter
+    public interface ITransactionWriter : Namotion.Interceptor.ISingletonContextService<Namotion.Interceptor.Tracking.Transactions.ITransactionWriter>
     {
         System.Threading.Tasks.ValueTask<Namotion.Interceptor.Tracking.Transactions.SourceRevertResult> RevertSourceWritesAsync(System.Collections.Generic.IReadOnlyList<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange> written, object? revertState, System.Threading.CancellationToken cancellationToken);
         System.Threading.Tasks.ValueTask<Namotion.Interceptor.Tracking.Transactions.SourceWriteResult> WriteToSourcesAsync(System.Memory<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange> changes, Namotion.Interceptor.Tracking.Transactions.TransactionRequirement requirement, System.Threading.CancellationToken cancellationToken);
@@ -297,7 +284,7 @@ namespace Namotion.Interceptor.Tracking.Transactions
     }
     [Namotion.Interceptor.Attributes.RunsBefore(new System.Type[] {
             typeof(Namotion.Interceptor.Tracking.Change.DerivedPropertyChangeHandler)})]
-    public sealed class SubjectTransactionInterceptor : Namotion.Interceptor.Interceptors.IReadInterceptor, Namotion.Interceptor.Interceptors.IWriteInterceptor
+    public sealed class SubjectTransactionInterceptor : Namotion.Interceptor.ISingletonContextService<Namotion.Interceptor.Tracking.Transactions.SubjectTransactionInterceptor>, Namotion.Interceptor.Interceptors.IReadInterceptor, Namotion.Interceptor.Interceptors.IWriteInterceptor
     {
         public SubjectTransactionInterceptor() { }
         public TProperty ReadProperty<TProperty>(ref Namotion.Interceptor.Interceptors.PropertyReadContext<TProperty> context, Namotion.Interceptor.Interceptors.ReadInterceptionDelegate<TProperty> next) { }

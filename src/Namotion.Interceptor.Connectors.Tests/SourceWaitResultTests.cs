@@ -315,102 +315,6 @@ public class SourceWaitResultTests
         Assert.Same(first, second);
     }
 
-    [Theory]
-    [InlineData(true, true)]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    [InlineData(false, false)]
-    public async Task WhenTwoMonitorsDisagree_ThenTheWorseResultWins(
-        bool worseMonitorSettlesLast, bool worseMonitorIsTheChild)
-    {
-        // Arrange
-        // Registered manually against one monitor each: a source started the ordinary way registers
-        // with every reachable monitor, making the aggregation idempotent rather than tested.
-        // Varying which monitor carries the failure rules out folding to one fixed constituent, and
-        // varying which settles last rules out first-to-complete and last-to-complete winning.
-        var parent = InterceptorSubjectContext.Create()
-            .WithFullPropertyTracking()
-            .WithLifecycle()
-            .WithSourceMonitoring();
-        var child = InterceptorSubjectContext.Create().WithSourceMonitoring();
-        child.AddFallbackContext(parent);
-
-        var parentMonitor = parent.GetSourceMonitor();
-        var childMonitor = child.GetServices<SourceMonitor>()[0];
-
-        var root = new Person(child);
-        var healthy = new TestStateSource(root);
-        var neverDelivered = new TestStateSource(root);
-        (worseMonitorIsTheChild ? childMonitor : parentMonitor).Register(neverDelivered);
-        (worseMonitorIsTheChild ? parentMonitor : childMonitor).Register(healthy);
-        parentMonitor.CompleteSourceRegistration();
-        childMonitor.CompleteSourceRegistration();
-
-        // Leaving one source unsettled runs the aggregation through its asynchronous path rather
-        // than folding two already-completed tasks.
-        var wait = root.WaitForSynchronizationAsync(CancellationToken.None);
-        Assert.False(wait.IsCompleted);
-
-        // Act
-        if (worseMonitorSettlesLast)
-        {
-            healthy.ReportSynchronized();
-            Assert.False(wait.IsCompleted);
-            neverDelivered.ReportStopped();
-        }
-        else
-        {
-            neverDelivered.ReportStopped();
-            Assert.False(wait.IsCompleted);
-            healthy.ReportSynchronized();
-        }
-
-        // Assert
-        Assert.Equal(SourceSynchronizationResult.Incomplete, await wait.WaitAsync(TimeSpan.FromSeconds(5)));
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task WhenAMonitorIsSatisfiedOnlyBriefly_ThenTheAggregationHasAlreadyCapturedIt(
-        bool transientOnTheChild)
-    {
-        // Arrange
-        // Pins that every constituent wait is created before the first await. A sequential
-        // implementation would not ask the second monitor until the first completed, by which point
-        // the transient satisfaction below has been withdrawn, and it would block forever. Which
-        // monitor comes first in the aggregation is an implementation detail, so both placements run:
-        // whichever order holds, one of them puts the transient source second and would hang.
-        var parent = InterceptorSubjectContext.Create()
-            .WithFullPropertyTracking()
-            .WithLifecycle()
-            .WithSourceMonitoring();
-        var child = InterceptorSubjectContext.Create().WithSourceMonitoring();
-        child.AddFallbackContext(parent);
-
-        var parentMonitor = parent.GetSourceMonitor();
-        var childMonitor = child.GetServices<SourceMonitor>()[0];
-
-        var root = new Person(child);
-        var slow = new TestStateSource(root);
-        var transient = new TestStateSource(root);
-        (transientOnTheChild ? childMonitor : parentMonitor).Register(transient);
-        (transientOnTheChild ? parentMonitor : childMonitor).Register(slow);
-        parentMonitor.CompleteSourceRegistration();
-        childMonitor.CompleteSourceRegistration();
-
-        var wait = root.WaitForSynchronizationAsync(CancellationToken.None);
-        Assert.False(wait.IsCompleted);
-
-        // Act - satisfied, then withdrawn before the other monitor settles.
-        transient.ReportSynchronized();
-        transient.ReportSynchronizing();
-        slow.ReportSynchronized();
-
-        // Assert
-        Assert.Equal(SourceSynchronizationResult.Synchronized, await wait.WaitAsync(TimeSpan.FromSeconds(5)));
-    }
-
     [Fact]
     public async Task WhenDisposeRacesAFailingRegistration_ThenTheSourceIsNeverLeftRegistered()
     {
@@ -548,7 +452,7 @@ public class SourceWaitResultTests
         var hold = monitor.DeferWaitCompletion();
         monitor.CompleteSourceRegistration();
 
-        var poisonWait = new PoisonAnchor(context).WaitForSynchronizationAsync(cancellationToken);
+        var poisonWait = monitor.WaitForSynchronizationAsync(new PoisonAnchor(), cancellationToken);
         Assert.False(poisonWait.IsCompleted);
 
         Assert.Throws<InvalidOperationException>(() => hold.Dispose());

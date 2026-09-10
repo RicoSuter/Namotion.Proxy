@@ -11,6 +11,7 @@ public class DynamicSubjectBenchmark
     private IInterceptorSubjectContext? _context;
     private IInterceptorSubjectContext? _iterationContext;
     private IMotor? _motor;
+    private int _writeCounter;
 
     public interface IMotor
     {
@@ -31,11 +32,16 @@ public class DynamicSubjectBenchmark
             .WithRegistry();
         
         var motor = DynamicSubjectFactory.CreateDynamicSubject(typeof(IMotor), typeof(ISensor));
-        motor.Context.AddFallbackContext(_context);
+
+        // Provisional, matching the anchor a context-taking constructor creates, which is the
+        // shape the comparison base measures.
+        motor.AttachToContext(_context, SubjectAttachmentAnchorKind.Provisional);
         _motor = (IMotor)motor;
     }
     
-    [IterationSetup]
+    // IterationSetup is intentionally not applied: it forces InvocationCount=1, which puts the
+    // nanosecond-scale read and write rows below timer resolution. Only CreateDynamicSubject
+    // needs a fresh context per iteration, and it stays disabled.
     public void IterationSetup()
     {
         _iterationContext = InterceptorSubjectContext
@@ -48,18 +54,21 @@ public class DynamicSubjectBenchmark
     public void CreateDynamicSubject()
     {        
         var subject = DynamicSubjectFactory.CreateDynamicSubject(typeof(IMotor), typeof(ISensor));
-        subject.Context.AddFallbackContext(_iterationContext!);
+        subject.AttachToContext(_iterationContext!, SubjectAttachmentAnchorKind.Provisional);
     }
     
-    //[Benchmark]
+    [Benchmark]
     public void ReadDynamicProperty()
     {
         _ = _motor!.Speed;
     }
     
-    //[Benchmark]
+    [Benchmark]
     public void WriteDynamicProperty()
     {
-        _motor!.Speed = 100;
+        // A changing value on every invocation. Writing a constant lands equal to the stored
+        // value from the second call onward, and WithFullPropertyTracking installs the equality
+        // check, so the row would measure a suppressed write rather than a real one.
+        _motor!.Speed = ++_writeCounter;
     }
 }

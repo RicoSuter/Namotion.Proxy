@@ -211,7 +211,7 @@ public class HueDerivedStateTrackingTests
     /// </summary>
     private static T Track<T>(T subject) where T : IInterceptorSubject
     {
-        subject.Context.AddFallbackContext(InterceptorSubjectContext
+        subject.AttachToContext(InterceptorSubjectContext
             .Create()
             .WithFullPropertyTracking()
             .WithRegistry());

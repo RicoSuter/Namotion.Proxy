@@ -1,0 +1,4 @@
+﻿[
+  a: Attached,
+  a: Detached
+]

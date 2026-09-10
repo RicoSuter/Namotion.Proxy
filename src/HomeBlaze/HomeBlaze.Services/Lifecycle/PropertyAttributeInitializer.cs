@@ -95,7 +95,7 @@ public class PropertyAttributeInitializer : IPropertyLifecycleHandler
             var subject = property.Parent.Subject;
             try
             {
-                subject.Context.GetServices<ILoggerFactory>().FirstOrDefault()?
+                subject.GetContext().GetServices<ILoggerFactory>().FirstOrDefault()?
                     .CreateLogger(typeof(PropertyAttributeInitializer).FullName!)
                     .LogWarning(
                         "Property '{Property}' on '{Subject}' has both [State] and [Configuration(IsSecret = true)]; " +

@@ -1,88 +1,89 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
-using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Namotion.Interceptor.Cache;
 using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Ordering;
+using Namotion.Interceptor.Tracking;
 
 namespace Namotion.Interceptor;
 
-public class InterceptorSubjectContext : IInterceptorSubjectContext
+public sealed class InterceptorSubjectContext : IInterceptorSubjectContext
 {
-    // All topology (services, fallback contexts) and everything derived from it (delegation
-    // target, caches, compiled chains) lives in one immutable snapshot per context, published
-    // atomically.
-    //
-    // R1: queries take no context lock. A query pins one snapshot with a single volatile read and
-    // walks other contexts' snapshots the same way, so the downward service walk and the upward
-    // invalidation walk cannot form a lock cycle, including in cyclic fallback graphs.
-    //
-    // Lock order: _mutationLock -> a _usedByContexts set lock, never reverse. A set lock is a leaf,
-    // touching only that set and calling into no other context, so two contexts registering into
-    // each other cannot deadlock. No path takes a second _mutationLock; the only way to nest them
-    // is a TryAddService factory or exists predicate that mutates a different context, which the
-    // contract forbids for that reason.
-
-    private const int MaximumRetainedTraversalSize = 1024;
+    // The services and everything derived from them (service query results, compiled interceptor
+    // chains) live in one immutable snapshot per context, published atomically. Queries take no
+    // lock: a query pins one snapshot with a single volatile read, and every mutation publishes a
+    // fresh snapshot with empty caches, so a cache entry can never survive the registration that
+    // invalidated it. Mutators serialize on _mutationLock.
 
     // Declared before the marker so that a future change to marker construction cannot observe
     // its zero-initialized value.
     private static int _lastPropertyTypeIndex = -1;
 
-    // Recorded on a state whose chain was proven cyclic, so a context on the loop pays one walk
-    // per state rather than one per query. A context merely leading into a loop records nothing
-    // and re-walks every query, which is the price of never raising from an unverified record.
-    // A context rather than a marker object so that the slot can be typed: this class is not
-    // sealed, so a type test on an object slot compiles to a runtime helper call on every
-    // intercepted access.
-    private static readonly InterceptorSubjectContext CyclicDelegationMarker = CreateCyclicDelegationMarker();
-
     /// <summary>
-    /// A dense index per intercepted property type, so a compiled chain is found by indexing an
-    /// array instead of hashing a <see cref="Type"/>. Handed out process wide to keep the lookup a
-    /// plain array read; the cost is that an array is as long as the largest index its context has
-    /// seen rather than the number of types it uses.
+    /// The per-property-type statics of the write path: a dense index per intercepted property
+    /// type, so a compiled chain is found by indexing an array instead of hashing a
+    /// <see cref="Type"/>, and the structural classification of the type, so the unified write
+    /// entry routes without calling the classifier. The index is handed out process wide to keep
+    /// the lookup a plain array read; the cost is that an array is as long as the largest index
+    /// its context has seen rather than the number of types it uses.
     /// </summary>
-    private static class PropertyTypeIndex<TProperty>
+    internal static class PropertyTypeIndex<TProperty>
     {
         // ReSharper disable once StaticMemberInGenericType
         internal static readonly int Value = Interlocked.Increment(ref _lastPropertyTypeIndex);
+
+        // Type-only classification agrees with the runtime authority (the lifecycle classifies
+        // from the declared property type) whenever TProperty is that declared type, which holds
+        // by construction for generated setters. A boxed object fails closed to structural, while
+        // a TProperty narrowed below the declared type routes scalar and forfeits the pre-chain
+        // seam, which is why boxed callers instantiate this entry with the declared type via a
+        // cached typed delegate rather than write as object.
+        // ReSharper disable once StaticMemberInGenericType
+        internal static readonly bool CanContainSubjects = typeof(TProperty).CanContainSubjects();
     }
 
-    [ThreadStatic]
-    private static HashSet<InterceptorSubjectContext>? _invalidationVisited;
+    // Closed ISingletonContextService<TContract> interfaces per implementation type, discovered
+    // once per type so that repeated registrations pay a dictionary lookup instead of an interface
+    // walk. Only the mutators below read it; service resolution and interceptor execution never
+    // touch singleton contracts.
+    private static readonly ConcurrentDictionary<Type, Type[]> SingletonContractsByImplementationType = new();
 
-    [ThreadStatic]
-    private static List<InterceptorSubjectContext>? _invalidationPending;
-
-    [ThreadStatic]
-    private static HashSet<InterceptorSubjectContext>? _serviceQueryVisited;
-
-    [ThreadStatic]
-    private static HashSet<InterceptorSubjectContext>? _delegationCycleVisited;
-
-    [ThreadStatic]
-    private static List<DelegationHop>? _delegationCyclePath;
-
-    // Written via Interlocked rather than declared volatile, which would raise CS0420 when passed
-    // by ref under warnings-as-errors. Every context builds its own initial state because caches
-    // live on the state: one shared empty instance would let contexts contaminate each other.
-    private ContextState _state = new(ImmutableArray<object>.Empty, ImmutableArray<InterceptorSubjectContext>.Empty);
+    // Written via Interlocked/Volatile rather than declared volatile, which would raise CS0420
+    // when passed by ref under warnings-as-errors. Every context builds its own initial state
+    // because caches live on the state: one shared empty instance would let contexts contaminate
+    // each other.
+    private ContextState _state = new(ImmutableArray<object>.Empty);
 
     // Serializes mutators; never held on a query path.
     private readonly object _mutationLock = new();
 
-    // Contexts that resolve through this context, lazily allocated because most contexts are
-    // never used as a fallback. The set instance is its own lock: it is created once via CAS and
-    // never replaced, so every thread locks the same canonical object without a second allocation.
-    private HashSet<InterceptorSubjectContext>? _usedByContexts;
+    // Whether a subject was ever anchored to this context while it had no lifecycle. Such a root is
+    // invisible to a lifecycle registered behind it: nothing ever admits it to the ownership graph,
+    // so it stays attached and unowned forever. Registering the lifecycle is what refuses that
+    // order. A flag rather than a count of live attachments, because the question is about the
+    // order the context was configured in and not about how many subjects are on it.
+    private bool _wasAttachedWithoutLifecycle;
+
+    /// <inheritdoc cref="_wasAttachedWithoutLifecycle"/>
+    internal void MarkAttachedWithoutLifecycle()
+    {
+        // Read before writing, so building many subjects on one lifecycle-free context does not
+        // dirty this line once per construction.
+        if (!Volatile.Read(ref _wasAttachedWithoutLifecycle))
+        {
+            Volatile.Write(ref _wasAttachedWithoutLifecycle, true);
+        }
+    }
+
+    /// <inheritdoc cref="_wasAttachedWithoutLifecycle"/>
+    internal bool WasAttachedWithoutLifecycle => Volatile.Read(ref _wasAttachedWithoutLifecycle);
 
     /// <summary>
-    /// Restricts context inheritance to this assembly because topology tracking requires context
+    /// Restricts construction to <see cref="Create"/> because attachment tracking requires context
     /// reference identity.
     /// </summary>
-    private protected InterceptorSubjectContext()
+    private InterceptorSubjectContext()
     {
     }
 
@@ -95,92 +96,10 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
         return new InterceptorSubjectContext();
     }
 
-    private static InterceptorSubjectContext CreateCyclicDelegationMarker()
-    {
-        var marker = new InterceptorSubjectContext();
-        marker.AddFallbackContext(marker);
-        return marker;
-    }
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ImmutableArray<TInterface> GetServices<TInterface>()
     {
-        var state = Volatile.Read(ref _state);
-        var resolved = this;
-        if (state.DelegationTarget is not null)
-        {
-            resolved = ResolveDelegationTarget(ref state);
-        }
-
-        return resolved.GetServicesFromState<TInterface>(state);
-    }
-
-    public virtual bool AddFallbackContext(IInterceptorSubjectContext context)
-    {
-        var contextImpl = (InterceptorSubjectContext)context;
-
-        lock (_mutationLock)
-        {
-            var state = Volatile.Read(ref _state);
-            if (state.FallbackContexts.Contains(contextImpl))
-            {
-                return false;
-            }
-
-            // R4: register into the fallback BEFORE publishing, so its _usedByContexts is always a
-            // superset of the true using set. A missing entry leaves a compiled chain above
-            // permanently stale. An extra entry costs a spurious invalidation and lets the
-            // invalidation walk arrive out of chain order, which is why no walk may trust what a
-            // context further down recorded (see ResolveDelegationChain).
-            var usedByContexts = contextImpl.GetOrCreateUsedByContexts();
-            lock (usedByContexts)
-            {
-                usedByContexts.Add(this);
-            }
-
-            PublishState(new ContextState(state.Services, state.FallbackContexts.Add(contextImpl)));
-        }
-
-        InvalidateUsingContexts();
-        return true;
-    }
-
-    protected bool HasFallbackContext(IInterceptorSubjectContext context)
-    {
-        return context is InterceptorSubjectContext contextImpl &&
-               Volatile.Read(ref _state).FallbackContexts.Contains(contextImpl);
-    }
-
-    public virtual bool RemoveFallbackContext(IInterceptorSubjectContext context)
-    {
-        var contextImpl = (InterceptorSubjectContext)context;
-
-        lock (_mutationLock)
-        {
-            var state = Volatile.Read(ref _state);
-            var index = state.FallbackContexts.IndexOf(contextImpl);
-            if (index < 0)
-            {
-                return false;
-            }
-
-            PublishState(new ContextState(state.Services, state.FallbackContexts.RemoveAt(index)));
-
-            // R4: unregister from the fallback only AFTER publishing so that its _usedByContexts
-            // stays a superset of the true using set for the whole transition (see
-            // AddFallbackContext).
-            var usedByContexts = Volatile.Read(ref contextImpl._usedByContexts);
-            if (usedByContexts is not null)
-            {
-                lock (usedByContexts)
-                {
-                    usedByContexts.Remove(this);
-                }
-            }
-        }
-
-        InvalidateUsingContexts();
-        return true;
+        return GetServicesFromState<TInterface>(Volatile.Read(ref _state));
     }
 
     public bool TryAddService<TService>(Func<TService> factory, Func<TService, bool> exists)
@@ -189,7 +108,7 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
         {
             var state = Volatile.Read(ref _state);
 
-            // The lock-free walk keeps the check atomic against concurrent mutators of this
+            // Computed from the pinned state, which is atomic against concurrent mutators of this
             // context because they all serialize on _mutationLock.
             if (ComputeServices<TService>(state).Any(exists))
             {
@@ -200,12 +119,15 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
 
             // The factory may reenter this context (Monitor is reentrant) and publish, so re-read
             // the state to not lose it. Mutating a different context from here is forbidden, see
-            // the lock order note at the top of the class.
+            // the remarks on IInterceptorSubjectContext.TryAddService.
             state = Volatile.Read(ref _state);
-            PublishState(new ContextState(state.Services.Add(service!), state.FallbackContexts));
+
+            // Validated against the re-read state, so a contract a reentrant factory published
+            // cannot be doubled by the factory's own product.
+            ValidateSingletonContracts(state.Services, service);
+            PublishState(new ContextState(state.Services.Add(service!)));
         }
 
-        InvalidateUsingContexts();
         return true;
     }
 
@@ -214,15 +136,91 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
         lock (_mutationLock)
         {
             var state = Volatile.Read(ref _state);
-            PublishState(new ContextState(state.Services.Add(service!), state.FallbackContexts));
+            ValidateSingletonContracts(state.Services, service);
+            PublishState(new ContextState(state.Services.Add(service!)));
+        }
+    }
+
+    /// <summary>
+    /// Throws when the service implements a singleton contract another registered service (or the
+    /// same instance, registered again) already reserves. Runs under <see cref="_mutationLock"/>
+    /// and before the publish, so a rejected registration leaves the context untouched.
+    /// </summary>
+    private static void ValidateSingletonContracts(ImmutableArray<object> services, object? service)
+    {
+        if (service is null)
+        {
+            return;
         }
 
-        InvalidateUsingContexts();
+        var contracts = GetSingletonContracts(service.GetType());
+        if (contracts.Length == 0)
+        {
+            return;
+        }
+
+        foreach (var contract in contracts)
+        {
+            foreach (var existingService in services)
+            {
+                if (contract.IsInstanceOfType(existingService))
+                {
+                    throw CreateSingletonContractConflictException(contract, existingService, service);
+                }
+            }
+        }
+    }
+
+    private static Type[] GetSingletonContracts(Type implementationType)
+    {
+        return SingletonContractsByImplementationType.GetOrAdd(implementationType, static type =>
+        {
+            List<Type>? contracts = null;
+            foreach (var interfaceType in type.GetInterfaces())
+            {
+                if (interfaceType.IsGenericType &&
+                    interfaceType.GetGenericTypeDefinition() == typeof(ISingletonContextService<>))
+                {
+                    (contracts ??= []).Add(interfaceType);
+                }
+            }
+
+            return contracts?.ToArray() ?? Type.EmptyTypes;
+        });
+    }
+
+    private static InvalidOperationException CreateSingletonContractConflictException(
+        Type contract, object existingService, object offendingService)
+    {
+        var contractType = contract.GetGenericArguments()[0];
+        return new InvalidOperationException(
+            $"Cannot add service '{offendingService.GetType().FullName}': the singleton contract " +
+            $"'{contractType.FullName}' is already reserved by service " +
+            $"'{existingService.GetType().FullName}' registered on this context.");
     }
 
     public TInterface? TryGetService<TInterface>()
     {
-        var services = GetServices<TInterface>();
+        return TryGetServiceFromState<TInterface>(PinState());
+    }
+
+    /// <summary>
+    /// Pins the current state snapshot with a single volatile read. A caller that must make
+    /// several decisions against one consistent view of the context (the structural write's
+    /// routing and its chain) pins once and passes the snapshot to the FromState members.
+    /// </summary>
+    internal ContextState PinState()
+    {
+        return Volatile.Read(ref _state);
+    }
+
+    /// <summary>
+    /// <see cref="TryGetService{TInterface}"/> against a pinned snapshot instead of the current
+    /// state.
+    /// </summary>
+    internal TInterface? TryGetServiceFromState<TInterface>(ContextState state)
+    {
+        var services = GetServicesFromState<TInterface>(state);
         return services.Length switch
         {
             1 => services[0],
@@ -235,27 +233,31 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
     internal TProperty ExecuteInterceptedRead<TProperty>(ref PropertyReadContext<TProperty> context, Func<IInterceptorSubject, TProperty> readValue)
     {
         var state = Volatile.Read(ref _state);
-        var resolved = this;
-        if (state.DelegationTarget is not null)
-        {
-            resolved = ResolveDelegationTarget(ref state);
-        }
-
-        var function = resolved.GetReadInterceptorFunction<TProperty>(state);
+        var function = GetReadInterceptorFunction<TProperty>(state);
         return function(ref context, readValue);
     }
 
+    /// <summary>
+    /// Runs the write chain. <paramref name="propertyTypeIndex"/> is
+    /// <see cref="PropertyTypeIndex{TProperty}.Value"/>, read once by the executor's unified
+    /// entry and threaded down so this path never touches the generic statics again.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void ExecuteInterceptedWrite<TProperty>(ref PropertyWriteContext<TProperty> context, Action<IInterceptorSubject, TProperty> writeValue)
+    internal void ExecuteInterceptedWrite<TProperty>(int propertyTypeIndex, ref PropertyWriteContext<TProperty> context, Action<IInterceptorSubject, TProperty> writeValue)
     {
-        var state = Volatile.Read(ref _state);
-        var resolved = this;
-        if (state.DelegationTarget is not null)
-        {
-            resolved = ResolveDelegationTarget(ref state);
-        }
+        ExecuteInterceptedWrite(Volatile.Read(ref _state), propertyTypeIndex, ref context, writeValue);
+    }
 
-        var action = resolved.GetWriteInterceptorFunction<TProperty>(state);
+    /// <summary>
+    /// <see cref="ExecuteInterceptedWrite{TProperty}(int, ref PropertyWriteContext{TProperty}, Action{IInterceptorSubject, TProperty})"/>
+    /// against a pinned snapshot instead of the current state. The structural write passes the
+    /// snapshot its routing decision read, so the chain cannot contain a lifecycle the routing
+    /// did not see.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void ExecuteInterceptedWrite<TProperty>(ContextState state, int propertyTypeIndex, ref PropertyWriteContext<TProperty> context, Action<IInterceptorSubject, TProperty> writeValue)
+    {
+        var action = GetWriteInterceptorFunction<TProperty>(state, propertyTypeIndex);
         action(ref context, writeValue);
     }
 
@@ -263,210 +265,8 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
     internal object? ExecuteInterceptedInvoke(ref MethodInvocationContext context, Func<IInterceptorSubject, object?[], object?> invokeMethod)
     {
         var state = Volatile.Read(ref _state);
-        var resolved = this;
-        if (state.DelegationTarget is not null)
-        {
-            resolved = ResolveDelegationTarget(ref state);
-        }
-
-        var function = resolved.GetMethodInvocationFunction(state);
+        var function = GetMethodInvocationFunction(state);
         return function(ref context, invokeMethod);
-    }
-
-    /// <summary>
-    /// Resolves the context that answers for this one and replaces <paramref name="state"/> with
-    /// the state that context was pinned on. A context with no own service and exactly one fallback
-    /// resolves everything through it, so the chain is as deep as the subject graph.
-    ///
-    /// Walked once per state rather than once per query, which is what makes depth free. The record
-    /// holds the terminal CONTEXT and never its state: a context's state is replaced whenever
-    /// anything below it changes, so the re-read below cannot be removed.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private InterceptorSubjectContext ResolveDelegationTarget(ref ContextState state)
-    {
-        var terminal = state.ResolvedTerminal;
-        if (terminal is not null && !ReferenceEquals(terminal, CyclicDelegationMarker))
-        {
-            var terminalState = Volatile.Read(ref terminal._state);
-
-            // Fails for a context that started delegating since it was recorded, which the walk
-            // below then corrects.
-            if (terminalState.DelegationTarget is null)
-            {
-                state = terminalState;
-                return terminal;
-            }
-        }
-
-        return ResolveDelegationChain(ref state);
-    }
-
-    /// <summary>
-    /// Walks the chain and records where it ends on every state it passed, which is what makes
-    /// building a graph of depth N cost one walk instead of one per level. Iterative because the
-    /// chain is as deep as the subject graph, so recursion overflows the stack and no fixed hop
-    /// limit is correct.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private InterceptorSubjectContext ResolveDelegationChain(ref ContextState state)
-    {
-        var visited = _delegationCycleVisited ??= [];
-        var path = _delegationCyclePath ??= [];
-
-        var backoff = new SpinWait();
-
-        try
-        {
-            while (true)
-            {
-                visited.Clear();
-                path.Clear();
-
-                // Re-pinned every pass, never reused from the caller: a stale first hop would make
-                // every pass reach the same repeat and fail the same confirmation, spinning here
-                // for good after one mutation.
-                var current = this;
-                var currentState = Volatile.Read(ref current._state);
-
-                // Only the entry's own record may be trusted. Everything below is read for topology
-                // alone, the one thing an installed state always describes correctly. A record is a
-                // claim about contexts further down, and because R4 keeps a using set a superset an
-                // invalidation can arrive out of chain order; trusting such a record would cache a
-                // resolution of a context the graph no longer reaches, on a state nothing
-                // invalidates again.
-                if (ReferenceEquals(currentState.ResolvedTerminal, CyclicDelegationMarker))
-                {
-                    throw CreateDelegationCycleException();
-                }
-
-                while (true)
-                {
-                    var next = currentState.DelegationTarget;
-                    if (next is null)
-                    {
-                        CacheResolvedTerminal(path, current, 0);
-                        state = currentState;
-                        return current;
-                    }
-
-                    if (!visited.Add(current))
-                    {
-                        break;
-                    }
-
-                    path.Add(new DelegationHop(current, currentState));
-                    current = next;
-                    currentState = Volatile.Read(ref current._state);
-                }
-
-                if (DelegationLoopStillClosed(path, current, out var loopStart))
-                {
-                    // Every hop that entered visited also entered path, and the break above fires
-                    // only on a context already in visited, so the repeat is always on the path.
-                    Debug.Assert(loopStart < path.Count, "The repeated context was not found on the walked path.");
-
-                    // Only from the loop, never from the acyclic run leading into it: the
-                    // confirmation re-reads the loop's states and nothing else, so a context ahead
-                    // of it reaches the loop by an edge read earlier and possibly rewired since.
-                    CacheResolvedTerminal(path, CyclicDelegationMarker, loopStart);
-                    throw CreateDelegationCycleException();
-                }
-
-                // The loop came apart under the walk, so it was a rewiring and not a cycle. A real
-                // cycle has no state to lose and confirms on the next pass. Backing off because
-                // reaching here means a mutator is rewiring right now and nothing else bounds this
-                // loop; only retries pay it.
-                backoff.SpinOnce();
-            }
-        }
-        finally
-        {
-            // Dropped rather than cleared past the threshold: Clear() keeps the capacity, so one
-            // deep walk would hold an entry per level on this thread for the rest of the process.
-            if (path.Capacity > MaximumRetainedTraversalSize)
-            {
-                _delegationCycleVisited = null;
-                _delegationCyclePath = null;
-            }
-            else
-            {
-                visited.Clear();
-                path.Clear();
-            }
-        }
-    }
-
-    /// <summary>
-    /// Records where the chain ends from <paramref name="startIndex"/> onwards, turning the next
-    /// query on any of those contexts into a single hop. Written only to the objects the walk
-    /// pinned, never to a re-read of a context's current state.
-    ///
-    /// The guarantee is quiescent, not instantaneous: the walk reads each edge at its own time, so
-    /// the chain it records may never have existed all at once. It converges because any change
-    /// below a context replaces that context's state, and a replaced state is never pinned again.
-    ///
-    /// The cyclic marker is therefore recorded from the confirmed loop only. A stale terminal
-    /// resolves wrongly for a moment and converges; a stale marker raises, which a caller cannot
-    /// tell from a real cycle. On the loop that raise is bounded by the invalidation walk and its
-    /// callers were already raising anyway; a context leading into the loop has no such bound.
-    /// </summary>
-    private static void CacheResolvedTerminal(List<DelegationHop> path, InterceptorSubjectContext resolvedTerminal, int startIndex)
-    {
-        for (var index = startIndex; index < path.Count; index++)
-        {
-            path[index].State.SetResolvedTerminalIfAbsent(resolvedTerminal);
-        }
-    }
-
-    /// <summary>
-    /// Reports whether every context on the candidate loop still holds the state the walk pinned.
-    /// A state is never installed twice, so one still in place has been in place since it was
-    /// pinned, and every edge of the loop therefore existed at the same moment. That is a cycle.
-    /// Comparing states rather than the fallback contexts they point at is what makes this exact: a
-    /// sequence of rewirings that is acyclic throughout can otherwise produce a repeat.
-    ///
-    /// <paramref name="loopStart"/> reports where the loop begins, because the run ahead of it is
-    /// deliberately not re-read and proves nothing, see <see cref="CacheResolvedTerminal"/>.
-    /// </summary>
-    private static bool DelegationLoopStillClosed(List<DelegationHop> path, InterceptorSubjectContext repeated, out int loopStart)
-    {
-        var index = 0;
-        while (index < path.Count && !ReferenceEquals(path[index].Context, repeated))
-        {
-            index++;
-        }
-
-        loopStart = index;
-
-        for (; index < path.Count; index++)
-        {
-            var context = path[index].Context;
-            if (!ReferenceEquals(Volatile.Read(ref context._state), path[index].State))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static InvalidOperationException CreateDelegationCycleException()
-    {
-        return new InvalidOperationException(
-            "The fallback contexts form a delegation cycle, so no service can be resolved. A context " +
-            "without own services and with exactly one fallback context resolves everything through " +
-            "that fallback context, and following those references leads back to a context already " +
-            "visited. Break the cycle by removing one of the fallback context registrations or by " +
-            "registering a service on one of the contexts on it.");
-    }
-
-    /// <summary>One context on the delegation walk and the state it was pinned on.</summary>
-    private readonly struct DelegationHop(InterceptorSubjectContext context, ContextState state)
-    {
-        internal readonly InterceptorSubjectContext Context = context;
-
-        internal readonly ContextState State = state;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -484,7 +284,7 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
     private ReadFunc<TProperty> CreateReadInterceptorFunction<TProperty>(ContextState state)
     {
         // Services are resolved from the same snapshot that caches the compiled chain, so a
-        // topology change (which publishes a new state with fresh caches) can never keep a chain
+        // registration (which publishes a new state with fresh caches) can never keep a chain
         // that misses an interceptor.
         var readInterceptors = GetServicesFromState<IReadInterceptor>(state);
         var function = ReadInterceptorFactory<TProperty>.Create(readInterceptors);
@@ -493,22 +293,22 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private WriteAction<TProperty> GetWriteInterceptorFunction<TProperty>(ContextState state)
+    private WriteAction<TProperty> GetWriteInterceptorFunction<TProperty>(ContextState state, int propertyTypeIndex)
     {
-        var cached = state.TryGetWriteFunction(PropertyTypeIndex<TProperty>.Value);
+        var cached = state.TryGetWriteFunction(propertyTypeIndex);
         if (cached is not null)
         {
             return (WriteAction<TProperty>)cached;
         }
 
-        return CreateWriteInterceptorFunction<TProperty>(state);
+        return CreateWriteInterceptorFunction<TProperty>(state, propertyTypeIndex);
     }
 
-    private WriteAction<TProperty> CreateWriteInterceptorFunction<TProperty>(ContextState state)
+    private WriteAction<TProperty> CreateWriteInterceptorFunction<TProperty>(ContextState state, int propertyTypeIndex)
     {
         var writeInterceptors = GetServicesFromState<IWriteInterceptor>(state);
         var action = WriteInterceptorFactory<TProperty>.Create(writeInterceptors);
-        state.SetWriteFunction(PropertyTypeIndex<TProperty>.Value, action);
+        state.SetWriteFunction(propertyTypeIndex, action);
         return action;
     }
 
@@ -536,10 +336,8 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
     }
 
     /// <summary>
-    /// Resolves services from the given pinned snapshot, normally one whose delegation the caller
-    /// already resolved. That is an expectation and not a precondition: the walk re-follows
-    /// delegation from whatever state it is handed. The cache entry is computed from the same
-    /// snapshot that owns the cache, so a topology change (which publishes a new state) can never
+    /// Resolves services from the given pinned snapshot. The cache entry is computed from the same
+    /// snapshot that owns the cache, so a registration (which publishes a new state) can never
     /// receive a stale entry.
     /// </summary>
     private ImmutableArray<TInterface> GetServicesFromState<TInterface>(ContextState state)
@@ -563,443 +361,85 @@ public class InterceptorSubjectContext : IInterceptorSubjectContext
         return (ImmutableArray<TInterface>)serviceCache.GetOrAdd(typeof(TInterface), services);
     }
 
-    private ImmutableArray<TInterface> ComputeServices<TInterface>(ContextState state)
-    {
-        var visited = _serviceQueryVisited ??= [];
-        try
-        {
-            return CollectServices(typeof(TInterface), this, state, visited)
-                .OfType<TInterface>()
-                .ToImmutableArray();
-        }
-        finally
-        {
-            if (visited.Count > MaximumRetainedTraversalSize)
-            {
-                _serviceQueryVisited = null;
-            }
-            else
-            {
-                visited.Clear();
-            }
-        }
-    }
-
     /// <summary>
-    /// Collects the services of the given type from the pinned snapshot and every context it
-    /// reaches, with an explicit worklist rather than recursion: the fallback graph is as deep as
-    /// the subject graph, so recursion died on an uncatchable <see cref="StackOverflowException"/>.
-    ///
-    /// The shape of the recursive walk is preserved exactly, because the result order is
-    /// observable: <see cref="ServiceOrderResolver.OrderByDependencies"/> keeps input order among
-    /// services no ordering attribute separates. So the walk stays depth first and left to right,
-    /// each context contributes its own services first, and the result is made distinct and
-    /// reordered once per context rather than once at the end.
-    ///
-    /// It terminates because a context is entered only when <c>visited</c> did not hold it, which
-    /// is also what makes the walk safe on a cyclic graph.
+    /// Filters the pinned snapshot's services by the queried type, drops duplicate registrations
+    /// keeping the first occurrence, and reorders by the ordering attributes
+    /// (<see cref="ServiceOrderResolver.OrderByDependencies{T}"/> keeps input order among services
+    /// no attribute separates).
     /// </summary>
-    private static List<object> CollectServices(
-        Type type,
-        InterceptorSubjectContext context,
-        ContextState state,
-        HashSet<InterceptorSubjectContext> visited)
+    private static ImmutableArray<TInterface> ComputeServices<TInterface>(ContextState state)
     {
-        // One buffer for the whole walk instead of one result per context: a context owns the
-        // buffer from its own start index on, and reducing that region leaves the rest untouched.
-        var collected = new List<object>();
-        if (!TryEnterContext(context, state, visited, out var enteredState))
-        {
-            return collected;
-        }
-
-        var frames = new List<ServiceWalkFrame>();
-        var distinctServices = new HashSet<object>();
-        PushFrame(frames, collected, type, enteredState);
-
-        while (frames.Count != 0)
-        {
-            var frameIndex = frames.Count - 1;
-            var frame = frames[frameIndex];
-            var fallbackContexts = frame.State.FallbackContexts;
-
-            var entered = false;
-            while (frame.NextFallbackIndex < fallbackContexts.Length)
-            {
-                var fallbackContext = fallbackContexts[frame.NextFallbackIndex++];
-                if (!TryEnterContext(fallbackContext, Volatile.Read(ref fallbackContext._state), visited, out var fallbackState))
-                {
-                    continue;
-                }
-
-                // The advanced cursor has to survive the push, the frame is a struct.
-                frames[frameIndex] = frame;
-                PushFrame(frames, collected, type, fallbackState);
-                entered = true;
-                break;
-            }
-
-            if (entered)
-            {
-                continue;
-            }
-
-            frames.RemoveAt(frameIndex);
-            ReduceFrame(collected, frame.ResultStart, distinctServices);
-        }
-
-        return collected;
-    }
-
-    /// <summary>
-    /// Marks the context visited and follows its delegation chain, the one shape the walk collapses
-    /// instead of giving it a frame: a pure delegator contributes nothing and resolves to exactly
-    /// what its target does, so a whole chain shares the frame of the context it ends on. Returns
-    /// <c>false</c> when the chain runs into an already visited context.
-    ///
-    /// It terminates because every hop adds to <c>visited</c> and stops as soon as one is already
-    /// in it.
-    ///
-    /// Every hop re-reads the state it moves to and uses it for topology ONLY, which is load
-    /// bearing: see <see cref="ResolveDelegationChain"/> for why no walk may trust what a context
-    /// further down recorded about the end of its chain.
-    /// </summary>
-    private static bool TryEnterContext(
-        InterceptorSubjectContext context,
-        ContextState state,
-        HashSet<InterceptorSubjectContext> visited,
-        out ContextState enteredState)
-    {
-        enteredState = state;
-
-        while (visited.Add(context))
-        {
-            var delegationTarget = enteredState.DelegationTarget;
-            if (delegationTarget is null)
-            {
-                return true;
-            }
-
-            context = delegationTarget;
-            enteredState = Volatile.Read(ref delegationTarget._state);
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Opens the buffer region of a context and appends its own matching services to it, which the
-    /// recursive walk placed ahead of everything its fallback contexts contribute.
-    /// </summary>
-    private static void PushFrame(List<ServiceWalkFrame> frames, List<object> collected, Type type, ContextState state)
-    {
-        var resultStart = collected.Count;
-
         var services = state.Services;
-        for (var index = 0; index < services.Length; index++)
+        List<object>? matching = null;
+        foreach (var service in services)
         {
-            var service = services[index];
-            if (type.IsInstanceOfType(service))
+            if (service is TInterface)
             {
-                collected.Add(service);
+                (matching ??= []).Add(service);
             }
         }
 
-        frames.Add(new ServiceWalkFrame(state, resultStart));
+        if (matching is null)
+        {
+            return ImmutableArray<TInterface>.Empty;
+        }
+
+        if (matching.Count > 1)
+        {
+            // Registration keeps insertion order and tolerates duplicate references, so dedup
+            // happens here, keeping the first occurrence under the default comparer.
+            var distinctServices = new HashSet<object>();
+            matching.RemoveAll(service => !distinctServices.Add(service));
+        }
+
+        var ordered = ServiceOrderResolver.OrderByDependencies(matching.ToArray());
+        var result = ImmutableArray.CreateBuilder<TInterface>(ordered.Length);
+        foreach (var service in ordered)
+        {
+            result.Add((TInterface)service);
+        }
+
+        return result.MoveToImmutable();
     }
 
     /// <summary>
-    /// Turns the buffer region a context and its fallbacks filled into that context's result:
-    /// duplicates dropped keeping the first occurrence, then reordered by the ordering attributes.
-    /// Per context rather than once at the end, which is what the result order depends on.
-    /// </summary>
-    private static void ReduceFrame(List<object> collected, int resultStart, HashSet<object> distinctServices)
-    {
-        // Compacted in place, so dedup needs no second buffer. Default comparer, matching the
-        // Distinct() this replaced, so the same occurrence survives.
-        distinctServices.Clear();
-        var writeIndex = resultStart;
-        for (var readIndex = resultStart; readIndex < collected.Count; readIndex++)
-        {
-            var service = collected[readIndex];
-            if (distinctServices.Add(service))
-            {
-                collected[writeIndex++] = service;
-            }
-        }
-
-        collected.RemoveRange(writeIndex, collected.Count - writeIndex);
-
-        var count = collected.Count - resultStart;
-        if (count == 0)
-        {
-            // Skips the copy out of and back into the buffer, not any ordering work.
-            return;
-        }
-
-        var services = new object[count];
-        collected.CopyTo(resultStart, services, 0, count);
-
-        // A permutation of the input, same length, so it goes straight back over the same region.
-        var ordered = ServiceOrderResolver.OrderByDependencies(services);
-        for (var index = 0; index < ordered.Length; index++)
-        {
-            collected[resultStart + index] = ordered[index];
-        }
-    }
-
-    /// <summary>
-    /// One context on the walk stack: the snapshot it was pinned on, the index at which its region
-    /// of the shared buffer begins, and the cursor over its fallback contexts.
-    /// </summary>
-    private struct ServiceWalkFrame
-    {
-        internal readonly ContextState State;
-        internal readonly int ResultStart;
-        internal int NextFallbackIndex;
-
-        internal ServiceWalkFrame(ContextState state, int resultStart)
-        {
-            State = state;
-            ResultStart = resultStart;
-            NextFallbackIndex = 0;
-        }
-    }
-
-    /// <summary>
-    /// R2: mutators publish under <see cref="_mutationLock"/>, no CAS loop, so none can lose
-    /// another's topology. The only lock-free writer is the invalidation CAS, which never changes
-    /// topology, and the state published here is cache-free, so overwriting one preserves its
-    /// intent.
-    ///
-    /// Interlocked rather than a volatile write because the publisher then READS using sets and
-    /// other contexts' states to drive the invalidation walk. Release semantics does not order a
-    /// store against a later load, and store-then-load is reordered under every mainstream model,
-    /// x86-64 included, so a volatile write plus Monitor.Exit would not be enough. Without the
-    /// fence an invalidation could be skipped against a stale using set while the current state
-    /// keeps accepting fills computed from pre-mutation topology.
-    ///
-    /// InvalidateState needs one step more: an atomic read-modify-write becomes visible to every
-    /// thread when it executes, so a later read of another location cannot be satisfied from before
-    /// it. Every target provides this; the CLI memory model does not state it, so it is an
-    /// assumption rather than a guarantee.
+    /// Mutators publish under <see cref="_mutationLock"/>, no CAS loop, so none can lose another's
+    /// registration. The published state carries no caches, so a query pinning it recomputes from
+    /// post-mutation services.
     /// </summary>
     private void PublishState(ContextState state)
     {
-        Interlocked.Exchange(ref _state, state);
+        Volatile.Write(ref _state, state);
     }
 
-    /// <summary>
-    /// R3: one unconditional CAS attempt. No early-out when caches look absent, because a reader
-    /// may be creating one concurrently and skipping would let its insert survive the change. No
-    /// retry either: a competing state can only win this CAS by being installed after the read
-    /// above, which is fenced after the mutation was published, so every fill into it already sees
-    /// the mutation. That rests on the publish being interlocked, see PublishState.
-    /// </summary>
-    private void InvalidateState()
+    internal sealed class ContextState
     {
-        var current = Volatile.Read(ref _state);
-        Interlocked.CompareExchange(ref _state, current.WithoutCaches(), current);
-    }
-
-    /// <summary>
-    /// Returns the canonical using set of this context, creating it on first use. The CAS keeps
-    /// one instance when two contexts register concurrently, which is what lets callers use the
-    /// set itself as the lock.
-    /// </summary>
-    private HashSet<InterceptorSubjectContext> GetOrCreateUsedByContexts()
-    {
-        var usedByContexts = Volatile.Read(ref _usedByContexts);
-        if (usedByContexts is not null)
-        {
-            return usedByContexts;
-        }
-
-        var created = new HashSet<InterceptorSubjectContext>();
-        return Interlocked.CompareExchange(ref _usedByContexts, created, null) ?? created;
-    }
-
-    /// <summary>
-    /// Invalidates every context that resolves through this one, with an explicit worklist rather
-    /// than recursion: the using graph is the fallback graph reversed and therefore as deep as the
-    /// subject graph, where recursion died on an uncatchable <see cref="StackOverflowException"/>.
-    ///
-    /// It terminates because a context is queued only when <c>visited</c> did not hold it, which is
-    /// also what makes the walk safe on a cyclic graph.
-    ///
-    /// No user code runs here, so the only exits other than completing are OutOfMemoryException and
-    /// Thread.Interrupt; either leaves contexts not yet reached holding pre-mutation caches that
-    /// nothing repairs, as the recursive walk this replaced also did.
-    /// </summary>
-    private void InvalidateUsingContexts()
-    {
-        var visited = _invalidationVisited ??= [];
-        var pending = _invalidationPending ??= [];
-        try
-        {
-            // Self needs no invalidation here: the publish preceding this call already swapped
-            // in a cache-free state.
-            visited.Add(this);
-            QueueUsingContexts(this, visited, pending);
-
-            while (pending.Count != 0)
-            {
-                // Removing from the end costs no shifting. Order is not observable: invalidating
-                // one context is an independent CAS that never reads another.
-                var lastIndex = pending.Count - 1;
-                var usingContext = pending[lastIndex];
-                pending.RemoveAt(lastIndex);
-
-                usingContext.InvalidateState();
-                QueueUsingContexts(usingContext, visited, pending);
-            }
-        }
-        finally
-        {
-            // Keyed on the visited set, not the worklist: a deep chain queues one context per pop,
-            // so the worklist stays short while visited takes an entry per level.
-            if (visited.Count > MaximumRetainedTraversalSize)
-            {
-                _invalidationVisited = null;
-                _invalidationPending = null;
-            }
-            else
-            {
-                visited.Clear();
-                pending.Clear();
-            }
-        }
-    }
-
-    /// <summary>
-    /// Queues the contexts that resolve through <paramref name="context"/> and have not been
-    /// invalidated yet.
-    /// </summary>
-    private static void QueueUsingContexts(
-        InterceptorSubjectContext context,
-        HashSet<InterceptorSubjectContext> visited,
-        List<InterceptorSubjectContext> pending)
-    {
-        // Contexts never used as a fallback take no lock. The field is written once by a CAS
-        // ordered before the registrant's own publish, so a racing registration is either visible
-        // here or belongs to a context that has not published yet, whose own walk then covers
-        // everything above it. This depends on the publish being a full fence, see PublishState.
-        //
-        // Emptiness is deliberately NOT checked outside the lock: HashSet.Count is a composite of
-        // two independently mutated fields, so an unlocked read can compute a count that was never
-        // true and skip a using context for good.
-        var usedByContexts = Volatile.Read(ref context._usedByContexts);
-        if (usedByContexts is null)
-        {
-            return;
-        }
-
-        // Snapshot under the set lock, queue after release: calling into another context while
-        // holding a set lock is forbidden by the lock order. The 0/1/many shapes avoid an array.
-        InterceptorSubjectContext? singleUsingContext = null;
-        InterceptorSubjectContext[]? usingContexts = null;
-
-        lock (usedByContexts)
-        {
-            if (usedByContexts.Count == 1)
-            {
-                // foreach binds the HashSet struct enumerator, First() would box it.
-                foreach (var usingContext in usedByContexts)
-                {
-                    singleUsingContext = usingContext;
-                    break;
-                }
-            }
-            else if (usedByContexts.Count != 0)
-            {
-                usingContexts = [.. usedByContexts];
-            }
-        }
-
-        if (singleUsingContext is not null)
-        {
-            if (visited.Add(singleUsingContext))
-            {
-                pending.Add(singleUsingContext);
-            }
-        }
-        else if (usingContexts is not null)
-        {
-            foreach (var usingContext in usingContexts)
-            {
-                if (visited.Add(usingContext))
-                {
-                    pending.Add(usingContext);
-                }
-            }
-        }
-    }
-
-    private sealed class ContextState
-    {
-        // Insertion order is kept and duplicate references tolerated: dedup moved from
-        // registration into the service walk, which keeps the same occurrence under the same
-        // comparer. It differs only in that the walk filters by the queried type first, so two
-        // services that compare equal while only the later matches that type now resolve to it
-        // and previously to nothing.
+        // Insertion order is kept and duplicate references tolerated: dedup lives in the service
+        // computation, which keeps the first occurrence under the default comparer. The walk
+        // filters by the queried type first, so two services that compare equal while only the
+        // later matches that type resolve to it.
         internal readonly ImmutableArray<object> Services;
-        internal readonly ImmutableArray<InterceptorSubjectContext> FallbackContexts;
 
-        // Derived in the constructor from the two fields above, so no reader can ever observe
-        // it disagreeing with them.
-        internal readonly InterceptorSubjectContext? DelegationTarget;
-
-        // Caches belong to the state that produced them, created lazily via CAS. A topology change
+        // Caches belong to the state that produced them, created lazily via CAS. A registration
         // publishes a new state, so a late insert lands in a state no later query pins.
         private ConcurrentDictionary<Type, object>? _serviceCache; // stores ImmutableArray<T> boxed
         private Delegate? _methodInvocationFunction;
 
-        // Indexed by PropertyTypeIndex, grown by replacing the array. Only a context a chain ends
-        // on ever fills these, since everything above it resolves to that context.
+        // Indexed by PropertyTypeIndex, grown by replacing the array.
         private Delegate?[]? _readFunctions;
         private Delegate?[]? _writeFunctions;
 
-        // The context this state's chain ends on, or CyclicDelegationMarker when it runs in a
-        // circle. Null until first walked. A context and never a state: a context's state is
-        // replaced whenever anything below it changes, so a cached state would serve an abandoned
-        // one's caches.
-        private InterceptorSubjectContext? _resolvedTerminal;
-
-        internal ContextState(ImmutableArray<object> services, ImmutableArray<InterceptorSubjectContext> fallbackContexts)
+        internal ContextState(ImmutableArray<object> services)
         {
             Services = services;
-            FallbackContexts = fallbackContexts;
-            DelegationTarget = services.IsEmpty && fallbackContexts.Length == 1 ? fallbackContexts[0] : null;
         }
 
-        internal bool IsEmpty => Services.IsEmpty && FallbackContexts.IsEmpty;
-
-        internal InterceptorSubjectContext? ResolvedTerminal
-        {
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => Volatile.Read(ref _resolvedTerminal);
-        }
-
-        internal void SetResolvedTerminalIfAbsent(InterceptorSubjectContext resolvedTerminal)
-        {
-            Interlocked.CompareExchange(ref _resolvedTerminal, resolvedTerminal, null);
-        }
+        internal bool IsEmpty => Services.IsEmpty;
 
         internal Delegate? MethodInvocationFunction
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             get => Volatile.Read(ref _methodInvocationFunction);
-        }
-
-        /// <summary>
-        /// Always allocates, and must keep doing so. Returning this instance when it carries no
-        /// caches would make the invalidation CAS a no-op, so a recorded chain end would survive
-        /// the change that invalidated it, and would break the cycle confirmation, which proves a
-        /// loop existed at one instant from a state being installed exactly once.
-        /// </summary>
-        internal ContextState WithoutCaches()
-        {
-            return new ContextState(Services, FallbackContexts);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

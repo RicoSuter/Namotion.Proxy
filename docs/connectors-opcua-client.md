@@ -562,7 +562,7 @@ public class CustomSubjectFactory : OpcUaSubjectFactory
     {
         if (property.Type == typeof(Machine))
         {
-            var machine = new Machine(property.Subject.Context);
+            var machine = new Machine(property.Subject.GetContext());
             machine.Name = node.BrowseName.Name;
             return machine;
         }
@@ -759,7 +759,7 @@ Returns `false` if the property is not owned by this source or has not been reso
 
 ## Thread Safety
 
-The library ensures thread-safe operations across all OPC UA interactions. Property operations are synchronized via `SyncRoot` when interceptors are present, subscription callbacks use thread-safe concurrent queues, and multiple OPC UA clients can connect concurrently.
+The library ensures thread-safe operations across all OPC UA interactions. Property operations are synchronized via the subject executor's terminal lock when interceptors are present, subscription callbacks use thread-safe concurrent queues, and multiple OPC UA clients can connect concurrently.
 
 Write queue operations use `Interlocked` operations for thread-safe counter updates and flush operations are protected by semaphores to prevent concurrent flush issues.
 

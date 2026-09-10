@@ -6,13 +6,13 @@ public static class SubjectFactoryExtensions
 {
     public static IInterceptorSubject CreateSubject(this ISubjectFactory subjectFactory, RegisteredSubjectProperty property)
     {
-        var serviceProvider = property.Parent.Subject.Context.TryGetService<IServiceProvider>();
+        var serviceProvider = property.Parent.Subject.TryGetContext()?.TryGetService<IServiceProvider>();
         return subjectFactory.CreateSubject(property.Type, serviceProvider);
     }
 
     public static IInterceptorSubject CreateCollectionSubject(this ISubjectFactory subjectFactory, RegisteredSubjectProperty property, object? index)
     {
-        var serviceProvider = property.Parent.Subject.Context.TryGetService<IServiceProvider>();
+        var serviceProvider = property.Parent.Subject.TryGetContext()?.TryGetService<IServiceProvider>();
         return CreateCollectionSubject(subjectFactory, property.Type, index, serviceProvider);
     }
 

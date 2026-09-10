@@ -3,7 +3,6 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Namotion.Interceptor.Connectors.Monitoring;
 using Namotion.Interceptor.Connectors.Transactions;
-using Namotion.Interceptor.Tracking.Lifecycle;
 using Namotion.Interceptor.Tracking;
 using Namotion.Interceptor.Tracking.Transactions;
 
@@ -19,6 +18,11 @@ public static class InterceptorSubjectContextExtensions
     /// Registers an <see cref="ITransactionWriter"/> that writes changes to external sources.
     /// Automatically registers WithTransactions() if not already registered.
     /// </summary>
+    /// <remarks>
+    /// Idempotent, and first writer wins: a custom <see cref="ITransactionWriter"/> already on the
+    /// context keeps the slot and no default writer is constructed, so composing this call with a
+    /// hand-written writer stays a working configuration.
+    /// </remarks>
     /// <param name="context">The interceptor subject context to configure.</param>
     /// <returns>The same context instance for method chaining.</returns>
     public static IInterceptorSubjectContext WithSourceTransactions(this IInterceptorSubjectContext context)
@@ -33,27 +37,23 @@ public static class InterceptorSubjectContextExtensions
     }
 
     /// <summary>
-    /// Adds source monitoring to this context. Call it on the TREE ROOT context: a service added to
-    /// a subtree context is invisible to the root and to sibling subtrees, because context fallbacks
-    /// point child to parent and never sideways, so a subtree-placed monitor fragments the tree.
-    /// Implies WithParents, which the branch-scoped wait needs.
+    /// Adds source monitoring to this context, the one context every subject of the tree is
+    /// attached to. Implies WithLifecycle, whose parent tracking the branch-scoped wait needs.
     /// </summary>
     public static IInterceptorSubjectContext WithSourceMonitoring(this IInterceptorSubjectContext context)
     {
-        // WithParents FIRST, so ParentTrackingHandler is registered before the monitor. Ordering
-        // among lifecycle handlers is a stable topological sort, and registration order breaks ties.
-        context.WithParents();
+        context.WithLifecycle();
 
-        context.TryAddService<SourceMonitor>(() =>
+        // One registration serves every role (SourceMonitor and ILifecycleHandler) through
+        // assignability-based resolution.
+        context.TryAddService(() =>
         {
             // Lazy logger: the context is configured before any logging provider exists. This is the
             // same Func<ILogger?> idiom HostedServiceHandler uses. Without it every warning the wait
             // engine emits is a silent no-op, and those warnings are the only thing distinguishing a
             // vacuous completion from a live tree.
-            var monitor = new SourceMonitor(() =>
+            return new SourceMonitor(() =>
                 context.TryGetService<ILoggerFactory>()?.CreateLogger<SourceMonitor>());
-            context.AddService<ILifecycleHandler>(monitor);
-            return monitor;
         }, _ => true);
 
         return context;

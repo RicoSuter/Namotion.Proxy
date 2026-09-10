@@ -20,7 +20,6 @@ public class ConnectorFactoryRegistrationTests
             .Create()
             .WithFullPropertyTracking()
             .WithRegistry()
-            .WithParents()
             .WithLifecycle();
 
     [Theory]

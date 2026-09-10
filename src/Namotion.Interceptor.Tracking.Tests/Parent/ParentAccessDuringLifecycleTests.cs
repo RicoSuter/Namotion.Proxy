@@ -5,19 +5,19 @@ using Namotion.Interceptor.Tracking.Parent;
 namespace Namotion.Interceptor.Tracking.Tests.Parent;
 
 /// <summary>
-/// Tests that parent tracking is properly set up before a subject's own ILifecycleHandler.AttachSubjectToContext runs.
-/// This is critical for scenarios where a subject needs to access its parent hierarchy during initialization.
+/// Tests that parent state is published before a subject's own ILifecycleHandler runs, so a subject
+/// can access its parent hierarchy during initialization. Parent tracking is intrinsic to
+/// WithLifecycle(); no separate opt-in exists.
 /// </summary>
 public class ParentAccessDuringLifecycleTests
 {
     [Fact]
     public void WhenComponentAttachedToSimulation_ThenParentsAndRootAreAvailableDuringAttachSubject()
     {
-        // Arrange: Create context with parent tracking
+        // Arrange
         var context = InterceptorSubjectContext
             .Create()
-            .WithFullPropertyTracking()
-            .WithParents();
+            .WithFullPropertyTracking();
 
         var simulation = new Simulation(context) { Name = "Root" };
         var component = new Component { Name = "Child" };
@@ -36,11 +36,10 @@ public class ParentAccessDuringLifecycleTests
     [Fact]
     public void WhenComponentAddedToArray_ThenParentsAreSetBeforeAttachSubject()
     {
-        // Arrange: Create context with parent tracking
+        // Arrange
         var context = InterceptorSubjectContext
             .Create()
-            .WithFullPropertyTracking()
-            .WithParents();
+            .WithFullPropertyTracking();
 
         var simulation = new Simulation(context) { Name = "Root" };
         var component = new Component { Name = "Child" };
@@ -60,19 +59,18 @@ public class ParentAccessDuringLifecycleTests
     public void WhenComponentWithoutContextAttachedViaContextInheritance_ThenParentsAreSetBeforeAttachSubject()
     {
         // This test specifically tests the scenario where:
-        // 1. Root has context with WithContextInheritance
+        // 1. Root has a context with the lifecycle registered
         // 2. Child is created WITHOUT context
-        // 3. When child is attached, context is inherited AND parents should be set
+        // 3. When child is attached, the context is inherited AND parents should be set
 
-        // Arrange: Create context with both context inheritance and parent tracking
+        // Arrange
         var context = InterceptorSubjectContext
             .Create()
-            .WithFullPropertyTracking()
-            .WithParents();
+            .WithFullPropertyTracking();
 
         var simulation = new Simulation(context) { Name = "Root" };
 
-        // Component created without context - will inherit via ContextInheritanceHandler
+        // Component created without context - inherits it when the lifecycle attaches it
         var component = new Component { Name = "Child" };
 
         // Act: Attach component - context will be inherited, parents should be set
@@ -87,9 +85,10 @@ public class ParentAccessDuringLifecycleTests
     }
 
     [Fact]
-    public void WhenParentsCalledWithoutParentTracking_ThenReturnsEmptySet()
+    public void WhenOnlyLifecycleIsConfigured_ThenParentsAreAvailableDuringAttach()
     {
-        // Arrange: Create context WITHOUT parent tracking
+        // Arrange: parent state is owned by the lifecycle rather than by an opt-in handler. This
+        // is a deliberate behavior change: on master this configuration returned empty parents.
         var context = InterceptorSubjectContext
             .Create()
             .WithLifecycle();
@@ -100,76 +99,10 @@ public class ParentAccessDuringLifecycleTests
         // Act
         simulation.Component = component;
 
-        // Assert: GetParents returns empty because ParentTrackingHandler is not registered
-        Assert.NotNull(component.ParentsFoundDuringAttach);
-        Assert.Empty(component.ParentsFoundDuringAttach);
-        Assert.Null(component.RootFoundDuringAttach);
-    }
-
-    [Fact]
-    public void WhenParentsRegisteredBeforeFullTracking_ThenParentsAreStillSetBeforeAttachSubject()
-    {
-        // Test with WithParents() called BEFORE WithFullPropertyTracking()
-        var context = InterceptorSubjectContext
-            .Create()
-            .WithFullPropertyTracking()
-            .WithParents();
-
-        var simulation = new Simulation(context) { Name = "Root" };
-        var component = new Component { Name = "Child" };
-
-        // Act
-        simulation.Component = component;
-
         // Assert
-        Assert.Null(component.AttachException);
         Assert.NotNull(component.ParentsFoundDuringAttach);
         Assert.NotEmpty(component.ParentsFoundDuringAttach);
-        Assert.NotNull(component.RootFoundDuringAttach);
         Assert.Same(simulation, component.RootFoundDuringAttach);
-    }
-
-    [Fact]
-    public void WhenOnlyLifecycleAndParents_ThenParentsAreSetBeforeAttachSubject()
-    {
-        // Minimal configuration: just lifecycle and parents
-        var context = InterceptorSubjectContext
-            .Create()
-            .WithLifecycle()
-            .WithParents();
-
-        var simulation = new Simulation(context) { Name = "Root" };
-        var component = new Component { Name = "Child" };
-
-        // Act
-        simulation.Component = component;
-
-        // Assert
-        Assert.Null(component.AttachException);
-        Assert.NotNull(component.ParentsFoundDuringAttach);
-        Assert.NotEmpty(component.ParentsFoundDuringAttach);
-        Assert.NotNull(component.RootFoundDuringAttach);
-    }
-
-    [Fact]
-    public void WhenOnlyParents_ThenParentsAreSetBeforeAttachSubject()
-    {
-        // Just WithParents (which internally calls WithLifecycle)
-        var context = InterceptorSubjectContext
-            .Create()
-            .WithParents();
-
-        var simulation = new Simulation(context) { Name = "Root" };
-        var component = new Component { Name = "Child" };
-
-        // Act
-        simulation.Component = component;
-
-        // Assert
-        Assert.Null(component.AttachException);
-        Assert.NotNull(component.ParentsFoundDuringAttach);
-        Assert.NotEmpty(component.ParentsFoundDuringAttach);
-        Assert.NotNull(component.RootFoundDuringAttach);
     }
 
     [Fact]
@@ -178,8 +111,7 @@ public class ParentAccessDuringLifecycleTests
         // Test: root.Component.ChildComponent - nested hierarchy
         var context = InterceptorSubjectContext
             .Create()
-            .WithFullPropertyTracking()
-            .WithParents();
+            .WithFullPropertyTracking();
 
         var simulation = new Simulation(context) { Name = "Root" };
         var outerComponent = new Component { Name = "Outer" };
@@ -210,7 +142,6 @@ public class ParentAccessDuringLifecycleTests
         // Test: Build hierarchy first, then attach to context
         var context = InterceptorSubjectContext
             .Create()
-            .WithParents()
             .WithFullPropertyTracking();
 
         var simulation = new Simulation { Name = "Root" };  // No context yet
@@ -222,7 +153,7 @@ public class ParentAccessDuringLifecycleTests
         outerComponent.ChildComponent = innerComponent;
 
         // Now attach context - should trigger attach for all
-        ((IInterceptorSubject)simulation).Context.AddFallbackContext(context);
+        ((IInterceptorSubject)simulation).AttachToContext(context);
 
         // Assert: All components should have found their parents during attach
         Assert.Null(outerComponent.AttachException);
@@ -241,8 +172,7 @@ public class ParentAccessDuringLifecycleTests
         // it should have no parents during AttachSubjectToContext
         var context = InterceptorSubjectContext
             .Create()
-            .WithFullPropertyTracking()
-            .WithParents();
+            .WithFullPropertyTracking();
 
         // Component is created directly with context - it IS the root
         var component = new Component(context) { Name = "RootComponent" };
@@ -255,15 +185,14 @@ public class ParentAccessDuringLifecycleTests
     }
 
     [Fact]
-    public void VerifyHandlerOrder_ParentTrackingHandlerRunsBeforeSubjectHandler()
+    public void VerifyHandlerOrder_ParentStateIsPublishedBeforeSubjectHandler()
     {
         // This test verifies the exact order of handler invocations
         var handlerCallOrder = new List<string>();
 
         var context = InterceptorSubjectContext
             .Create()
-            .WithFullPropertyTracking()
-            .WithParents();
+            .WithFullPropertyTracking();
 
         // Add a custom handler to track the order
         context.AddService(new OrderTrackingHandler(handlerCallOrder));
@@ -285,8 +214,7 @@ public class ParentAccessDuringLifecycleTests
         // Where 'b' implements ISpecialMarker interface
         var context = InterceptorSubjectContext
             .Create()
-            .WithFullPropertyTracking()
-            .WithParents();
+            .WithFullPropertyTracking();
 
         var levelA = new LevelA(context) { Name = "A" };
         var levelB = new LevelB { Name = "B" };  // Implements ISpecialMarker
@@ -315,8 +243,7 @@ public class ParentAccessDuringLifecycleTests
         // - Second parent DOES implement ISpecialMarker
         var context = InterceptorSubjectContext
             .Create()
-            .WithFullPropertyTracking()
-            .WithParents();
+            .WithFullPropertyTracking();
 
         var parentWithoutMarker = new ParentWithoutMarker(context) { Name = "NoMarker" };
         var parentWithMarker = new ParentWithMarker(context) { Name = "WithMarker" };

@@ -60,7 +60,7 @@ public sealed class WebSocketSubjectClientSource : SubjectSourceBase, IFaultInje
         WebSocketClientConfiguration configuration,
         ILogger<WebSocketSubjectClientSource> logger)
         : base(
-            (subject ?? throw new ArgumentNullException(nameof(subject))).Context,
+            (subject ?? throw new ArgumentNullException(nameof(subject))).GetContext(),
             logger ?? throw new ArgumentNullException(nameof(logger)),
             (configuration ?? throw new ArgumentNullException(nameof(configuration))).BufferTime,
             configuration.RetryTime,

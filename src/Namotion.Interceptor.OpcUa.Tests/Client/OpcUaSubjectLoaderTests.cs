@@ -240,8 +240,9 @@ public class OpcUaSubjectLoaderTests
     private IInterceptorSubject CreateTestSubject()
     {
         var context = InterceptorSubjectContext.Create().WithRegistry();
+        // The context-taking constructor attaches the subject as a provisional root, which is what
+        // registers it; no separate lifecycle run is needed.
         var subject = new DynamicSubject(context);
-        new LifecycleInterceptor().AttachSubjectToContext(subject);
         return subject;
     }
 

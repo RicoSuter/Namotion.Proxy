@@ -307,9 +307,8 @@ namespace Namotion.Interceptor.Connectors.Monitoring
         PropertyReleased = 4,
     }
     [Namotion.Interceptor.Attributes.RunsAfter(new System.Type[] {
-            typeof(Namotion.Interceptor.Tracking.Lifecycle.ContextInheritanceHandler),
-            typeof(Namotion.Interceptor.Tracking.Parent.ParentTrackingHandler)})]
-    public class SourceMonitor : Namotion.Interceptor.Tracking.IStartupCompletionDeferrer, Namotion.Interceptor.Tracking.Lifecycle.ILifecycleHandler
+            typeof(Namotion.Interceptor.Tracking.Lifecycle.LifecycleInterceptor)})]
+    public class SourceMonitor : Namotion.Interceptor.ISingletonContextService<Namotion.Interceptor.Connectors.Monitoring.SourceMonitor>, Namotion.Interceptor.Tracking.IStartupCompletionDeferrer, Namotion.Interceptor.Tracking.Lifecycle.ILifecycleHandler
     {
         public bool IsRegistrationComplete { get; }
         public System.Collections.Immutable.ImmutableArray<Namotion.Interceptor.Connectors.ISubjectSource> Sources { get; }

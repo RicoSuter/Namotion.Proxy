@@ -1,5 +1,6 @@
 using System.Runtime.ExceptionServices;
 using System.Text.Json;
+using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Registry.Abstractions;
 using Namotion.Interceptor.Tracking.Performance;
@@ -64,7 +65,7 @@ internal static class SubjectUpdateApplier
         Dictionary<string, SubjectPropertyUpdate> properties,
         SubjectUpdateApplyContext context)
     {
-        var registry = subject.Context.GetService<ISubjectRegistry>();
+        var registry = subject.GetContext().GetService<ISubjectRegistry>();
 
         foreach (var (propertyName, propertyUpdate) in properties)
         {
@@ -132,15 +133,15 @@ internal static class SubjectUpdateApplier
                 }
 
                 case SubjectPropertyUpdateKind.Object:
-                    ApplyObjectUpdate(subject, registeredProperty, propertyUpdate, context);
+                    ApplyObjectUpdate(registeredProperty, propertyUpdate, context);
                     break;
 
                 case SubjectPropertyUpdateKind.Collection:
-                    SubjectItemsUpdateApplier.ApplyCollectionUpdate(subject, registeredProperty, propertyUpdate, context);
+                    SubjectItemsUpdateApplier.ApplyCollectionUpdate(registeredProperty, propertyUpdate, context);
                     break;
 
                 case SubjectPropertyUpdateKind.Dictionary:
-                    SubjectItemsUpdateApplier.ApplyDictionaryUpdate(subject, registeredProperty, propertyUpdate, context);
+                    SubjectItemsUpdateApplier.ApplyDictionaryUpdate(registeredProperty, propertyUpdate, context);
                     break;
             }
         }
@@ -159,7 +160,6 @@ internal static class SubjectUpdateApplier
     }
 
     private static void ApplyObjectUpdate(
-        IInterceptorSubject parent,
         RegisteredSubjectProperty property,
         SubjectPropertyUpdate propertyUpdate,
         SubjectUpdateApplyContext context)
@@ -176,15 +176,17 @@ internal static class SubjectUpdateApplier
             }
             else
             {
+                // Assign before populating: the assignment is what attaches the item, and the
+                // population is registry-driven, so it only reaches a subject already in the graph.
+                // A property that refuses the write leaves the item unattached and with nothing to
+                // populate, so the attachment doubles as the guard.
                 var newItem = context.SubjectFactory.CreateSubject(property);
-                newItem.Context.AddFallbackContext(parent.Context);
+                context.SetPropertyValue(property, propertyUpdate.Timestamp, newItem);
 
-                if (context.TryMarkAsProcessed(propertyUpdate.Id))
+                if (newItem.TryGetContext() is not null && context.TryMarkAsProcessed(propertyUpdate.Id))
                 {
                     ApplyPropertyUpdates(newItem, itemProperties, context);
                 }
-
-                context.SetPropertyValue(property, propertyUpdate.Timestamp, newItem);
             }
         }
         else

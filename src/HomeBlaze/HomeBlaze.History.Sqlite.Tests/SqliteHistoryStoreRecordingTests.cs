@@ -71,9 +71,9 @@ public class SqliteHistoryStoreRecordingTests
             FlushIntervalSeconds = 1
         };
 
-        // Share the graph: the store's ChangeQueueProcessor subscription and path resolver are
-        // resolved through this fallback, so it observes the whole graph (like an attached subject).
-        ((IInterceptorSubject)store).Context.AddFallbackContext(sharedContext);
+        // Attach to the shared graph context: the store's ChangeQueueProcessor subscription and
+        // path resolver are resolved through it, so the store observes the whole graph.
+        ((IInterceptorSubject)store).AttachToContext(sharedContext);
 
         return (store, databasePath);
     }

@@ -1,4 +1,4 @@
 ﻿[
-  - Mother.Mother -> Grandmother (refs: 0, detached),
-  - Child.Mother -> Mother (refs: 0, detached)
+  - Child.Mother -> Mother (refs: 0, detached),
+  - Mother.Mother -> Grandmother (refs: 0, detached)
 ]

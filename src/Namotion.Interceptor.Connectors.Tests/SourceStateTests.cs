@@ -359,8 +359,10 @@ public class SourceStateTests
 /// </summary>
 internal class TestStateSource : SubjectSourceBase
 {
+    // An unattached root gets an inert empty context, which resolves the same nothing its empty
+    // executor view did; these state tests never start the source.
     public TestStateSource(IInterceptorSubject rootSubject)
-        : base(rootSubject.Context, NullLogger.Instance)
+        : base(rootSubject.TryGetContext() ?? InterceptorSubjectContext.Create(), NullLogger.Instance)
     {
         RootSubject = rootSubject;
     }

@@ -21,5 +21,5 @@ public abstract class HomeBlazorComponentBase : ComponentBase
     /// <summary>
     /// The root subject's context. Available after OnInitialized.
     /// </summary>
-    protected IInterceptorSubjectContext? RootContext => Root?.Context;
+    protected IInterceptorSubjectContext? RootContext => Root?.TryGetContext();
 }

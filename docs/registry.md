@@ -117,11 +117,11 @@ Derived properties automatically participate in change tracking and will update 
 
 ### Lifecycle tracking for dynamic properties
 
-Dynamic properties (including derived) fully participate in lifecycle tracking when `WithLifecycle()` or `WithFullPropertyTracking()` is enabled. If a dynamic property holds a reference to another subject, that subject is automatically attached to the lifecycle graph with proper reference counting. For example, a `AddDerivedProperty<Tire>("FirstTire", ...)` that returns the first tire from a collection would give that tire a reference count of 2 — one from the collection property and one from the derived property.
+Dynamic properties participate in lifecycle tracking when `WithLifecycle()` or `WithFullPropertyTracking()` is enabled. A stored dynamic property holding a reference to another subject attaches that subject and counts it. A derived dynamic property carries an edge only when it has a setter. Its accessors are consumer delegates over state the graph cannot see, so the setter is what separates a store from a projection. A getter-only `AddDerivedProperty<Tire>("FirstTire", get)` that returns the first tire from a collection can hold nothing the collection does not already own, so it leaves that tire at reference count 1 from the collection property alone, whereas an `AddDerivedProperty<Tire>("Current", get, set)` writing private state can hold a tire nothing else reaches and tracks it like any stored property. The setter is the whole test, so a derived dynamic property carries an edge as soon as one is supplied, whatever the setter does with the value. A subject reachable only through a property that carries no edge is never tracked, and the derived change handler rejects it rather than letting it go silently unowned.
 
-When the underlying data changes, derived properties are re-evaluated and lifecycle tracking reconciles the old and new subjects automatically (attaching new subjects, detaching removed ones).
+When a stored dynamic property's value changes, lifecycle tracking reconciles the old and new subjects automatically (attaching new subjects, detaching removed ones). A getter-only derived property just follows the stored edges: when they change, its value changes with them, without adding or removing any attachment.
 
-When a dynamic property is added, its initial value triggers a change event with `OldValue = null`, representing a transition from "property did not exist" to its initial value. This ensures interceptors (lifecycle, change tracking, etc.) correctly process the initial state.
+When a scalar dynamic property is added, its initial value triggers a change event with `OldValue = null`, representing a transition from "property did not exist" to its initial value. This ensures interceptors (change tracking, validation, etc.) process the initial state. A property that can hold subjects gets no such event: admission captures and commits its initial value directly, so the edges are already published by the time `AddProperty` returns. The event fires again on every re-registration, because each attach reruns its initializers and a reattached subject presents its dynamic properties afresh. It carries whatever the property's installed accessors resolve to, which on a re-registration are still the first registration's, so an initializer that rebuilds its value on each attach republishes the value the property actually reads rather than the one the rerun passed.
 
 ### Add attributes
 
@@ -255,4 +255,4 @@ Subject IDs are automatically managed during the subject lifecycle:
 
 ### Without a registry
 
-Subject IDs also work without a registry configured — IDs are stored directly in the subject's `Data` dictionary. However, the reverse index lookup (`TryGetSubjectById`) requires a registry.
+Subject IDs also work without a registry configured: IDs are stored directly in the subject's `Data` dictionary. However, the reverse index lookup (`TryGetSubjectById`) requires a registry.

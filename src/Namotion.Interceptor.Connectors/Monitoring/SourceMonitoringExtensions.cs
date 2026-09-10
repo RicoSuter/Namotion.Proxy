@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -28,62 +27,32 @@ public static class SourceMonitoringExtensions
     }
 
     /// <summary>
-    /// Resolves the single reachable monitor.
+    /// Resolves the monitor. The singleton contract makes a second monitor on one context a
+    /// registration error, so there is at most one.
     /// </summary>
-    /// <exception cref="InvalidOperationException">No monitor is reachable, or more than one is.</exception>
+    /// <exception cref="InvalidOperationException">No monitor is reachable.</exception>
     public static SourceMonitor GetSourceMonitor(this IInterceptorSubjectContext context)
     {
-        var monitors = context.GetSourceMonitors();
-        return monitors.Length switch
-        {
-            1 => monitors[0],
-            0 => throw new InvalidOperationException(NoMonitorMessage),
-            _ => throw new InvalidOperationException(
-                $"{monitors.Length} SourceMonitor instances are reachable from this context. " +
-                "Combining them is a decision for the call site: use GetServices<SourceMonitor>() and choose explicitly.")
-        };
-    }
-
-    internal static ImmutableArray<SourceMonitor> GetSourceMonitors(this IInterceptorSubjectContext context)
-    {
-        return context.GetServices<SourceMonitor>();
+        return context.TryGetService<SourceMonitor>()
+            ?? throw new InvalidOperationException(NoMonitorMessage);
     }
 
     /// <summary>
-    /// Declares that source registration is complete on every reachable monitor. Idempotent.
+    /// Declares that source registration is complete. Idempotent.
     /// </summary>
     /// <exception cref="InvalidOperationException">No monitor is reachable.</exception>
     public static void CompleteSourceRegistration(this IInterceptorSubjectContext context)
     {
-        ExceptionAggregation.ForEach(
-            ResolveMonitorsOrThrow(context), monitor => monitor.CompleteSourceRegistration());
+        context.GetSourceMonitor().CompleteSourceRegistration();
     }
 
     /// <summary>
-    /// Blocks wait completion on every reachable monitor until the returned handle is disposed.
+    /// Blocks wait completion until the returned handle is disposed.
     /// </summary>
     /// <exception cref="InvalidOperationException">No monitor is reachable.</exception>
     public static IDisposable DeferWaitCompletion(this IInterceptorSubjectContext context)
     {
-        var monitors = ResolveMonitorsOrThrow(context);
-        var holds = monitors.Select(monitor => monitor.DeferWaitCompletion()).ToArray();
-        return new CompositeDisposable(holds);
-    }
-
-    private static ImmutableArray<SourceMonitor> ResolveMonitorsOrThrow(IInterceptorSubjectContext context)
-    {
-        var monitors = context.GetSourceMonitors();
-        if (monitors.IsEmpty)
-        {
-            throw new InvalidOperationException(NoMonitorMessage);
-        }
-
-        return monitors;
-    }
-
-    private sealed class CompositeDisposable(IDisposable[] disposables) : IDisposable
-    {
-        public void Dispose() => ExceptionAggregation.ForEach(disposables, hold => hold.Dispose());
+        return context.GetSourceMonitor().DeferWaitCompletion();
     }
 
     /// <summary>
@@ -97,41 +66,8 @@ public static class SourceMonitoringExtensions
     {
         ArgumentNullException.ThrowIfNull(subject);
 
-        // Outside the async helper, so a null subject and an unreachable monitor keep throwing
-        // synchronously rather than surfacing on await.
-        var monitors = ResolveMonitorsOrThrow(subject.Context);
-        return monitors.Length == 1
-            ? monitors[0].WaitForSynchronizationAsync(subject, cancellationToken)
-            : WaitForAllMonitorsAsync(monitors, subject, cancellationToken);
-    }
-
-    /// <summary>
-    /// Worst wins across monitors, which is a minimum over the result values.
-    /// </summary>
-    /// <remarks>
-    /// Every wait is created before the first await: awaiting them one at a time would leave the
-    /// later monitors unregistered until the earlier ones completed.
-    /// </remarks>
-    private static async Task<SourceSynchronizationResult> WaitForAllMonitorsAsync(
-        ImmutableArray<SourceMonitor> monitors, IInterceptorSubject subject, CancellationToken cancellationToken)
-    {
-        var waits = new Task<SourceSynchronizationResult>[monitors.Length];
-        for (var index = 0; index < monitors.Length; index++)
-        {
-            waits[index] = monitors[index].WaitForSynchronizationAsync(subject, cancellationToken);
-        }
-
-        var results = await Task.WhenAll(waits).ConfigureAwait(false);
-
-        var worst = SourceSynchronizationResult.Synchronized;
-        foreach (var result in results)
-        {
-            if (result < worst)
-            {
-                worst = result;
-            }
-        }
-
-        return worst;
+        // Resolved before the wait is created, so a null subject and an unreachable monitor keep
+        // throwing synchronously rather than surfacing on await.
+        return subject.GetContext().GetSourceMonitor().WaitForSynchronizationAsync(subject, cancellationToken);
     }
 }

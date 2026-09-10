@@ -1,10 +1,10 @@
 using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.Logging;
 using Namotion.Interceptor.Attributes;
-using Namotion.Interceptor.Tracking;
 using Namotion.Interceptor.Tracking.Lifecycle;
-using Namotion.Interceptor.Tracking.Parent;
+using Namotion.Interceptor.Tracking;
 
 namespace Namotion.Interceptor.Connectors.Monitoring;
 
@@ -13,11 +13,12 @@ namespace Namotion.Interceptor.Connectors.Monitoring;
 /// Added to the tree root context by WithSourceMonitoring.
 /// </summary>
 /// <remarks>
-/// Must run after ParentTrackingHandler: wait re-evaluation walks the parent set that handler
-/// maintains for the same lifecycle change, so it has to be up to date first.
+/// Runs behind the lifecycle descent: wait re-evaluation walks the graph for the same lifecycle
+/// change, so a newly attached subtree has to be fully entered first.
 /// </remarks>
-[RunsAfter(typeof(ContextInheritanceHandler), typeof(ParentTrackingHandler))]
-public class SourceMonitor : ILifecycleHandler, IStartupCompletionDeferrer
+[RunsAfter(typeof(LifecycleInterceptor))]
+public class SourceMonitor : ILifecycleHandler, IStartupCompletionDeferrer,
+    ISingletonContextService<SourceMonitor>
 {
     private readonly Lock _lock = new();
     private Func<ILogger?>? _loggerResolver;
@@ -26,7 +27,7 @@ public class SourceMonitor : ILifecycleHandler, IStartupCompletionDeferrer
 
     // Boxed so the reference can be read with Volatile.Read: ImmutableArray<T> is a struct, which
     // Volatile cannot target. Writes swap the box under _lock, so readers stay lock-free.
-    // Same technique as ParentsHandlerExtensions.ParentsSet._cache.
+    // Same technique as the lifecycle's published parent snapshot.
     private volatile ImmutableArray<ISubjectSource>[] _sources = [ImmutableArray<ISubjectSource>.Empty];
     private volatile ImmutableArray<SourceSubscription>[] _subscriptions = [ImmutableArray<SourceSubscription>.Empty];
 
@@ -425,11 +426,10 @@ public class SourceMonitor : ILifecycleHandler, IStartupCompletionDeferrer
             }
 
             // A throw from one wait's IsBranchSynchronized must not skip re-evaluating the rest -
-            // that would be a lost wakeup for every wait after it. Written out rather than delegated to
-            // ExceptionAggregation.ForEach, unlike the two cold call sites: this runs on every
-            // property-reference add/remove tree-wide while any wait is pending, and the helper's
-            // IEnumerable<T> parameter would box the ImmutableArray, heap-allocate its enumerator,
-            // and allocate a closure per pass, since the lambda captures this.
+            // that would be a lost wakeup for every wait after it. Written out rather than behind a
+            // delegate-taking helper: this runs on every property-reference add/remove tree-wide
+            // while any wait is pending, and a helper would box the ImmutableArray, heap-allocate
+            // its enumerator, and allocate a closure per pass, since the lambda captures this.
             foreach (var wait in _waits)
             {
                 try
@@ -446,7 +446,17 @@ public class SourceMonitor : ILifecycleHandler, IStartupCompletionDeferrer
             }
         }
 
-        ExceptionAggregation.ThrowIfAny(exceptions);
+        if (exceptions is { Count: 1 })
+        {
+            // ExceptionDispatchInfo preserves the original stack trace; a bare `throw exceptions[0]`
+            // resets it to this rethrow site, hiding where the exception actually came from.
+            ExceptionDispatchInfo.Capture(exceptions[0]).Throw();
+        }
+
+        if (exceptions is { Count: > 1 })
+        {
+            throw new AggregateException(exceptions);
+        }
     }
 
     private sealed class PendingWait(IInterceptorSubject anchor)

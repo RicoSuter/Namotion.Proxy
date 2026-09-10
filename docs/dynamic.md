@@ -52,7 +52,7 @@ var context = InterceptorSubjectContext
     .WithFullPropertyTracking();
 
 var subject = DynamicSubjectFactory.CreateDynamicSubject(typeof(IMotor), typeof(ISensor));
-subject.Context.AddFallbackContext(context);
+subject.AttachToContext(context);
 
 // Now the subject participates in tracking and registry
 var motor = (IMotor)subject;
@@ -99,7 +99,7 @@ var context = InterceptorSubjectContext
     .WithRegistry();
 
 var subject = DynamicSubjectFactory.CreateDynamicSubject(typeof(IMotor), typeof(ISensor));
-subject.Context.AddFallbackContext(context);
+subject.AttachToContext(context);
 
 // Access registry information
 var registeredSubject = subject.TryGetRegisteredSubject()!;
@@ -120,7 +120,7 @@ var context = InterceptorSubjectContext
     .WithService(() => new LoggingInterceptor());
 
 var subject = DynamicSubjectFactory.CreateDynamicSubject(typeof(IMotor));
-subject.Context.AddFallbackContext(context);
+subject.AttachToContext(context);
 
 var motor = (IMotor)subject;
 motor.Speed = 100;  // Triggers write interceptors

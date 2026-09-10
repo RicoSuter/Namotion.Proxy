@@ -84,34 +84,6 @@ public class SubjectTransactionTests
         Assert.Contains("WithTransactions()", exception.Message);
     }
 
-    [Fact]
-    public async Task WhenTheBoundTransactionInterceptorIsInheritedAndSecond_ThenTheWriteIsCapturedInsteadOfThrowing()
-    {
-        // Arrange: context inheritance adds another context as a fallback on attach, so a subject built on
-        // one transaction-enabled context and attached into a graph rooted on another resolves two. The
-        // subject's own interceptor is first and the fallback's interceptor is second, so binding must scan
-        // all resolved instances by reference rather than accepting only the first one.
-        var context = CreateTransactionContext();
-        var fallbackContext = CreateTransactionContext();
-
-        var person = new Person(context);
-        ((IInterceptorSubject)person).Context.AddFallbackContext(fallbackContext);
-
-        // Act
-        using (var transaction = await fallbackContext.BeginTransactionAsync(TransactionFailureHandling.BestEffort))
-        {
-            person.FirstName = "John";
-
-            // Assert: captured rather than written straight through, so the binding resolved to this
-            // context. Reading the property here would serve the pending value either way.
-            Assert.Single(transaction.GetPendingChanges(),
-                change => change.Property.Name == nameof(Person.FirstName));
-
-            await transaction.CommitAsync(CancellationToken.None);
-        }
-
-        Assert.Equal("John", person.FirstName);
-    }
 
     [Fact]
     public async Task WhenTransactionIsBoundToAnUnrelatedContext_ThenWriteThrows()

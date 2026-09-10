@@ -10,7 +10,7 @@ namespace Namotion.Interceptor.Generator.Tests;
 /// are symbols there. This project does reference it, so the comparison belongs here.
 /// </summary>
 /// <remarks>
-/// Only the names that correspond to a real declared member can be pinned this way. The four helper
+/// Only the names that correspond to a real declared member can be pinned this way. The five helper
 /// names and <c>DefaultProperties</c> name members the generator emits into consumer code, so there
 /// is nothing to compare them against; the emitter writes their signatures and the compiler checks
 /// those, with the snapshot tests covering the rest.
@@ -28,21 +28,20 @@ public class GeneratedMemberTableTests
     [Fact]
     public void WhenAnIInterceptorSubjectMemberNameIsTested_ThenTheNameSetClaimsIt()
     {
-        // Arrange: the four members NI0014 protects. The array holding them is private, so this reads
+        // Arrange: the three members NI0014 protects. The array holding them is private, so this reads
         // the name set derived from it. A typo there stops the real interface member name being
         // recognised, which is what fails here.
         // Act & Assert
-        Assert.True(GeneratedMemberTable.CollidesWithGeneratedMember(nameof(IInterceptorSubject.Context)));
+        Assert.True(GeneratedMemberTable.CollidesWithGeneratedMember(nameof(IInterceptorSubject.Executor)));
         Assert.True(GeneratedMemberTable.CollidesWithGeneratedMember(nameof(IInterceptorSubject.Data)));
-        Assert.True(GeneratedMemberTable.CollidesWithGeneratedMember(nameof(IInterceptorSubject.SyncRoot)));
         Assert.True(GeneratedMemberTable.CollidesWithGeneratedMember(nameof(IInterceptorSubject.AddProperties)));
     }
 
     [Fact]
     public void WhenPropertiesIsTested_ThenItIsDeliberatelyAbsentFromTheNameSet()
     {
-        // Arrange & Act & Assert: IInterceptorSubject declares five members and the hijack rule covers
-        // four. Properties is left out because every subject emits its own explicit implementation of
+        // Arrange & Act & Assert: IInterceptorSubject declares four members and the hijack rule covers
+        // three. Properties is left out because every subject emits its own explicit implementation of
         // it, which always wins, so covering it would report every legitimate generated hierarchy.
         // Nothing else feeding this name set is called Properties, so its absence here is the
         // exclusion.

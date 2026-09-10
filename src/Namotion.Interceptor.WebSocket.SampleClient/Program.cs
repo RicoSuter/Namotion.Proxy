@@ -15,8 +15,6 @@ var context = InterceptorSubjectContext
     .Create()
     .WithFullPropertyTracking()
     .WithRegistry()
-    .WithParents()
-    .WithContextInheritance()
     .WithHostedServices(builder.Services);
 
 var root = new Root(context);

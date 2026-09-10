@@ -1,4 +1,5 @@
 using Namotion.Interceptor.Attributes;
+using Namotion.Interceptor.Tracking.Lifecycle;
 
 namespace Namotion.Interceptor.Tracking.Tests.Models;
 
@@ -11,9 +12,18 @@ namespace Namotion.Interceptor.Tracking.Tests.Models;
 [InterceptorSubject]
 public partial class SideEffectPerson
 {
+    private int _successfulCompanionWrites;
+
     public partial string? Name { get; set; }
 
     public partial Person? Companion { get; set; }
+
+    /// <summary>
+    /// Counts Companion writes that actually landed. The absorption below eats every write that
+    /// runs inside a callback scope, so without this count the deadlock regression test cannot
+    /// tell a live recalculation path from one whose writes are all silently absorbed.
+    /// </summary>
+    public int SuccessfulCompanionWriteCount => Volatile.Read(ref _successfulCompanionWrites);
 
     [Derived]
     public string Greeting => ComputeGreeting();
@@ -24,7 +34,21 @@ public partial class SideEffectPerson
         // This triggers LifecycleInterceptor.WriteProperty → lock(_attachedSubjects).
         // Without the unlocked evaluation in RecalculateDerivedProperty, this would
         // deadlock when concurrent lifecycle operations acquire lock(data) for Greeting.
-        Companion = null;
+        //
+        // The write is only legal on that recalculation path, which runs outside any
+        // lifecycle callback. Attach-time evaluation runs inside the derived handler's
+        // attach callback, where the callback contract rejects a structural write, so the
+        // violation is absorbed here to let attach complete and the tests keep driving
+        // the recalculation path, which is the one under test.
+        try
+        {
+            Companion = null;
+            Interlocked.Increment(ref _successfulCompanionWrites);
+        }
+        catch (LifecycleContractViolationException)
+        {
+        }
+
         return $"Hello, {Name}";
     }
 }

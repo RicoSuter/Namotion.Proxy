@@ -86,7 +86,7 @@ public class MqttSubjectServer : SubjectConnectorBase, IFaultInjectable, IAsyncD
         _subject = subject ?? throw new ArgumentNullException(nameof(subject));
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _context = subject.Context;
+        _context = subject.GetContext();
         _serverClientId = _configuration.ClientId;
 
         Diagnostics = new MqttServerDiagnostics(this, Metrics);

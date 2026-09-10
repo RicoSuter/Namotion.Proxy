@@ -112,7 +112,7 @@ internal static class ServiceOrderResolver
         }
 
         // Build type-to-indices mapping; a type can have multiple instances when a
-        // context aggregates fallback contexts that each register the same service type
+        // context registers several instances of the same service type
         var typeToIndices = new Dictionary<Type, List<int>>(count);
         for (var i = 0; i < count; i++)
         {

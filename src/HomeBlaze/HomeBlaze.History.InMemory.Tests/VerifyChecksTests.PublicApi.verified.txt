@@ -31,6 +31,7 @@ namespace HomeBlaze.History.InMemory
     public class InMemoryHistoryStoreSubject : Microsoft.Extensions.Hosting.BackgroundService, HomeBlaze.Abstractions.IConfigurable, HomeBlaze.Abstractions.ITitleProvider, HomeBlaze.History.Abstractions.IHistoryStore, Namotion.Interceptor.IInterceptorSubject, Namotion.Interceptor.IRaisePropertyChanged, Namotion.Interceptor.Tracking.Lifecycle.ILifecycleHandler, System.ComponentModel.INotifyPropertyChanged
     {
         public InMemoryHistoryStoreSubject(Microsoft.Extensions.Logging.ILogger<HomeBlaze.History.InMemory.InMemoryHistoryStoreSubject> logger) { }
+        public InMemoryHistoryStoreSubject(Microsoft.Extensions.Logging.ILogger<HomeBlaze.History.InMemory.InMemoryHistoryStoreSubject> logger, Namotion.Interceptor.IInterceptorSubjectContext context) { }
         [HomeBlaze.Abstractions.Attributes.Configuration]
         public int BufferTimeMilliseconds { get; set; }
         public System.Collections.Immutable.ImmutableArray<HomeBlaze.History.Abstractions.HistoryCoverage> CoverageRanges { get; }

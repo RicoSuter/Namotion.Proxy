@@ -3,7 +3,8 @@ using System.ComponentModel.DataAnnotations;
 
 namespace Namotion.Interceptor.Validation;
 
-public class DataAnnotationsValidator : IPropertyValidator
+public class DataAnnotationsValidator : IPropertyValidator,
+    ISingletonContextService<DataAnnotationsValidator>
 {
     private static readonly ConcurrentDictionary<(Type SubjectType, string PropertyName), bool> RequiresValidationCache = new();
 

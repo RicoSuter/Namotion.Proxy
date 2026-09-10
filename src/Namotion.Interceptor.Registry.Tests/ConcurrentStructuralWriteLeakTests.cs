@@ -9,18 +9,13 @@ namespace Namotion.Interceptor.Registry.Tests;
 /// Tests that verify no registry memory leaks occur during concurrent structural
 /// property writes in LifecycleInterceptor.WriteProperty.
 ///
-/// The concurrency model:
-/// 1. next(ref context) writes the value to the backing store (no lock held)
-/// 2. Lock on _attachedSubjects is acquired
-/// 3. _lastProcessedValues is read as the baseline, backing store is re-read as new value
-/// 4. Diffs baseline vs new value to determine attach/detach operations
-/// 5. Attaches/detaches subjects, updates _lastProcessedValues
-///
-/// The key race window is between step 1 (next) and step 2 (lock acquisition):
-/// another thread's WriteProperty or DetachFromProperty can complete in this window,
-/// modifying _attachedSubjects and _lastProcessedValues. The parent-dead check
-/// (which undoes attachments to concurrently detached parents) and _lastProcessedValues
-/// seeding ensure no orphaned subjects remain after all concurrent writes settle.
+/// The concurrency model: a structural write enters the lifecycle's topology gate and the writing
+/// subject's attachment monitor before the chain is resolved and holds both through the terminal,
+/// then validates and claims every subject the proposed value reaches, calls next to commit the
+/// backing store, and reconciles the committed value against the property's baseline. Two
+/// structural writes on the same graph therefore serialize against each other, and a write racing
+/// an attachment transition of the writing subject orders against it instead of throwing, so
+/// every write below is expected to commit or reconcile cleanly; any exception is a defect.
 /// </summary>
 public class ConcurrentStructuralWriteLeakTests(ITestOutputHelper output)
 {
@@ -210,7 +205,8 @@ public class ConcurrentStructuralWriteLeakTests(ITestOutputHelper output)
                 barrier.SignalAndWait();
                 for (var iteration = 0; iteration < iterationsPerThread; iteration++)
                 {
-                    child.Mother = new Person { FirstName = $"Grandchild_{iteration}" };
+                    var grandchildName = $"Grandchild_{iteration}";
+                    child.Mother = new Person { FirstName = grandchildName };
                     child.Mother = null;
                 }
             });
@@ -380,7 +376,8 @@ public class ConcurrentStructuralWriteLeakTests(ITestOutputHelper output)
                 barrier.SignalAndWait();
                 for (var iteration = 0; iteration < iterationsPerThread; iteration++)
                 {
-                    grandchild.Mother = new Person { FirstName = $"GreatGrandchild_{iteration}" };
+                    var greatGrandchildName = $"GreatGrandchild_{iteration}";
+                    grandchild.Mother = new Person { FirstName = greatGrandchildName };
                     grandchild.Mother = null;
                 }
             });
@@ -837,7 +834,8 @@ public class ConcurrentStructuralWriteLeakTests(ITestOutputHelper output)
                 barrier.SignalAndWait();
                 for (var i = 0; i < iterationsPerThread; i++)
                 {
-                    child.Mother = new Person { FirstName = $"GrandchildM_{i}" };
+                    var grandchildName = $"GrandchildM_{i}";
+                    child.Mother = new Person { FirstName = grandchildName };
                     child.Mother = null;
                 }
             });
@@ -850,7 +848,8 @@ public class ConcurrentStructuralWriteLeakTests(ITestOutputHelper output)
                 barrier.SignalAndWait();
                 for (var i = 0; i < iterationsPerThread; i++)
                 {
-                    child.Father = new Person { FirstName = $"GrandchildF_{i}" };
+                    var grandchildName = $"GrandchildF_{i}";
+                    child.Father = new Person { FirstName = grandchildName };
                     child.Father = null;
                 }
             });

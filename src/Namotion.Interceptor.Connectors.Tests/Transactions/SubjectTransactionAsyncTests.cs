@@ -114,8 +114,8 @@ public class SubjectTransactionAsyncTests
         var person1 = new Person(context);
         var person2 = new Person(context);
 
-        // Note: subject.Context returns InterceptorExecutor, not the original context
-        // But they share the same SubjectTransactionInterceptor via fallback context mechanism
+        // Both subjects are attached to the same exact context, so they share one
+        // SubjectTransactionInterceptor
 
         using var tx = await context.BeginTransactionAsync(TransactionFailureHandling.BestEffort);
 

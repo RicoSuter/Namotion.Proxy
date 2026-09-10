@@ -19,7 +19,7 @@ namespace Namotion.Interceptor.GraphQL
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             await foreach (var changes in _subject
-                .Context
+                .GetContext()
                 .GetPropertyChangeObservable()
                 .ToAsyncEnumerable()
                 .WithCancellation(stoppingToken))

@@ -9,7 +9,8 @@ namespace Namotion.Interceptor.Tracking.Recorder;
 /// Uses AsyncLocal to ensure proper isolation across concurrent async operations
 /// (e.g., Blazor components in different browser tabs/sessions).
 /// </summary>
-public class ReadPropertyRecorder : IReadInterceptor
+public class ReadPropertyRecorder : IReadInterceptor,
+    ISingletonContextService<ReadPropertyRecorder>
 {
     private static readonly AsyncLocal<List<ReadPropertyRecorderScope>?> _activeScopes = new();
 

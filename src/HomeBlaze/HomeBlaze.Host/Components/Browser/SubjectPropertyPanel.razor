@@ -17,7 +17,7 @@
 @inject IServiceProvider ServiceProvider
 @inject ITimeZoneDisplay TimeZone
 
-<TrackingScope Context="Subject?.Context" ShowDebugInfo="DeveloperMode.IsEnabled">
+<TrackingScope Context="Subject?.TryGetContext()" ShowDebugInfo="DeveloperMode.IsEnabled">
 @if (Subject != null)
 {
     @* Header - Fixed at top *@

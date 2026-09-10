@@ -1,18 +1,20 @@
+using Namotion.Interceptor.Interceptors;
+
 namespace Namotion.Interceptor.Tests;
 
 public class ExecutorPublicationTests
 {
     [Fact]
-    public void WhenContextIsAccessedConcurrently_ThenAllThreadsSeeTheSameExecutor()
+    public void WhenExecutorIsAccessedConcurrently_ThenAllThreadsSeeTheSameExecutor()
     {
         // Arrange
         for (var attempt = 0; attempt < 500; attempt++)
         {
             var subject = new Car();
-            var contexts = new IInterceptorSubjectContext[2];
+            var executors = new IInterceptorExecutor[2];
             using var start = new ManualResetEventSlim(false);
-            var first = new Thread(() => { start.Wait(); contexts[0] = ((IInterceptorSubject)subject).Context; });
-            var second = new Thread(() => { start.Wait(); contexts[1] = ((IInterceptorSubject)subject).Context; });
+            var first = new Thread(() => { start.Wait(); executors[0] = ((IInterceptorSubject)subject).Executor; });
+            var second = new Thread(() => { start.Wait(); executors[1] = ((IInterceptorSubject)subject).Executor; });
             first.Start();
             second.Start();
 
@@ -22,7 +24,7 @@ public class ExecutorPublicationTests
             second.Join();
 
             // Assert
-            Assert.Same(contexts[0], contexts[1]);
+            Assert.Same(executors[0], executors[1]);
         }
     }
 }

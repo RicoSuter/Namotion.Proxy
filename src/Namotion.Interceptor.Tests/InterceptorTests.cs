@@ -86,22 +86,36 @@ public class InterceptorTests
     }
     
     [Fact]
-    public Task WhenAddingAndRemovingContext_ThenInterceptorsAreCalledInTheRightOrder()
+    public Task WhenAddingAndRemovingContext_ThenTheLifecycleInterceptorIsCalled()
     {
-        // Arrange
+        // Arrange: one lifecycle interceptor per context. A second one is a singleton conflict,
+        // because two of them would be competing authorities over the same subjects.
         var logs = new List<string>();
-        
+
         var context = InterceptorSubjectContext
             .Create()
-            .WithService(() => new TestLifecycleInterceptor("a", logs), _ => false)
-            .WithService(() => new TestLifecycleInterceptor("b", logs), _ => false);
-        
+            .WithService(() => new TestLifecycleInterceptor("a", logs), _ => false);
+
         // Act
         var car = new Car(context);
-        ((IInterceptorSubject)car).Context.RemoveFallbackContext(context);
+        ((IInterceptorSubject)car).DetachFromContext(context);
 
         // Assert
         return Verify(logs);
+    }
+
+    [Fact]
+    public void WhenASecondLifecycleInterceptorIsRegistered_ThenTheSingletonContractRejectsIt()
+    {
+        // Arrange
+        var logs = new List<string>();
+        var context = InterceptorSubjectContext
+            .Create()
+            .WithService(() => new TestLifecycleInterceptor("a", logs), _ => false);
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(
+            () => context.WithService(() => new TestLifecycleInterceptor("b", logs), _ => false));
     }
 
     public class TestLifecycleInterceptor : ILifecycleInterceptor
@@ -109,20 +123,37 @@ public class InterceptorTests
         private readonly string _name;
         private readonly List<string> _logs;
 
+        private readonly object _structuralWriteGate = new();
+
+        public void EnterStructuralWriteGate() => Monitor.Enter(_structuralWriteGate);
+
+        public void ExitStructuralWriteGate() => Monitor.Exit(_structuralWriteGate);
+
         public TestLifecycleInterceptor(string name, List<string> logs)
         {
             _name = name;
             _logs = logs;
         }
 
-        public void AttachSubjectToContext(IInterceptorSubject subject)
+        public bool TryAddProperties(SubjectPropertyRegistration registration)
+        {
+            registration.Publish();
+            return true;
+        }
+
+        public void AttachSubjectToContext(IInterceptorSubject subject, IInterceptorSubjectContext context, SubjectAttachmentAnchorKind anchor)
         {
             _logs.Add($"{_name}: Attached");
         }
 
-        public void DetachSubjectFromContext(IInterceptorSubject subject)
+        public void DetachSubjectFromContext(IInterceptorSubject subject, IInterceptorSubjectContext context)
         {
             _logs.Add($"{_name}: Detached");
+        }
+
+        public void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next)
+        {
+            next(ref context);
         }
     }
     

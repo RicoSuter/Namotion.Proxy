@@ -2,7 +2,6 @@
 using System.Reactive.Linq;
 using Namotion.Interceptor.Tracking.Change;
 using Namotion.Interceptor.Tracking.Lifecycle;
-using Namotion.Interceptor.Tracking.Parent;
 using Namotion.Interceptor.Tracking.Recorder;
 using Namotion.Interceptor.Tracking.Transactions;
 
@@ -11,17 +10,21 @@ namespace Namotion.Interceptor.Tracking;
 public static class InterceptorSubjectContextExtensions
 {
     /// <summary>
-    /// Registers full property tracking including equality checks, context inheritance, derived property change detection, and property change subscriptions (observable, queue, and per-property).
+    /// Registers full property tracking including equality checks, the graph lifecycle (context
+    /// inheritance and parent tracking), derived property change detection, and property change
+    /// subscriptions (observable, queue, and per-property).
     /// </summary>
     /// <param name="context">The context.</param>
     /// <returns>The context.</returns>
     public static IInterceptorSubjectContext WithFullPropertyTracking(this IInterceptorSubjectContext context)
     {
+        // Lifecycle first, so a lifecycle conflict throws before any dependent service is
+        // published.
         return context
+            .WithLifecycle()
             .WithEqualityCheck()
             .WithDerivedPropertyChangeDetection()
-            .WithPropertyChangeSubscriptions()
-            .WithContextInheritance();
+            .WithPropertyChangeSubscriptions();
     }
 
     /// <summary>
@@ -54,11 +57,11 @@ public static class InterceptorSubjectContextExtensions
     /// <returns>The context.</returns>
     public static IInterceptorSubjectContext WithDerivedPropertyChangeDetection(this IInterceptorSubjectContext context)
     {
-        context // must be before lifecycle!
-            .WithService(() => new DerivedPropertyChangeHandler());
-
+        // Lifecycle first, so a lifecycle conflict throws before the handler is published. The
+        // handler's chain position ahead of the lifecycle is pinned by its [RunsBefore] attributes.
         return context
-            .WithLifecycle();
+            .WithLifecycle()
+            .WithService(() => new DerivedPropertyChangeHandler());
     }
 
     /// <summary>
@@ -139,41 +142,42 @@ public static class InterceptorSubjectContextExtensions
     }
 
     /// <summary>
-    /// Adds automatic context assignment and <see cref="WithLifecycle"/>.
+    /// Registers the built-in graph lifecycle: context inheritance, parent tracking, subject
+    /// attach/detach events, and support for <see cref="ILifecycleHandler"/> handlers.
     /// </summary>
+    /// <remarks>
+    /// Idempotent for the default lifecycle. A custom <see cref="Interceptors.ILifecycleInterceptor"/>
+    /// registered on the same context conflicts through its singleton contract, so this call then
+    /// throws instead of silently running configuration against a foreign lifecycle.
+    ///
+    /// Registering the lifecycle behind an attach is rejected. A subject anchored while the context
+    /// had no lifecycle never enters the ownership graph the lifecycle brings, and nothing later
+    /// puts it there, so the graph would treat that root as unowned forever and let every structural
+    /// write on it through without a claim, without validating the subjects it pulls in and without
+    /// reconciling any edge. The check reads a flag the lifecycle-free attach path sets, so it sees
+    /// an attach that has already landed; an attach still in flight on another thread is not
+    /// ordered against this call and is not caught, which is the concurrent-configuration case
+    /// documented in docs/design/tracking-lifecycle.md.
+    /// </remarks>
     /// <param name="context">The collection.</param>
     /// <returns>The collection.</returns>
-    public static IInterceptorSubjectContext WithContextInheritance(this IInterceptorSubjectContext context)
-    {
-        context
-            .WithLifecycle()
-            .WithService(() => new ContextInheritanceHandler());
-
-        return context;
-    }
-
-    /// <summary>
-    /// Adds support for <see cref="ILifecycleHandler"/> handlers.
-    /// </summary>
-    /// <param name="context">The collection.</param>
-    /// <returns>The collection.</returns>
+    /// <exception cref="InvalidOperationException">A subject was already attached to the context
+    /// while it had no lifecycle.</exception>
     public static IInterceptorSubjectContext WithLifecycle(this IInterceptorSubjectContext context)
     {
-        return context
-            .WithService(() => new LifecycleInterceptor());
-    }
-    
-    /// <summary>
-    /// Automatically assigns the parents to the interceptable data.
-    /// </summary>
-    /// <param name="context">The collection.</param>
-    /// <returns>The collection.</returns>
-    public static IInterceptorSubjectContext WithParents(this IInterceptorSubjectContext context)
-    {
-        context
-            .WithService(() => new ParentTrackingHandler());
+        if (context is InterceptorSubjectContext { WasAttachedWithoutLifecycle: true })
+        {
+            throw new InvalidOperationException(
+                "A subject was already attached to this context while it had no lifecycle, and a " +
+                "root anchored that way never enters the ownership graph this call would register: " +
+                "its structural writes would silently skip claiming, validation and reconciliation. " +
+                "Register the lifecycle (WithLifecycle, WithRegistry, WithFullPropertyTracking or " +
+                "any feature that implies one) before attaching any subject to the context.");
+        }
 
+        // The lifecycle captures the context it is registered on: that context is the one exact
+        // context it claims subjects for.
         return context
-            .WithLifecycle();
+            .WithService(() => new LifecycleInterceptor(context));
     }
 }

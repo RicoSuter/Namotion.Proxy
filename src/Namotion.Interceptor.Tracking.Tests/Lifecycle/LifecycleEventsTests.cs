@@ -336,8 +336,9 @@ public class LifecycleEventsTests
 
         var person = new Person(context) { FirstName = "Person" };
 
-        // Act
-        ((IInterceptorSubject)person).Context.RemoveFallbackContext(context);
+        // Act: promote the constructor's provisional anchor and give it up, releasing the root.
+        ((IInterceptorSubject)person).AttachToContext(context);
+        ((IInterceptorSubject)person).DetachFromContext(context);
 
         // Assert
         Assert.Single(detachedEvents);
@@ -444,8 +445,9 @@ public class LifecycleEventsTests
 
         events.Clear();
 
-        // Act - detach
-        ((IInterceptorSubject)person).Context.RemoveFallbackContext(context);
+        // Act - detach: promote the constructor's provisional anchor, then give it up.
+        ((IInterceptorSubject)person).AttachToContext(context);
+        ((IInterceptorSubject)person).DetachFromContext(context);
 
         // Assert - SubjectDetaching fires BEFORE HandleLifecycleChange(detach)
         Assert.Equal(2, events.Count);
@@ -476,13 +478,13 @@ public class LifecycleEventsTests
         lifecycleInterceptor.SubjectAttached += _ => attachCount++;
         lifecycleInterceptor.SubjectDetaching += _ => detachCount++;
 
-        // Act: both collection slots hold the same subject and map to the same
-        // (subject, property) pair, so the second occurrence is a duplicate attach.
+        // Act: both collection slots hold the same subject. Every occurrence is one edge, so the
+        // subject attaches once (context attach on the first occurrence) but counts two references.
         parent.Children = [child, child];
 
         // Assert
         Assert.Equal(1, attachCount);
-        Assert.Equal(1, child.GetReferenceCount());
+        Assert.Equal(2, child.GetReferenceCount());
 
         // Act: clearing the collection must detach the duplicated subject exactly once.
         parent.Children = [];

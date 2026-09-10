@@ -59,7 +59,7 @@ public sealed class MutationEngine : BackgroundService
     {
         var graph = new KnownNodeGraph();
         var counters = new MutationCounters();
-        var context = ((IInterceptorSubject)root).Context;
+        var context = ((IInterceptorSubject)root).GetContext();
         var strategy = new RandomValueMutationStrategy(graph, coordinator, context, counters, participantConfiguration);
         return new MutationEngine(root, participantConfiguration, coordinator, strategy, graph, counters, logger);
     }
@@ -74,7 +74,7 @@ public sealed class MutationEngine : BackgroundService
     {
         var graph = new KnownNodeGraph();
         var counters = new MutationCounters();
-        var context = ((IInterceptorSubject)root).Context;
+        var context = ((IInterceptorSubject)root).GetContext();
         var strategy = new BatchValueMutationStrategy(graph, coordinator, context, counters, participantConfiguration, numberOfBatches, participantIndex);
         return new MutationEngine(root, participantConfiguration, coordinator, strategy, graph, counters, logger);
     }

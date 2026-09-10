@@ -10,7 +10,7 @@
 @inject ISnackbar Snackbar
 @inject DeveloperModeService DeveloperMode
 
-<TrackingScope Context="Subject?.Context" ShowDebugInfo="DeveloperMode.IsEnabled">
+<TrackingScope Context="Subject?.TryGetContext()" ShowDebugInfo="DeveloperMode.IsEnabled">
     @if (Subject != null)
     {
         @if (IsCreating && ComponentRegistry.HasComponent(Subject.GetType(), SubjectComponentType.Setup))

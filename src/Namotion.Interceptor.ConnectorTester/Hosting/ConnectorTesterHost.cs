@@ -117,7 +117,6 @@ public sealed class ConnectorTesterHost
                 .Create()
                 .WithFullPropertyTracking()
                 .WithRegistry()
-                .WithParents()
                 .WithLifecycle()
                 .WithTransactions()
                 .WithSourceTransactions()

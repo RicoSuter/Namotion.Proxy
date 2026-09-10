@@ -56,7 +56,7 @@ public class DerivedPropertyChangeHandlerTests
             .Create()
             .WithDerivedPropertyChangeDetection()
             .WithPropertyChangeSubscriptions()
-            .WithContextInheritance();
+            .WithLifecycle();
         
         // Act
         var car = new Car(context);
@@ -255,7 +255,7 @@ public class DerivedPropertyChangeHandlerTests
             .Create()
             .WithDerivedPropertyChangeDetection()
             .WithPropertyChangeSubscriptions()
-            .WithContextInheritance();
+            .WithLifecycle();
 
         var car = new Car(context);
 

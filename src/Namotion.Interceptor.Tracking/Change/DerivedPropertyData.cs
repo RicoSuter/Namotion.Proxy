@@ -60,6 +60,13 @@ internal sealed class DerivedPropertyData
     internal bool RecalculationNeeded;
 
     /// <summary>
+    /// Set under lock(this) when a recalculation withheld its verdict on a value a concurrent
+    /// topology transaction may still be publishing, and booked itself to be re-run when that
+    /// transaction ends. Cleared by that re-run. Keeps at most one booking per property outstanding.
+    /// </summary>
+    internal bool HasWithheldRecalculation;
+
+    /// <summary>
     /// Lifecycle flag cleared during DetachProperty under lock(this).
     /// Checked by RecalculateDerivedProperty to prevent zombie used-by property resurrection.
     /// Set by AttachProperty to support re-attachment.

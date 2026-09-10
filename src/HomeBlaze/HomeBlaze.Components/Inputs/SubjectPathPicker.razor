@@ -227,7 +227,7 @@
     {
         var children = new List<TreeItemData<PathTreeItem>>();
 
-        var registry = subject.Context.TryGetService<ISubjectRegistry>();
+        var registry = subject.TryGetContext()?.TryGetService<ISubjectRegistry>();
         var registered = registry?.TryGetRegisteredSubject(subject);
         if (registered != null)
         {
@@ -385,7 +385,7 @@
 
     private bool HasExpandableProperties(IInterceptorSubject subject)
     {
-        var registry = subject.Context.TryGetService<ISubjectRegistry>();
+        var registry = subject.TryGetContext()?.TryGetService<ISubjectRegistry>();
         var registered = registry?.TryGetRegisteredSubject(subject);
 
         if (registered == null)

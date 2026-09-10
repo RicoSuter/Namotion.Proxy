@@ -2,8 +2,9 @@
 
 /// <summary>
 /// A registry which tracks subjects and their child subjects, property attributes and additional metadata.
+/// Holds the one projection every consumer navigates, so a second one would silently split that view.
 /// </summary>
-public interface ISubjectRegistry
+public interface ISubjectRegistry : ISingletonContextService<ISubjectRegistry>
 {
     /// <summary>
     /// Gets all known registered subjects.

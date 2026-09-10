@@ -94,7 +94,7 @@ public static class SubjectRegistryExtensions
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static RegisteredSubjectProperty? TryGetRegisteredProperty(this IInterceptorSubject subject, string propertyName, ISubjectRegistry? registry = null)
     {
-        registry ??= subject.Context.TryGetService<ISubjectRegistry>();
+        registry ??= subject.TryGetContext()?.TryGetService<ISubjectRegistry>();
         return registry?
             .TryGetRegisteredSubject(subject)?
             .TryGetProperty(propertyName);
@@ -136,7 +136,7 @@ public static class SubjectRegistryExtensions
     public static RegisteredSubject? TryGetRegisteredSubject(this IInterceptorSubject subject)
     {
         // TODO(perf): Replace calls of TryGetRegisteredSubject with registry.TryGetRegisteredSubject to avoid multiple registry resolves
-        var registry = subject.Context.TryGetService<ISubjectRegistry>();
+        var registry = subject.TryGetContext()?.TryGetService<ISubjectRegistry>();
         return registry?.TryGetRegisteredSubject(subject);
     }
     
@@ -229,7 +229,7 @@ public static class SubjectRegistryExtensions
             return existingId;
 
         // Slow path: delegate to registry writer for atomic Data + reverse-index update
-        var writer = subject.Context.TryGetService<ISubjectIdRegistryWriter>();
+        var writer = subject.TryGetContext()?.TryGetService<ISubjectIdRegistryWriter>();
         if (writer is not null)
             return writer.GetOrAddSubjectId(subject);
 
@@ -270,7 +270,7 @@ public static class SubjectRegistryExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
 
         // Delegate to the registry writer for atomic Data + reverse-index update
-        var writer = subject.Context.TryGetService<ISubjectIdRegistryWriter>();
+        var writer = subject.TryGetContext()?.TryGetService<ISubjectIdRegistryWriter>();
         if (writer is not null)
         {
             writer.SetSubjectId(subject, id);

@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using Microsoft.Extensions.Logging;
 using Namotion.Interceptor.Connectors.Diagnostics;
 using Namotion.Interceptor.Connectors.Monitoring;
@@ -40,7 +39,7 @@ public abstract class SubjectSourceBase : SubjectConnectorBase, ISubjectSource
     private SourceStateSnapshot _stateSnapshot = new(SourceState.Synchronizing, DateTimeOffset.UtcNow, null);
     private int _started;
 
-    private ImmutableArray<SourceMonitor> _registeredMonitors = [];
+    private SourceMonitor? _registeredMonitor;
 
     internal WriteRetryQueue WriteRetryQueue { get; }
 
@@ -153,14 +152,11 @@ public abstract class SubjectSourceBase : SubjectConnectorBase, ISubjectSource
         }
 
         // Registration precedes the pump so SourceRegistered precedes any StateChanged of this source.
-        var monitors = RootSubject.Context.GetSourceMonitors();
-        ImmutableInterlocked.InterlockedExchange(ref _registeredMonitors, monitors);
+        var monitor = RootSubject.TryGetContext()?.TryGetService<SourceMonitor>();
+        Interlocked.Exchange(ref _registeredMonitor, monitor);
         try
         {
-            foreach (var monitor in monitors)
-            {
-                monitor.Register(this);
-            }
+            monitor?.Register(this);
         }
         catch
         {
@@ -168,7 +164,7 @@ public abstract class SubjectSourceBase : SubjectConnectorBase, ISubjectSource
             // unwind may have found nothing registered yet.
             if (State == SourceState.Stopped)
             {
-                UnwindRegistrations(monitors);
+                UnwindRegistration(monitor);
                 throw;
             }
 
@@ -184,7 +180,7 @@ public abstract class SubjectSourceBase : SubjectConnectorBase, ISubjectSource
         // here means Dispose already ran.
         if (State == SourceState.Stopped)
         {
-            UnwindRegistrations(monitors);
+            UnwindRegistration(monitor);
             return Task.CompletedTask;
         }
 
@@ -192,17 +188,14 @@ public abstract class SubjectSourceBase : SubjectConnectorBase, ISubjectSource
     }
 
     /// <summary>
-    /// Drops the registrations <see cref="StartAsync"/> just made, through its LOCAL array rather
+    /// Drops the registration <see cref="StartAsync"/> just made, through its LOCAL variable rather
     /// than the field, which a concurrent <see cref="Dispose"/> may already have emptied: re-reading
-    /// it would strand them. Unregister no-ops on an unregistered source, so a double unwind is safe.
+    /// it would strand it. Unregister no-ops on an unregistered source, so a double unwind is safe.
     /// </summary>
-    private void UnwindRegistrations(ImmutableArray<SourceMonitor> monitors)
+    private void UnwindRegistration(SourceMonitor? monitor)
     {
-        ImmutableInterlocked.InterlockedExchange(ref _registeredMonitors, ImmutableArray<SourceMonitor>.Empty);
-        foreach (var monitor in monitors)
-        {
-            monitor.Unregister(this);
-        }
+        Interlocked.Exchange(ref _registeredMonitor, null);
+        monitor?.Unregister(this);
     }
 
     /// <inheritdoc />
@@ -633,19 +626,14 @@ public abstract class SubjectSourceBase : SubjectConnectorBase, ISubjectSource
     {
         // Close outbound admission before publishing the final Stopped, so an observer blocked inside
         // the notification cannot still hand a write to the transport. Publishing while registered keeps
-        // a dispose without a stop visible to the monitors.
+        // a dispose without a stop visible to the monitor.
         WriteRetryQueue.Retire();
         TransitionStateTo(SourceState.Stopped);
 
         // Take-and-clear in one step, so a concurrent StartAsync unwinding through its own local
-        // array (see StartAsync) cannot have this method unregister the same entries a second time
-        // on a later call, and so the field is never read while another thread is writing it.
-        var monitors = ImmutableInterlocked.InterlockedExchange(
-            ref _registeredMonitors, ImmutableArray<SourceMonitor>.Empty);
-        foreach (var monitor in monitors)
-        {
-            monitor.Unregister(this);
-        }
+        // variable (see StartAsync) cannot have this method unregister the same monitor a second
+        // time on a later call, and so the field is never read while another thread is writing it.
+        Interlocked.Exchange(ref _registeredMonitor, null)?.Unregister(this);
 
         WriteRetryQueue.Dispose();
         base.Dispose();

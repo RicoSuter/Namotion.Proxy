@@ -54,6 +54,52 @@ public partial class SubjectUpdateExtensionsTests
     }
 
     [Fact]
+    public void WhenApplyingCreatesAChild_ThenTheChildFollowsTheGraph()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithRegistry();
+        var source = new Person(context) { FirstName = "John", Mother = new Person { FirstName = "Jane" } };
+        var target = new Person(context);
+
+        // Act
+        var update = SubjectUpdate.CreateCompleteUpdate(source, []);
+        target.ApplySubjectUpdate(update, DefaultSubjectFactory.Instance, ChangeOrigin.Local);
+
+        // Assert: the applier-created child is attached to the graph's exact context without an
+        // explicit anchor, so removing its edge releases it.
+        var child = (IInterceptorSubject)target.Mother!;
+        Assert.Same(context, child.TryGetContext());
+
+        target.Mother = null;
+        Assert.Null(child.TryGetContext());
+    }
+
+    [Fact]
+    public void WhenApplyingCreatesCollectionItems_ThenTheItemsFollowTheGraph()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithRegistry();
+        var source = new Person(context)
+        {
+            FirstName = "John",
+            Children = [new Person { FirstName = "A" }, new Person { FirstName = "B" }]
+        };
+        var target = new Person(context);
+
+        // Act
+        var update = SubjectUpdate.CreateCompleteUpdate(source, []);
+        target.ApplySubjectUpdate(update, DefaultSubjectFactory.Instance, ChangeOrigin.Local);
+
+        // Assert
+        var children = target.Children.Cast<IInterceptorSubject>().ToArray();
+        Assert.Equal(2, children.Length);
+        Assert.All(children, child => Assert.Same(context, child.TryGetContext()));
+
+        target.Children = [];
+        Assert.All(children, child => Assert.Null(child.TryGetContext()));
+    }
+
+    [Fact]
     public async Task WhenApplyingNestedProperty_ThenItWorks()
     {
         // Arrange

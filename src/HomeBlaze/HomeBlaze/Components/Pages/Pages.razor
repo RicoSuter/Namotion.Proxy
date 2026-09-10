@@ -18,7 +18,7 @@
 
 <PageTitle>@_title - HomeBlaze</PageTitle>
 
-<TrackingScope Context="_subject?.Context" ShowDebugInfo="DeveloperMode.IsEnabled">
+<TrackingScope Context="_subject?.TryGetContext()" ShowDebugInfo="DeveloperMode.IsEnabled">
     @if (_subject == null)
     {
         <MudAlert Severity="Severity.Warning">Subject not found at path: @Path</MudAlert>

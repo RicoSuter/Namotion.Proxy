@@ -43,10 +43,10 @@ app.Run();
 - `WithFullPropertyTracking()` - Enables property change detection
 - `WithRegistry()` - Enables object graph navigation and dynamic properties in JSON output
 
+Both install `WithLifecycle()`, which owns parent tracking. `GetJsonPath` walks a property's parent chain to build its path, so it needs a lifecycle and gets one through either extension above.
+
 **Optional extensions:**
-- `WithParents()` - Required if using `GetJsonPath()` for JSON path resolution from child to root
 - `WithDataAnnotationValidation()` - Enables validation via data annotations
-- `WithLifecycle()` - Enables attach/detach callbacks
 - `WithHostedServices(builder.Services)` - Registers subjects implementing `BackgroundService`
 
 This creates three endpoints:
@@ -296,8 +296,6 @@ var context = InterceptorSubjectContext
     .Create()
     .WithFullPropertyTracking()
     .WithRegistry()
-    .WithParents()
-    .WithLifecycle()
     .WithDataAnnotationValidation();
 
 // Create and register subject

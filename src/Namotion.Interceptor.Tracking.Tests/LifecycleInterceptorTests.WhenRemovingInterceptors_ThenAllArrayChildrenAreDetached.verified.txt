@@ -2,7 +2,7 @@
   + NA (attached, refs: 0),
   + Mother.Children[0] -> Child1 (refs: 1, attached),
   + Mother.Children[1] -> Child2 (refs: 1, attached),
+  - Mother (detached, refs: 0),
   - Mother.Children[0] -> Child1 (refs: 0, detached),
-  - Mother.Children[1] -> Child2 (refs: 0, detached),
-  - Mother (detached, refs: 0)
+  - Mother.Children[1] -> Child2 (refs: 0, detached)
 ]

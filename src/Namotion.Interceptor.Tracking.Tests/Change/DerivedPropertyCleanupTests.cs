@@ -78,8 +78,7 @@ public class DerivedPropertyCleanupTests
         var context = InterceptorSubjectContext
             .Create()
             .WithDerivedPropertyChangeDetection()
-            .WithLifecycle()
-            .WithContextInheritance();
+            .WithLifecycle();
 
         var car = new Car(context);
         var oldTire = car.Tires[0];
@@ -141,8 +140,7 @@ public class DerivedPropertyCleanupTests
         var context = InterceptorSubjectContext
             .Create()
             .WithDerivedPropertyChangeDetection()
-            .WithLifecycle()
-            .WithContextInheritance();
+            .WithLifecycle();
 
         var cars = Enumerable.Range(0, 10).Select(_ => new Car(context)).ToArray();
 
@@ -183,8 +181,7 @@ public class DerivedPropertyCleanupTests
         var context = InterceptorSubjectContext
             .Create()
             .WithDerivedPropertyChangeDetection()
-            .WithLifecycle()
-            .WithContextInheritance();
+            .WithLifecycle();
 
         var car = new Car(context);
         var firstTire = car.Tires[0];
@@ -216,8 +213,7 @@ public class DerivedPropertyCleanupTests
         {
             var context = InterceptorSubjectContext
                 .Create()
-                .WithFullPropertyTracking()
-                .WithContextInheritance();
+                .WithFullPropertyTracking();
 
             var car = new Car(context);
             var firstTire = car.Tires[0];
@@ -259,8 +255,7 @@ public class DerivedPropertyCleanupTests
         var context = InterceptorSubjectContext
             .Create()
             .WithDerivedPropertyChangeDetection()
-            .WithLifecycle()
-            .WithContextInheritance();
+            .WithLifecycle();
 
         var car = new Car(context);
         var firstTire = car.Tires[0];

@@ -33,7 +33,6 @@ public class RegistryAncestorResolutionTests
     {
         IInterceptorSubjectContext context = InterceptorSubjectContext.Create()
             .WithFullPropertyTracking()
-            .WithParents()
             .WithRegistry();
 
         var initializer = new InheritedFlagInitializer();

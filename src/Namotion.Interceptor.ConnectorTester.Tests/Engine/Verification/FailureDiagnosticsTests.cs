@@ -14,7 +14,6 @@ public class FailureDiagnosticsTests
             .Create()
             .WithFullPropertyTracking()
             .WithRegistry()
-            .WithParents()
             .WithLifecycle();
 
     [Fact]

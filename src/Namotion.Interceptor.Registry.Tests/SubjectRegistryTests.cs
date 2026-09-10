@@ -154,7 +154,6 @@ public class SubjectRegistryTests
         // Arrange
         var context = InterceptorSubjectContext
             .Create()
-            .WithParents()
             .WithRegistry();
 
         // Act
@@ -353,6 +352,32 @@ public class SubjectRegistryTests
     }
 
     [Fact]
+    public void WhenADictionaryKeyIsRenamed_ThenTheChildAndParentEntriesFollowTheNewKey()
+    {
+        // Arrange: the subject stays in the new value, so the lifecycle moves its edge instead of
+        // republishing it, and only the index refresh can keep the projection in step with it.
+        var context = InterceptorSubjectContext
+            .Create()
+            .WithRegistry();
+
+        var light = new Light();
+        var group = new LightGroup(context)
+        {
+            LightsByName = new Dictionary<string, Light> { ["x"] = light }
+        };
+
+        // Act
+        group.LightsByName = new Dictionary<string, Light> { ["y"] = light };
+
+        // Assert
+        var lightsProperty = group.TryGetRegisteredSubject()!
+            .TryGetProperty(nameof(LightGroup.LightsByName))!;
+
+        Assert.Equal("y", Assert.Single(lightsProperty.Children).Index);
+        Assert.Equal("y", Assert.Single(light.TryGetRegisteredSubject()!.Parents).Index);
+    }
+
+    [Fact]
     public void WhenInsertingInMiddleOfCollection_ThenIndicesAreCorrect()
     {
         // Arrange
@@ -401,8 +426,8 @@ public class SubjectRegistryTests
         var second = new ValueEqualitySubject { Name = "same" };
 
         // Act
-        ((IInterceptorSubject)first).Context.AddFallbackContext(context);
-        ((IInterceptorSubject)second).Context.AddFallbackContext(context);
+        first.AttachToContext(context);
+        second.AttachToContext(context);
 
         // Assert
         var registry = context.GetService<ISubjectRegistry>();
@@ -430,6 +455,7 @@ public class SubjectRegistryTests
         Assert.Equal(0, second.TryGetRegisteredSubject()!.Parents[0].Index);
         Assert.Equal(1, first.TryGetRegisteredSubject()!.Parents[0].Index);
     }
+
     [Fact]
     public void WhenReplacingAChildWithAnEqualInstance_ThenOnlyTheReplacementRemainsRegistered()
     {

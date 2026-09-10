@@ -14,7 +14,7 @@ namespace Namotion.Interceptor.Tracking.Transactions;
 /// and derived cascades initiated by that replay. This authorization does not extend into these callbacks.
 /// Disposed and terminal transactions are inactive and use normal property access semantics.
 /// </remarks>
-public interface ITransactionWriter
+public interface ITransactionWriter : ISingletonContextService<ITransactionWriter>
 {
     /// <summary>
     /// Writes every source-bound change to its source (best-effort per source) and reports the

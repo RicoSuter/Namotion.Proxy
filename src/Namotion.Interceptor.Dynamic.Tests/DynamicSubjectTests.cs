@@ -1,6 +1,8 @@
 ﻿using Namotion.Interceptor.Attributes;
 using Namotion.Interceptor.Interceptors;
 using Namotion.Interceptor.Registry;
+using Namotion.Interceptor.Tracking;
+using Namotion.Interceptor.Tracking.Lifecycle;
 
 namespace Namotion.Interceptor.Dynamic.Tests;
 
@@ -12,6 +14,11 @@ public interface IMotor
 public interface ISensor
 {
     int Temperature { get; set; }
+}
+
+public interface IMotorHolder
+{
+    Motor? Motor { get; set; }
 }
 
 [InterceptorSubject]
@@ -52,7 +59,7 @@ public class DynamicSubjectTests
             .WithRegistry();
 
         var subject = DynamicSubjectFactory.CreateDynamicSubject(typeof(IMotor), typeof(ISensor));
-        subject.Context.AddFallbackContext(context);
+        subject.AttachToContext(context);
 
         // Act
         var registeredSubject = subject.TryGetRegisteredSubject()!;
@@ -69,13 +76,16 @@ public class DynamicSubjectTests
         // Act
         var logs = new List<string>();
         
+        // Two read/write interceptors pin the nesting order; the lifecycle is registered once,
+        // because a second one would be a competing ownership authority on the same context.
         var context = InterceptorSubjectContext
             .Create()
+            .WithService(() => new TestLifecycleInterceptor("lifecycle", logs), _ => false)
             .WithService(() => new TestInterceptor("a", logs), _ => false)
             .WithService(() => new TestInterceptor("b", logs), _ => false);
 
         var subject = DynamicSubjectFactory.CreateDynamicSubject(typeof(IMotor), typeof(ISensor));
-        subject.Context.AddFallbackContext(context);
+        subject.AttachToContext(context);
 
         var motor = (IMotor)subject;
         var sensor = (ISensor)subject;
@@ -86,7 +96,7 @@ public class DynamicSubjectTests
         var speed = motor.Speed;
         var temperature = sensor.Temperature;
         
-        subject.Context.RemoveFallbackContext(context);
+        subject.DetachFromContext(context);
 
         // Assert & Act (read)
         Assert.Equal(102, motor.Speed);
@@ -119,6 +129,57 @@ public class DynamicSubjectTests
     }
 
     [Fact]
+    public void WhenADynamicStructuralPropertyIsWrittenOnAnAttachedProxy_ThenTheSubjectJoinsTheGraph()
+    {
+        // Arrange: the Castle set path classifies the declared type at runtime and routes a
+        // subject-bearing write through the synchronized structural accessor.
+        var context = InterceptorSubjectContext
+            .Create()
+            .WithLifecycle();
+
+        var subject = DynamicSubjectFactory.CreateDynamicSubject(typeof(IMotorHolder));
+        subject.AttachToContext(context);
+        var holder = (IMotorHolder)subject;
+        var motor = new Motor();
+
+        // Act
+        holder.Motor = motor;
+
+        // Assert
+        Assert.Same(context, motor.TryGetContext());
+        Assert.Equal(1, motor.GetReferenceCount());
+
+        // Act
+        holder.Motor = null;
+
+        // Assert
+        Assert.Null(motor.TryGetContext());
+        Assert.Equal(0, motor.GetReferenceCount());
+    }
+
+    [Fact]
+    public void WhenADynamicStructuralPropertyIsWrittenBeforeAttach_ThenTheAttachDiscoversIt()
+    {
+        // Arrange: an unattached proxy writes through the structural accessor's unattached arm,
+        // and the later attach discovers the stored subject through the property's getter.
+        var context = InterceptorSubjectContext
+            .Create()
+            .WithLifecycle();
+
+        var subject = DynamicSubjectFactory.CreateDynamicSubject(typeof(IMotorHolder));
+        var holder = (IMotorHolder)subject;
+        var motor = new Motor();
+        holder.Motor = motor;
+
+        // Act
+        subject.AttachToContext(context);
+
+        // Assert
+        Assert.Same(context, motor.TryGetContext());
+        Assert.Equal(1, motor.GetReferenceCount());
+    }
+
+    [Fact]
     public void WhenProxyingAGeneratedSubject_ThenNoGeneratedInterceptionMemberBecomesAProperty()
     {
         // Arrange & Act: Motor is [InterceptorSubject], so the proxy's base is generated code.
@@ -133,7 +194,73 @@ public class DynamicSubjectTests
         Assert.Equal(["Speed", "Temperature"], propertyNames);
     }
 
-    public class TestInterceptor : IReadInterceptor, IWriteInterceptor, ILifecycleInterceptor
+    [Fact]
+    public void WhenProxyingAGeneratedSubject_ThenExecutorDoesNotBecomeAProperty()
+    {
+        // Arrange & Act: the focused half of the exact-set assertion above. Executor is emitted as
+        // an explicit implementation precisely so the factory's GetProperties(Instance | Public |
+        // NonPublic) sweep cannot see it; a public or protected Executor would surface here.
+        var motor = DynamicSubjectFactory.CreateSubject<Motor>(typeof(IMotor), typeof(ISensor));
+
+        // Assert
+        Assert.DoesNotContain(
+            ((IInterceptorSubject)motor).Properties.Keys,
+            name => name.EndsWith("Executor", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void WhenDynamicSubjectIsCreated_ThenExecutorIsAnExplicitImplementation()
+    {
+        // Arrange
+        var subject = (IInterceptorSubject)new DynamicSubject();
+
+        // Act & Assert: no simple-named Executor property exists at any accessibility, so the
+        // dynamic factory cannot turn it into a phantom intercepted property.
+        Assert.Null(typeof(DynamicSubject).GetProperty(
+            "Executor",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic));
+        Assert.NotNull(subject.Executor);
+    }
+
+    public class TestLifecycleInterceptor(string name, List<string> logs) : ILifecycleInterceptor
+    {
+        private readonly object _structuralWriteGate = new();
+
+        public void EnterStructuralWriteGate() => Monitor.Enter(_structuralWriteGate);
+
+        public void ExitStructuralWriteGate() => Monitor.Exit(_structuralWriteGate);
+
+        public bool TryAddProperties(SubjectPropertyRegistration registration)
+        {
+            registration.Publish();
+            return true;
+        }
+
+        // Attaches through the public raw seam, which is the whole third-party contract: no
+        // Core internals are needed to implement a lifecycle.
+        public void AttachSubjectToContext(IInterceptorSubject subject, IInterceptorSubjectContext context, SubjectAttachmentAnchorKind anchor)
+        {
+            var executor = subject.Executor;
+            executor.TryGetAttachment(out _, out _, out var revision);
+            executor.TryUpdateAttachment(revision, context, anchor, out _);
+            logs.Add($"{name}: Attached");
+        }
+
+        public void DetachSubjectFromContext(IInterceptorSubject subject, IInterceptorSubjectContext context)
+        {
+            var executor = subject.Executor;
+            executor.TryGetAttachment(out _, out _, out var revision);
+            executor.TryUpdateAttachment(revision, null, SubjectAttachmentAnchorKind.None, out _);
+            logs.Add($"{name}: Detached");
+        }
+
+        public void WriteProperty<TProperty>(ref PropertyWriteContext<TProperty> context, WriteInterceptionDelegate<TProperty> next)
+        {
+            next(ref context);
+        }
+    }
+
+    public class TestInterceptor : IReadInterceptor, IWriteInterceptor
     {
         private readonly string _name;
         private readonly List<string> _logs;
@@ -160,14 +287,5 @@ public class DynamicSubjectTests
             _logs.Add($"{_name}: After write {context.Property.Name}");
         }
 
-        public void AttachSubjectToContext(IInterceptorSubject subject)
-        {
-            _logs.Add($"{_name}: Attached");
-        }
-
-        public void DetachSubjectFromContext(IInterceptorSubject subject)
-        {
-            _logs.Add($"{_name}: Detached");
-        }
     }
 }

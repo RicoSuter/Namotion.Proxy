@@ -15,7 +15,6 @@ public class BatchValueMutationStrategyTests
             .Create()
             .WithFullPropertyTracking()
             .WithRegistry()
-            .WithParents()
             .WithLifecycle();
 
     [Fact]

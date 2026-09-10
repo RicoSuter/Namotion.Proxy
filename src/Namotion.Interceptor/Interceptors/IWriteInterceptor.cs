@@ -5,13 +5,21 @@ namespace Namotion.Interceptor.Interceptors;
 /// <summary>
 /// Interceptor that can intercept and modify property write operations.
 /// </summary>
+/// <remarks>
+/// Structural writes run while the lifecycle holds its topology gate. Never hand structural work
+/// to another thread and wait for it while holding that gate: a dispatched structural write,
+/// attach or detach needs the same gate, so the two wait on each other. Dispatching a read, a scalar
+/// write or input and output and waiting for it is safe, and so is handing structural work off
+/// without waiting. Same-context topology reentry is permitted outside lifecycle callbacks;
+/// cross-context topology nesting and structural writes from lifecycle callbacks are rejected.
+/// </remarks>
 public interface IWriteInterceptor
 {
     /// <summary>
     /// Intercepts a property write operation.
     /// </summary>
     /// <typeparam name="TProperty">A hint for the property type. May be <c>object</c> when
-    /// values are boxed through non-generic paths (e.g., <c>SetPropertyValueWithInterception</c>).
+    /// values are boxed through non-generic paths.
     /// Use <c>context.Property.Metadata.Type</c> for the actual declared property type.</typeparam>
     /// <param name="context">The write context containing the property reference and values.</param>
     /// <param name="next">The next interceptor in the chain to call. Always forward the received context by
@@ -40,10 +48,6 @@ public struct PropertyWriteContext<TProperty>
     // Cascade re-entries skip the resolve entirely: the internal ctor seeds this field with the
     // trigger's already-resolved value.
     private long _writeTimestamp;
-
-    // Set by the first PropertyChangeInterceptor instance that resolves this write's per-property
-    // observers (whether or not any were found), so outer aggregated instances skip resolution.
-    internal bool ArePropertyObserversResolved;
 
     // The terminal write action for this call. Threaded through the per-call context (which already
     // flows by ref to the end of the chain) instead of a ThreadStatic on the shared chain instance:
@@ -97,6 +101,10 @@ public struct PropertyWriteContext<TProperty>
     /// Gets or sets whether the write was performed.
     /// Set to true by the write action when the value is actually written.
     /// </summary>
+    /// <remarks>
+    /// Interceptors must preserve this commit marker: do not clear it after a write or set it before
+    /// storage changes. Forward the same context by reference so the marker reaches upstream interceptors.
+    /// </remarks>
     public bool IsWritten { get; set; }
 
     /// <summary>
@@ -271,7 +279,7 @@ public struct PropertyWriteContext<TProperty>
 
         // A derived property's stored value is recomputed by its getter, never literally the sent value,
         // so a stamped origin never survives. Demoted without invoking the getter, which must not run
-        // here (this executes under the subject's SyncRoot).
+        // here (this executes under the executor's terminal lock).
         if (Property.Metadata.IsDerived)
         {
             return default;

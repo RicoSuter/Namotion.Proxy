@@ -13,7 +13,6 @@ public class KnownNodeGraphTests
             .Create()
             .WithFullPropertyTracking()
             .WithRegistry()
-            .WithParents()
             .WithLifecycle();
 
     [Fact]

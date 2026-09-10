@@ -212,7 +212,7 @@ public class HistoryMcpToolProvider : IMcpToolProvider
         }
 
         var rootSubject = _rootSubjectProvider();
-        var registry = rootSubject.Context.GetService<ISubjectRegistry>();
+        var registry = rootSubject.GetContext().GetService<ISubjectRegistry>();
         var rootRegistered = rootSubject.TryGetRegisteredSubject();
         var stores = registry.KnownSubjects.Keys.OfType<IHistoryStore>().ToArray();
 

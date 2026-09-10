@@ -2,6 +2,6 @@
   + NA (attached, refs: 0),
   + Mother.Mother -> Grandmother (refs: 1, attached),
   + Child.Mother -> Mother (refs: 1, attached),
-  - Mother.Mother -> Grandmother (refs: 0, detached),
-  - Child.Mother -> Mother (refs: 0, detached)
+  - Child.Mother -> Mother (refs: 0, detached),
+  - Mother.Mother -> Grandmother (refs: 0, detached)
 ]

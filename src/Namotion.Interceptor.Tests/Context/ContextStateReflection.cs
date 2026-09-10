@@ -4,10 +4,9 @@ namespace Namotion.Interceptor.Tests.Context;
 
 /// <summary>
 /// The private state of <see cref="InterceptorSubjectContext"/>, reached by reflection and shared
-/// by the context tests that need it. Several invariants of the copy on write design are only
-/// observable on these fields: that a state object is installed exactly once, that a recorded chain
-/// end belongs to the state which recorded it, and that a traversal buffer is dropped rather than
-/// kept once it grows past its threshold. Asserting those through the public API alone would mean
+/// by the context tests that need it. The copy on write invariants are only observable on these
+/// fields: that a mutation installs a fresh state object, and that the compiled chain caches
+/// belong to the state that produced them. Asserting those through the public API alone would mean
 /// asserting nothing.
 ///
 /// Each lookup raises with the name it was looking for, so a rename fails with the field to fix
@@ -22,10 +21,6 @@ internal static class ContextStateReflection
     internal static readonly FieldInfo StateField = typeof(InterceptorSubjectContext)
         .GetField("_state", BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("InterceptorSubjectContext._state was renamed, the context tests need updating.");
-
-    internal static readonly FieldInfo ResolvedTerminalField = ContextStateType
-        .GetField("_resolvedTerminal", BindingFlags.Instance | BindingFlags.NonPublic)
-        ?? throw new InvalidOperationException("ContextState._resolvedTerminal was renamed, the context tests need updating.");
 
     private static readonly FieldInfo ReadFunctionsField = ContextStateType
         .GetField("_readFunctions", BindingFlags.Instance | BindingFlags.NonPublic)
@@ -43,25 +38,10 @@ internal static class ContextStateReflection
         .GetNestedType("PropertyTypeIndex`1", BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("InterceptorSubjectContext.PropertyTypeIndex was renamed, the context tests need updating.");
 
-    internal static readonly object CyclicDelegationMarker = typeof(InterceptorSubjectContext)
-        .GetField("CyclicDelegationMarker", BindingFlags.Static | BindingFlags.NonPublic)
-        ?.GetValue(null)
-        ?? throw new InvalidOperationException("InterceptorSubjectContext.CyclicDelegationMarker was renamed, the context tests need updating.");
-
     /// <summary>Returns the state object currently installed on the given context.</summary>
     internal static object GetState(InterceptorSubjectContext context)
     {
         return StateField.GetValue(context)!;
-    }
-
-    /// <summary>
-    /// Returns what the installed state records about the end of its delegation chain: the context
-    /// the chain ends on, <see cref="CyclicDelegationMarker"/> when it runs in a circle, or null
-    /// when the chain was never walked, which is always legal.
-    /// </summary>
-    internal static object? GetResolvedTerminal(InterceptorSubjectContext context)
-    {
-        return ResolvedTerminalField.GetValue(GetState(context));
     }
 
     /// <summary>Returns the read-function array owned by the context's installed state.</summary>
@@ -91,18 +71,5 @@ internal static class ContextStateReflection
     internal static Delegate GetOrSetMethodInvocationFunction(InterceptorSubjectContext context, Delegate function)
     {
         return (Delegate)GetOrSetMethodInvocationFunctionMethod.Invoke(GetState(context), [function])!;
-    }
-
-    /// <summary>
-    /// Returns one of the thread static traversal buffers, read from the calling thread, so that a
-    /// test asserts against the buffers of the walk it just ran.
-    /// </summary>
-    internal static object? GetThreadStaticBuffer(string fieldName)
-    {
-        var field = typeof(InterceptorSubjectContext)
-            .GetField(fieldName, BindingFlags.Static | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException($"InterceptorSubjectContext.{fieldName} was renamed, the context tests need updating.");
-
-        return field.GetValue(null);
     }
 }

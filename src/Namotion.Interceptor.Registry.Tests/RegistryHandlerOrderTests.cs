@@ -6,9 +6,12 @@ using Namotion.Interceptor.Tracking.Parent;
 namespace Namotion.Interceptor.Registry.Tests;
 
 /// <summary>
-/// Pins that the handlers running ahead of the descent resolve in one order for every composition,
-/// and what that gives a handler observing a subject as it attaches. See "Handler Order Around the
-/// Descent" in docs/design/tracking-lifecycle.md.
+/// Pins the registry's position ahead of the lifecycle descent for every composition, and what that
+/// gives a handler observing a subject as it attaches. The merged <see cref="LifecycleInterceptor"/>
+/// is the ordering seam, so the registry's <c>[RunsBefore(typeof(LifecycleInterceptor))]</c> is what
+/// this order rests on; the chain assertions are the proof that the constraint binds, because with
+/// an unbound constraint the "registry-last" composition would resolve the registry behind the
+/// lifecycle.
 /// </summary>
 public class RegistryHandlerOrderTests
 {
@@ -16,7 +19,7 @@ public class RegistryHandlerOrderTests
     [
         "registry-first",
         "registry-after-tracking",
-        "registry-after-parents"
+        "registry-after-lifecycle"
     ];
 
     private static IInterceptorSubjectContext CreateContext(string registrationOrder)
@@ -24,9 +27,9 @@ public class RegistryHandlerOrderTests
         var context = InterceptorSubjectContext.Create();
         return registrationOrder switch
         {
-            "registry-first" => context.WithRegistry().WithParents().WithFullPropertyTracking(),
-            "registry-after-tracking" => context.WithFullPropertyTracking().WithRegistry().WithParents(),
-            "registry-after-parents" => context.WithFullPropertyTracking().WithParents().WithRegistry(),
+            "registry-first" => context.WithRegistry().WithFullPropertyTracking(),
+            "registry-after-tracking" => context.WithFullPropertyTracking().WithRegistry(),
+            "registry-after-lifecycle" => context.WithLifecycle().WithRegistry(),
             _ => throw new ArgumentOutOfRangeException(nameof(registrationOrder))
         };
     }
@@ -53,7 +56,7 @@ public class RegistryHandlerOrderTests
 
         // Assert
         Assert.Equal(
-            [nameof(SubjectRegistry), nameof(ParentTrackingHandler), nameof(ContextInheritanceHandler)],
+            [nameof(SubjectRegistry), nameof(LifecycleInterceptor)],
             handlers);
     }
 
@@ -69,18 +72,16 @@ public class RegistryHandlerOrderTests
         // Act
         root.Child = top;
 
-        // Assert: "middle" is what the child's own registration pulls in on demand and "root"
-        // attached earlier, so a registry behind the descent leaves the gap at "top", in the middle
-        // of the chain rather than at its end.
+        // Assert: the registry runs ahead of the descent at every level, so when the child's own
+        // handler runs, every ancestor up to the root is already registered.
         Assert.Equal(["middle", "top", "root"], child.AncestorsVisibleDuringAttach);
     }
 
     [Fact]
-    public void WhenParentTrackingIsAbsent_ThenRegistryParentEdgesResolveTheWholeChainDuringAttach()
+    public void WhenAncestorsAreWalkedOverRegistryEdges_ThenTheWholeChainResolvesDuringAttach()
     {
-        // Arrange: tracking before registry with no parent tracking, the shape the README and the
-        // connector docs use. GetParents() is empty without ParentTrackingHandler, so the chain has
-        // to be walked over the registry's own parent edges instead.
+        // Arrange: the same chain resolved over the registry's own parent edges rather than over
+        // GetParents(), the shape the README and the connector docs use.
         var context = InterceptorSubjectContext.Create().WithFullPropertyTracking().WithRegistry();
         var root = new OrderNode(context) { Name = "root" };
         var top = BuildDetachedSubtree(out var child);
@@ -90,6 +91,29 @@ public class RegistryHandlerOrderTests
 
         // Assert
         Assert.Equal(["middle", "top", "root"], child.AncestorsViaRegistryDuringAttach);
+    }
+
+    [Fact]
+    public void WhenTheFirstHandlerObservesAnEdge_ThenGetParentsAlreadyReportsIt()
+    {
+        // Arrange: authoritative parent state is published before the first handler runs, so even
+        // a handler ahead of the registry resolves the committed edge through GetParents().
+        var probe = new FirstHandlerParentProbe();
+        var context = InterceptorSubjectContext.Create().WithRegistry().WithFullPropertyTracking();
+        context.AddService<ILifecycleHandler>(probe);
+
+        var root = new OrderNode(context) { Name = "root" };
+        var top = BuildDetachedSubtree(out _);
+
+        // Act
+        root.Child = top;
+
+        // Assert: one observation per attached edge (top, middle, child), each already visible.
+        Assert.Equal(3, probe.EdgeVisibleInParents.Count);
+        Assert.All(probe.EdgeVisibleInParents, Assert.True);
+        Assert.Equal(
+            nameof(FirstHandlerParentProbe),
+            context.GetServices<ILifecycleHandler>()[0].GetType().Name);
     }
 
     [Fact]
@@ -104,12 +128,29 @@ public class RegistryHandlerOrderTests
         // Act
         root.Child = null;
 
-        // Assert: detach is deliberately not the mirror of attach. A subject's own handler runs
-        // before the context handlers that deregister it, but its ancestors were processed further
-        // up the descent and are already gone, so a consumer needing ancestor state while detaching
-        // has to capture it at attach.
-        Assert.Equal(1, child.ParentLinkCountDuringDetach);
+        // Assert: detach is deliberately not the mirror of attach. A subject leaving the graph has
+        // already given up its ownership record when the first detach handler runs, so it reports no
+        // parents at all, and its ancestors were processed further up the descent and are gone too.
+        // A subject that survives an edge removal still reports the edges that remain. A consumer
+        // needing ancestor state while detaching has to capture it at attach; the edge it is being
+        // detached from is on the change itself.
+        Assert.Equal(0, child.ParentLinkCountDuringDetach);
         Assert.Empty(child.AncestorsVisibleDuringDetach);
+    }
+
+    [RunsBefore(typeof(SubjectRegistry))]
+    private sealed class FirstHandlerParentProbe : ILifecycleHandler
+    {
+        public List<bool> EdgeVisibleInParents { get; } = [];
+
+        public void HandleLifecycleChange(SubjectLifecycleChange change)
+        {
+            if (change is { IsPropertyReferenceAdded: true, Property: { } property })
+            {
+                EdgeVisibleInParents.Add(change.Subject.GetParents()
+                    .Any(parent => parent.Property.Equals(property) && Equals(parent.Index, change.Index)));
+            }
+        }
     }
 }
 
