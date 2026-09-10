@@ -317,6 +317,19 @@ internal static class SubjectMetadataExtractor
                         hasGetter = hasGetter && isGetterAccessible;
                         hasSetter = hasSetter && isSetterAccessible;
                         hasInit = hasInit && isSetterAccessible;
+
+                        // Narrowing can leave both emittable accessors off while hasInit survives,
+                        // which would add a key whose getter and setter lambdas are both null. Same
+                        // outcome as the inaccessible case above, so it is reported the same way.
+                        if (!hasGetter && !hasSetter)
+                        {
+                            diagnostics.Add(Diagnostic.Create(
+                                Diagnostics.MemberSkipped, location,
+                                $"{typeSymbol.Name}.{implementedMember.ContainingType.Name}.{implementedMember.Name}",
+                                "no accessor the generated code can emit remains",
+                                "declare a get or set accessor the subject's generated half can reach"));
+                            continue;
+                        }
                     }
                 }
 
@@ -641,7 +654,22 @@ internal static class SubjectMetadataExtractor
                 // may well be third-party, leaving the subject author with no remedy to follow. The
                 // class-declared explicit implementation in CollectProperties is the opposite case,
                 // written by the subject's own author, and stays reported.
-                if (!isGetterAccessible && !isSetterAccessible)
+
+                var fullyQualifiedTypeName = property.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                var accessModifier = GetAccessModifierFromAccessibility(property.DeclaredAccessibility);
+                var interfaceTypeName = accessorInterface.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
+                var hasGetter = property.GetMethod != null && isGetterAccessible;
+                var hasSetter = property.SetMethod is { IsInitOnly: false } && isSetterAccessible;
+                var hasInit = property.SetMethod?.IsInitOnly == true && isSetterAccessible;
+
+                // Asked of the accessors that can actually be emitted, not of raw accessibility. An
+                // init accessor is accessible but cannot be called from the emitted lambda, so a
+                // property whose only reachable accessor is init would produce an entry with two null
+                // accessors: a key that exists and does nothing. HasInit does not rescue it, being
+                // consulted only when emitting a partial property's own accessor, which an interface
+                // default never is.
+                if (!hasGetter && !hasSetter)
                 {
                     continue;
                 }
@@ -656,14 +684,6 @@ internal static class SubjectMetadataExtractor
                 }
 
                 winnerByPropertyName[resolvedName] = $"{accessorInterface.ToDisplayString()}.{resolvedName}";
-
-                var fullyQualifiedTypeName = property.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-                var accessModifier = GetAccessModifierFromAccessibility(property.DeclaredAccessibility);
-                var interfaceTypeName = accessorInterface.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-
-                var hasGetter = property.GetMethod != null && isGetterAccessible;
-                var hasSetter = property.SetMethod is { IsInitOnly: false } && isSetterAccessible;
-                var hasInit = property.SetMethod?.IsInitOnly == true && isSetterAccessible;
 
                 // Interface default properties cannot be partial, virtual is implicit
                 interfaceProperties.Add(new PropertyMetadata(

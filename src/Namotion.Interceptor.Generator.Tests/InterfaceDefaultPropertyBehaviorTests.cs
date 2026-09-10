@@ -162,4 +162,69 @@ public class InterfaceDefaultPropertyBehaviorTests
         Assert.False(displayIdProp.IsIntercepted);
         Assert.Equal("ID: ABC123", displayIdProp.GetValue!(sensor));
     }
+
+    [Fact]
+    public void WhenInterfaceDefaultHasOnlyAnInitAccessorReachable_ThenItIsNotASubjectProperty()
+    {
+        // Arrange: the property-level check passes because init is accessible, but generated code
+        // cannot call an init accessor from a lambda and cannot read a protected getter, so the entry
+        // would carry two null accessors and do nothing.
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    public interface IProbe
+    {
+        string Probe { protected get => ""x""; init { } }
+    }
+
+    [InterceptorSubject]
+    public partial class Subject : IProbe
+    {
+        public partial string Name { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
+
+        // Assert
+        Assert.Empty(generated.GeneratorDiagnostics);
+        var generatedSource = generated.Sources.Single().SourceText.ToString();
+        Assert.Contains("\"Name\"", generatedSource);
+        Assert.DoesNotContain("\"Probe\"", generatedSource);
+    }
+
+    [Fact]
+    public void WhenExplicitImplementationHasOnlyAnInitAccessorReachable_ThenItIsReportedAndSkipped()
+    {
+        // Arrange: same degenerate shape reached through CollectProperties instead. Reported rather
+        // than silent, because the author opted in by writing the implementation in their own file.
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+namespace Repro
+{
+    public interface IProbe
+    {
+        string Probe { protected get; init; }
+    }
+
+    [InterceptorSubject]
+    public partial class Subject : IProbe
+    {
+        string IProbe.Probe { get => ""x""; init { } }
+
+        public partial string Name { get; set; }
+    }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.Single(generated.GeneratorDiagnostics, diagnostic => diagnostic.Id == "NI0006");
+        var generatedSource = generated.Sources.Single().SourceText.ToString();
+        Assert.Contains("\"Name\"", generatedSource);
+        Assert.DoesNotContain("\"Probe\"", generatedSource);
+    }
 }
