@@ -162,8 +162,6 @@ public partial class Sensor : ITemperatureSensor
 - Generic interfaces
 - Diamond inheritance (deduplicated)
 
-**Precedence across a hierarchy**, highest first: the subject's own declarations, then everything it inherits from its base subject, then the interface default implementations it adopts. An adopted default is a fallback, so a real property declared anywhere in the chain beats it, including one declared above the subject that adopted the interface.
-
 Explicit interface implementations are also supported and are keyed by the member's simple name:
 
 ```csharp
@@ -193,6 +191,58 @@ An explicit implementation written directly in the subject class is included onl
 An interface default whose only accessor the generated code can call is `init` is dropped from the metadata without a diagnostic, because the interface may not be the subject author's to change. The key is then absent from `IInterceptorSubject.Properties` rather than present with both accessors null.
 
 Attributes such as `[Derived]` must be declared on the interface member rather than on the explicit implementation, because the property metadata reflects the interface member. Any attribute on the implementation reports NI0007 (see [Diagnostics](#diagnostics)), including an implementation-local one such as `[SuppressMessage]`, which keeps its usual meaning but is simply not part of the metadata.
+
+### Property Precedence Across a Hierarchy
+
+Precedence, highest first: the subject's own declarations, then everything it inherits from its base subject, then the interface default implementations it adopts. An adopted default is a fallback, so a real property declared anywhere in the chain beats it, including one declared above the subject that adopted the interface.
+
+All three tiers are in play in this hierarchy, and they resolve differently at each level:
+
+```csharp
+public interface IHasLocation
+{
+    string Location => "unknown";
+}
+
+[InterceptorSubject]
+public partial class Device : IHasLocation
+{
+    // Adopts IHasLocation and declares no Location of its own.
+}
+
+[InterceptorSubject]
+public partial class Pump : Device, IHasLocation
+{
+    // Re-listing IHasLocation is what makes this declaration the interface implementation.
+    [Required]
+    public partial string Location { get; set; }
+}
+
+[InterceptorSubject]
+public partial class BoosterPump : Pump
+{
+    // Declares nothing of its own.
+}
+```
+
+`Device` has only the adopted default, so that is what it reports. `Pump` declares `Location` itself, which is its own top tier and wins there. `BoosterPump` is the level that makes the ordering visible: it adopts `IHasLocation` through `Pump`, so its own lowest tier offers the default again, and the entry it inherits from `Pump` still beats it.
+
+| `Properties["Location"]` reports | on `Device` | on `Pump` | on `BoosterPump` |
+|---|---|---|---|
+| declared by | `IHasLocation.Location` | `Pump.Location` | `Pump.Location` |
+| `IsIntercepted` | `false` | `true` | `true` |
+| `SetValue` | `null` | writes the property | writes the property |
+
+Before this rule was fixed, the base class's entry won over the subject's own declaration, so the default `Device` contributed travelled down the chain and displaced the real property from `Pump` downwards:
+
+| `Properties["Location"]` on `Pump` and `BoosterPump` | before | now |
+|---|---|---|
+| declared by | `IHasLocation.Location` | `Pump.Location` |
+| `IsIntercepted` | `false` | `true` |
+| `SetValue` | `null`, so a write through the metadata had nowhere to go | writes through the interceptor chain |
+| `[Required]` among `Attributes` | absent | present |
+
+Direct C# access was never affected, which is what made the displacement so quiet. `pump.Location = "Hall 2"` wrote the real property and both `pump.Location` and `((IHasLocation)pump).Location` read `"Hall 2"` back before the fix as well, and so did the displaced entry's own getter, since it casts to `IHasLocation` and normal dispatch lands on `Pump.Location` anyway. Only the metadata disagreed with the model: everything reading it saw an unintercepted read-only interface default, which is how the `[Required]` above ended up skipped by data annotation validation.
 
 ### Method Interception
 
@@ -244,8 +294,7 @@ public class BaseSubject : IHuman { public string Origin => "base"; }
 public partial class DerivedSubject : BaseSubject, IHuman
 {
     // "new" hides BaseSubject.Origin and silences CS0108. Re-listing IHuman is what makes this
-    // property the interface implementation; without it, reading through IHuman returns "base"
-    // forever and the generator reports NI0005.
+    // property the interface implementation; without it the generator reports NI0005.
     public new partial string Origin { get; set; }
 }
 
@@ -256,7 +305,7 @@ public partial class SealedDog : Animal
 }
 ```
 
-`new` over a plain base class, as above, is supported. Re-declaring an **ancestor subject's** property is not, with or without `new` and whether or not the new declaration is `partial`: two members would then share one property key, so the metadata can reach only one of them while both stay writable through a differently typed reference. The generator rejects it as NI0015 (see [Diagnostics](#diagnostics)). Use `virtual` and `override` across a chain of subjects instead.
+`new` over a plain base class, as above, is supported. Re-declaring an **ancestor subject's** property is not, with or without `new` and whether or not the new declaration is `partial`: two members would then share one property key, so the metadata can reach only one of them while both stay writable through a differently typed reference. The generator rejects it as NI0015, shown with its fix under [Fixing NI0005, NI0008 and NI0015](#fixing-ni0005-ni0008-and-ni0015). Use `virtual` and `override` across a chain of subjects instead.
 
 ### Access Modifiers
 
@@ -429,6 +478,82 @@ Suppress a rule at the point of use with `#pragma warning disable NI0005`, or pr
 - **Generation succeeds and the member is emitted as declared: NI0007.** Suppression is a real fix here, because it only silences advice about a shape the author has chosen to accept and nothing about the generated code changes.
 - **Generation succeeds and the member the rule names is skipped: NI0006.** It is a warning, but no wrapper and no metadata entry is emitted for that member, so suppressing it does not accept a shape, it hides the fact that a `WithoutInterceptor` opt-in the author wrote is being ignored and no wrapper exists at all. Rename or reshape the member instead.
 - **Generation succeeds and the generated code carries a member that silently does not work as declared: NI0005, NI0008, NI0012, NI0013, NI0014 and NI0015.** All but NI0012 are errors, and none of them stops generation. Suppressing one leaves the member in place: unreachable where the declaration says it should exist (NI0005, NI0008, NI0015), capturing a generated call (NI0013), or hijacking an interface slot (NI0014). NI0012 is the warning of the group, and suppressing it accepts a hierarchy in which base-declared properties are not intercepted. Each of these then fails silently at runtime instead of loudly at build time, so they are worth fixing rather than silencing. One case of NI0008 is the exception, and there suppression is the intended end state rather than a deferral: when both colliding members are declared in interfaces the consumer does not own, no rename is available to them, so suppressing NI0008 to accept the name the generator resolved is the fix.
+
+### Fixing NI0005, NI0008 and NI0015
+
+These three are errors, so each one is met at a broken build. Their remedies are in the table above; below is the smallest shape that triggers each one, with the version that builds.
+
+**NI0005** is reported when the subject's declaration does not take the interface slot, because the slot was fixed at the class that listed the interface:
+
+```csharp
+public interface IHasOrigin { string Origin { get; } }
+
+public class Hardware : IHasOrigin
+{
+    public string Origin => "hardware";
+}
+
+[InterceptorSubject]
+public partial class Sensor : Hardware   // NI0005 on Origin
+{
+    public new partial string Origin { get; set; }
+}
+```
+
+```csharp
+[InterceptorSubject]
+public partial class Sensor : Hardware, IHasOrigin   // builds: the slot moves to this class
+{
+    public new partial string Origin { get; set; }
+}
+```
+
+**NI0008** is reported when two members reach the subject under one simple name. Here both interfaces carry a `Label`, and the one the generator reaches second is dropped:
+
+```csharp
+public interface IHasLabel { string Label => "unnamed"; }
+public interface IHasLegend { string Label => "none"; }
+
+[InterceptorSubject]
+public partial class Gauge : IHasLabel, IHasLegend   // NI0008: IHasLegend.Label is unreachable
+{
+    public partial double Value { get; set; }
+}
+```
+
+```csharp
+public interface IHasLegend { string Legend => "none"; }   // builds: each member has its own key
+```
+
+**NI0015** is reported when a subject declares a name an ancestor subject already exposes, because one metadata key cannot reach both backing fields:
+
+```csharp
+[InterceptorSubject]
+public partial class Device
+{
+    public partial string Name { get; set; }
+}
+
+[InterceptorSubject]
+public partial class Pump : Device   // NI0015 on Name; the "new" below only silences CS0108
+{
+    public new partial string Name { get; set; }
+}
+```
+
+```csharp
+[InterceptorSubject]
+public partial class Device
+{
+    public virtual partial string Name { get; set; }   // builds: one slot, one backing field
+}
+
+[InterceptorSubject]
+public partial class Pump : Device
+{
+    public override partial string Name { get; set; }
+}
+```
 
 ## Hierarchy Hazards
 

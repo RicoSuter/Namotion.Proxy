@@ -189,7 +189,7 @@ public partial class Dog : Animal
 }
 ```
 
-`new` and `sealed` are also supported on a partial property, and are repeated on the generated half automatically. `new` silences the CS0108 warning that accompanies NI0005, but does not resolve NI0005 by itself. When a subject re-declares a property that an ancestor already exposes through an interface, re-list that interface in the subject's own base list, which is what makes the new declaration take the interface slot; see [New and Sealed Properties](generator.md#new-and-sealed-properties) and NI0005 in [Diagnostics](generator.md#diagnostics) in the generator documentation.
+`new` and `sealed` are also supported on a partial property, and are repeated on the generated half automatically. `new` silences the CS0108 warning that accompanies NI0005, but does not resolve NI0005 by itself. When a subject re-declares a property that an ancestor already exposes through an interface, re-list that interface in the subject's own base list, which is what makes the new declaration take the interface slot; see [New and Sealed Properties](generator.md#new-and-sealed-properties) for the mechanism and [Fixing NI0005, NI0008 and NI0015](generator.md#fixing-ni0005-ni0008-and-ni0015) for the broken shape next to the one that builds.
 
 Re-declaring an **ancestor subject's** property is not supported, with or without `new` and whether or not the new declaration is `partial`; the generator rejects it as NI0015. Use `virtual` on the ancestor and `override` here instead, as in the example above. See [New and Sealed Properties](generator.md#new-and-sealed-properties) for the mechanism.
 
@@ -213,6 +213,8 @@ public partial class Sensor : ITemperatureSensor
     // Fahrenheit is automatically tracked from the interface
 }
 ```
+
+An adopted default is a fallback, so a property declared anywhere in a hierarchy beats it. Where the two meet, [Property Precedence Across a Hierarchy](generator.md#property-precedence-across-a-hierarchy) works the resolution through on a three-level example and shows what it used to report.
 
 ### Required and Init
 
