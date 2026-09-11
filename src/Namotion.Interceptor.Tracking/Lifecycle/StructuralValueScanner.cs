@@ -11,10 +11,8 @@ internal readonly struct SubjectOccurrence(IInterceptorSubject subject, object? 
 }
 
 /// <summary>
-/// Reads structural property values: turns one into its subject occurrences, and answers whether it
-/// still contains a given subject. The whole ownership model is defined over these occurrences, so
-/// every reader (reconcile, attach seeding, release descent, committed-edge validation) goes
-/// through this one interpretation of a value's shape.
+/// Captures the subject occurrences of structural property values. Seeding and reconciliation use
+/// this interpretation; release and reachability read the committed capture without invoking user code.
 /// </summary>
 internal static class StructuralValueScanner
 {
@@ -23,11 +21,9 @@ internal static class StructuralValueScanner
     /// that identifies it.
     /// </summary>
     /// <remarks>
-    /// Hot paths (<see cref="IDictionary"/>, <see cref="ICollection"/>) come before the
-    /// string/<see cref="IEnumerable"/> arms so common writes do not pay extra type checks; the
-    /// trailing arm handles read-only wrappers that implement neither. The declared type is a
-    /// parameter rather than a metadata lookup so the scan also works during AddProperties
-    /// admission, where the property's metadata is not published yet.
+    /// Dictionary values retain their keys even when they also implement <see cref="ICollection"/>.
+    /// The declared type is supplied separately so scans during AddProperties admission can run
+    /// before the property's metadata is published.
     /// </remarks>
     public static void CollectOccurrences(Type declaredType, object? value, List<SubjectOccurrence> occurrences)
     {
@@ -50,22 +46,6 @@ internal static class StructuralValueScanner
                 }
 
                 return;
-
-            case ICollection collection:
-            {
-                var index = 0;
-                foreach (var item in collection)
-                {
-                    if (item is IInterceptorSubject subjectItem)
-                    {
-                        occurrences.Add(new SubjectOccurrence(subjectItem, index));
-                    }
-
-                    index++;
-                }
-
-                return;
-            }
 
             case string:
                 return;
@@ -104,75 +84,6 @@ internal static class StructuralValueScanner
     private static bool HasKeyedEntries(Type declaredType, object value)
     {
         return declaredType.IsSubjectDictionaryType() || value.GetType().IsSubjectDictionaryType();
-    }
-
-    /// <summary>Whether the value still contains the subject at all, at any occurrence.</summary>
-    /// <remarks>
-    /// Deliberately not <see cref="CollectOccurrences"/> followed by a scan: this runs once per
-    /// candidate edge inside the reachability walk, where the indices are never used, so it neither
-    /// fills a list nor enumerates past the first match.
-    /// </remarks>
-    public static bool Contains(PropertyReference property, object? value, IInterceptorSubject target)
-    {
-        switch (value)
-        {
-            case null:
-                return false;
-
-            case IInterceptorSubject subject:
-                return ReferenceEquals(subject, target);
-
-            case IDictionary dictionary:
-                foreach (DictionaryEntry entry in dictionary)
-                {
-                    if (ReferenceEquals(entry.Value, target))
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
-
-            case ICollection collection:
-                foreach (var item in collection)
-                {
-                    if (ReferenceEquals(item, target))
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
-
-            case string:
-                return false;
-
-            case IEnumerable enumerable:
-            {
-                // Same total keyed arm as CollectOccurrences: a subject the scan records at a
-                // position has to be found here too, or the reachability walk would release it.
-                var isKeyed = HasKeyedEntries(property.Metadata.Type, enumerable);
-                foreach (var item in enumerable)
-                {
-                    if (ReferenceEquals(item, target))
-                    {
-                        return true;
-                    }
-
-                    if (isKeyed && item is not null &&
-                        SubjectLookup.TryGetSubjectFromKeyValuePair(item, out _, out var subjectItem) &&
-                        ReferenceEquals(subjectItem, target))
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
-            }
-
-            default:
-                return false;
-        }
     }
 
     /// <summary>

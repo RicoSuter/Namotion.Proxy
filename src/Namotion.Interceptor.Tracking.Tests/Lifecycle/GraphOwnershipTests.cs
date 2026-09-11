@@ -1,3 +1,4 @@
+using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Tracking.Lifecycle;
 using Namotion.Interceptor.Tracking.Parent;
 using Namotion.Interceptor.Tracking.Tests.Models;
@@ -526,17 +527,14 @@ public class GraphOwnershipTests
     }
 
     [Fact]
-    public void WhenLifecycleCallbackWritesStructuralProperty_ThenTheGuardRejectsIt()
+    public void WhenLifecycleCallbackWritesStructuralProperty_ThenTheReleasedSubtreeSettles()
     {
-        // Arrange: a handler reacting to b's removal writes another structural property of the
-        // same graph. Subject lifecycle callbacks must not write structural properties, and the
-        // guard is live in every build, so the write is rejected before its backing writer runs
-        // rather than re-entering the reconciler on half-updated state.
+        // Arrange
         var callbackObserved = false;
         Exception? callbackException = null;
         Person? root = null;
         Person? b = null;
-        var context = CreateContext()
+        var context = CreateContext().WithRegistry()
             .WithService(() => new DelegateLifecycleHandler(change =>
             {
                 if (callbackObserved || !change.IsPropertyReferenceRemoved || !ReferenceEquals(change.Subject, b))
@@ -555,33 +553,28 @@ public class GraphOwnershipTests
         root.Father = parent;
         parent.Children = [b, a];
 
-        // Act: the removal of b publishes the callback; the callback's write is rejected, so the
-        // outer write itself completes normally.
+        // Act
         parent.Children = [a];
 
         // Assert
         Assert.True(callbackObserved);
-        Assert.IsType<LifecycleContractViolationException>(callbackException);
-        Assert.Contains("lifecycle callback must not change graph topology", callbackException.Message);
-        Assert.Same(context, root.TryGetContext());
-        Assert.Same(context, parent.TryGetContext());
-        Assert.Equal(1, a.GetReferenceCount());
-        Assert.Equal(0, b.GetReferenceCount());
-        Assert.Null(b.TryGetContext());
+        Assert.Null(callbackException);
+        Assert.Null(root.Father);
+        SupportContractAssertions.Settled(context, [root], root, parent, a, b);
+        root.AttachToContext(context);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], root, parent, a, b);
     }
 
     [Fact]
-    public void WhenPropertyDetachCallbackReleasesTheWritingParent_ThenTheGuardRejectsIt()
+    public void WhenPropertyDetachCallbackReleasesTheWritingParent_ThenTheEntireSubtreeIsReleased()
     {
-        // Arrange: a detach property callback reacting to b's release tries to release the
-        // writing parent itself. Property lifecycle callbacks are not exempt from the callback
-        // contract, so the write is rejected mid-reconcile and the outer write completes on a
-        // consistent graph instead of descending from a released parent.
+        // Arrange
         var callbackObserved = false;
         Exception? callbackException = null;
         Person? root = null;
         Person? b = null;
-        var context = CreateContext()
+        var context = CreateContext().WithRegistry()
             .WithService(() => new DelegatePropertyDetachHandler(change =>
             {
                 if (!callbackObserved && ReferenceEquals(change.Subject, b))
@@ -601,34 +594,27 @@ public class GraphOwnershipTests
         // Act
         parent.Children = [a];
 
-        // Assert: the reentrant release was rejected, so the subtree stays attached and settled.
+        // Assert
         Assert.True(callbackObserved);
-        Assert.IsType<LifecycleContractViolationException>(callbackException);
-        Assert.Same(parent, root.Father);
-        Assert.Same(context, parent.TryGetContext());
-        Assert.Same(context, a.TryGetContext());
-        Assert.Equal(1, a.GetReferenceCount());
-        Assert.Single(a.GetParents());
-        Assert.Equal(0, b.GetReferenceCount());
-        Assert.Null(b.TryGetContext());
+        Assert.Null(callbackException);
+        Assert.Null(root.Father);
+        SupportContractAssertions.Settled(context, [root], root, parent, a, b);
+        root.AttachToContext(context);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], root, parent, a, b);
     }
 
     [Fact]
-    public void WhenStoredIncomingIndexLagsTheCommittedValue_ThenSamePropertyFallbackDrainsTheEdge()
+    public void WhenThePropertyMatchesTheFirstSlot_ThenRemovalDrainsTheEdge()
     {
-        // Arrange: a reconcile commits the property's new value before it refreshes the retained
-        // edges' stored indices, so inside that window a release descent can drain a committed
-        // edge whose new index the subject has not adopted yet. The callback contract forbids
-        // the reentrant graph shape that used to cover this end to end, so the fallback is
-        // pinned directly here until its stored-index-lag justification is independently
-        // retired.
+        // Arrange
         var parent = new Person { FirstName = "P" };
         var property = new PropertyReference(parent, nameof(Person.Children));
         var ownership = new SubjectOwnership();
         ownership.AddIncoming(property, 1);
 
-        // Act: the committed value holds the subject at index 0, the stored edge still says 1.
-        var removed = ownership.RemoveIncoming(property, 0);
+        // Act
+        var removed = ownership.RemoveIncoming(property);
 
         // Assert
         Assert.True(removed);
@@ -636,16 +622,15 @@ public class GraphOwnershipTests
     }
 
     [Fact]
-    public void WhenRemovingAnEdgeOfAnotherProperty_ThenTheSamePropertyFallbackDoesNotApply()
+    public void WhenThePropertyDoesNotMatch_ThenRemovalPreservesTheFirstSlot()
     {
-        // Arrange: the fallback is scoped to occurrences of the same property; an edge of a
-        // different property must never be drained in its place.
+        // Arrange
         var parent = new Person { FirstName = "P" };
         var ownership = new SubjectOwnership();
         ownership.AddIncoming(new PropertyReference(parent, nameof(Person.Children)), 0);
 
         // Act
-        var removed = ownership.RemoveIncoming(new PropertyReference(parent, nameof(Person.Father)), 0);
+        var removed = ownership.RemoveIncoming(new PropertyReference(parent, nameof(Person.Father)));
 
         // Assert
         Assert.False(removed);
@@ -653,18 +638,17 @@ public class GraphOwnershipTests
     }
 
     [Fact]
-    public void WhenTheLaggingEdgeIsNotTheFirstSlot_ThenSamePropertyFallbackStillDrainsIt()
+    public void WhenThePropertyMatchesAnAdditionalEdge_ThenRemovalDrainsIt()
     {
-        // Arrange: the lagging edge lives in the additional-edges list because another property
-        // occupies the first slot, so the fallback must find it there.
+        // Arrange
         var parent = new Person { FirstName = "P" };
         var property = new PropertyReference(parent, nameof(Person.Children));
         var ownership = new SubjectOwnership();
         ownership.AddIncoming(new PropertyReference(parent, nameof(Person.Father)), null);
         ownership.AddIncoming(property, 2);
 
-        // Act: the committed value holds the subject at index 0, the stored edge still says 2.
-        var removed = ownership.RemoveIncoming(property, 0);
+        // Act
+        var removed = ownership.RemoveIncoming(property);
 
         // Assert
         Assert.True(removed);

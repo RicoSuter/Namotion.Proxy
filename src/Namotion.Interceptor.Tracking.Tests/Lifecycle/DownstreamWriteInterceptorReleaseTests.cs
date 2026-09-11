@@ -72,7 +72,7 @@ public class DownstreamWriteInterceptorReleaseTests
         // removed exactly once, by the parent's own release, so an entry recreated after that
         // release would survive forever and keep validating edges from a dead owner.
         var lifecycle = (LifecycleInterceptor)context.TryGetService<ILifecycleInterceptor>()!;
-        Assert.Null(lifecycle.Graph.GetBaseline(new PropertyReference(parent, nameof(Person.Father))));
+        Assert.Null(lifecycle.Graph.GetBaselineSnapshot(new PropertyReference(parent, nameof(Person.Father))).Value);
     }
 
     /// <summary>

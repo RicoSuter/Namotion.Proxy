@@ -10,8 +10,7 @@ public partial class ObjectDerivedLazySubject
     public partial string? Name { get; set; }
 
     /// <summary>
-    /// Lazy initialisation behind an object declaration: the child is owned by nothing, and the
-    /// runtime-type fast path must not let it slip past the untracked-subject check.
+    /// Lazy initialization behind an object declaration does not create a structural edge.
     /// </summary>
     [Derived]
     public object? Value => _child ??= new Person { FirstName = "lazy" };

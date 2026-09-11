@@ -11,7 +11,8 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 /// and wait for it from here: a dispatched structural write, attach or detach needs the same gate
 /// this thread is holding, so the two wait on each other. Dispatching a read, a scalar write or
 /// input and output and waiting for it is safe, and so is handing structural work off without
-/// waiting. Changing topology directly from here is rejected outright.
+/// waiting. Same-context topology changes are supported during queued delivery; their notifications
+/// are deferred. Entering another context's topology gate is rejected.
 /// </remarks>
 public interface IPropertyLifecycleHandler
 {
@@ -28,11 +29,11 @@ public interface IPropertyLifecycleHandler
     public void DetachProperty(SubjectPropertyLifecycleChange change);
 
     /// <summary>
-    /// Called after a collection property write has been fully reconciled
-    /// (all detach/attach events processed). Allows handlers to refresh
-    /// child index metadata from the live collection value.
+    /// Queued after this reconciliation's lifecycle notifications to refresh child index metadata.
+    /// The supplied value is captured for that reconciliation and may differ from current storage
+    /// when delivered. Reentrant work can queue further lifecycle notifications after this refresh.
     /// </summary>
     /// <param name="property">The collection property reference.</param>
-    /// <param name="value">The current collection value.</param>
+    /// <param name="value">The collection value captured for this reconciliation.</param>
     void RefreshCollectionProperty(PropertyReference property, object? value) { }
 }

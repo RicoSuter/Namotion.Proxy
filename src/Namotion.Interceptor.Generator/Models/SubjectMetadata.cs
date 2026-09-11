@@ -12,6 +12,7 @@ internal sealed record SubjectMetadata(
     bool NeedsGeneratedParameterlessConstructor,
     bool HasOrWillHaveParameterlessConstructor,
     bool ParameterlessConstructorSetsRequiredMembers,
+    bool HasDeclaredContextConstructor,
     IReadOnlyList<SubjectConstructor> Constructors,
     SubjectBaseClass BaseClass,
     IReadOnlyList<PropertyMetadata> Properties,

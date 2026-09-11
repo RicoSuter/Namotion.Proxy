@@ -49,9 +49,9 @@ public Person(IInterceptorSubjectContext context) : this()
 }
 ```
 
-If a parameterless constructor already exists, only the context constructor is generated.
+If a non-obsolete parameterless constructor already exists, only the context constructor is generated. Selection is independent of declaration order, including across partial declarations. The context-only overload is public even when the parameterless constructor is private; an explicitly declared context-only constructor takes precedence.
 
-Every other declared constructor is mirrored by one that appends an `IInterceptorSubjectContext` parameter, chains to the original and attaches the subject provisionally:
+Primary constructors follow the same rules as ordinary constructors, including a parameterless primary constructor and a primary constructor in another partial declaration. Every other declared constructor is mirrored by one that appends an `IInterceptorSubjectContext` parameter, chains to the original and attaches the subject provisionally:
 
 ```csharp
 public Person(string name, IInterceptorSubjectContext context) : this(name)
@@ -62,7 +62,7 @@ public Person(string name, IInterceptorSubjectContext context) : this(name)
 
 Without it, a subject whose only constructor takes dependencies has no context-taking constructor at all, and dependency injection hands back a permanently detached subject that reports nothing and does nothing.
 
-A constructor you declare yourself always wins: the mirror is skipped when its exact signature already exists. It is also skipped for a constructor that is `static`, carries `[Obsolete]`, already ends in a context parameter, or takes a pointer or a `ref`, `out`, `in`, `params` or `scoped` parameter. The mirror carries parameter types and names only, so optional defaults, parameter attributes and nullable reference annotations are not reproduced on it. In every skipped case there is no diagnostic, so a subject built through that constructor stays detached.
+A constructor you declare yourself always wins: the mirror is skipped when its exact signature already exists. It is also skipped for a constructor that is `static`, carries `[Obsolete]`, already ends in a context parameter, or takes a pointer or a `ref`, `out`, `in`, `params` or `scoped` parameter. For primary constructors, constructor attributes use the `method:` target; `[method: Obsolete]` suppresses its mirror and `[method: SetsRequiredMembers]` is copied to its mirror. The mirror carries parameter types and names only, so optional defaults, parameter attributes and nullable reference annotations are not reproduced on it. In every skipped case there is no diagnostic, so a subject built through that constructor stays detached.
 
 ### Property Implementations
 
@@ -127,6 +127,8 @@ public partial class Person
 }
 ```
 
+Generated property accessors do not provide whole-accessor synchronization. See [Thread Safety](tracking.md#thread-safety) for consumer responsibilities when accessing non-atomic values or implementing hooks.
+
 ### Derived Properties
 
 Properties marked with `[Derived]` are included in the metadata as calculated properties (can be read-only or writable):
@@ -152,15 +154,15 @@ A derived property establishes an ownership edge only when it is the store of re
 public Room? Current => Rooms.FirstOrDefault();  // fine: Rooms owns the room
 
 [Derived]
-public Room Current => _room ??= new Room();     // rejected: nothing owns the room
+public Room Current => _room ??= new Room();     // untracked: nothing owns the room
 
 [Derived]
 public partial Room? Current { get; set; }       // fine: the backing field is the store
 ```
 
-With `WithDerivedPropertyChangeDetection()` enabled, the lazily constructing shape throws `LifecycleContractViolationException` when the getter is evaluated. Without it nothing evaluates the getter, so the subject is silently untracked instead. Scalar derived properties are unaffected either way.
+The lazily constructing shape is not rejected, it is simply outside the graph: a computed projection acquires no ownership, so the room is never attached, registered or released. With `WithDerivedPropertyChangeDetection()` enabled the getter is evaluated during attach and constructs the room anyway; without it nothing evaluates the getter at all. Scalar derived properties are unaffected either way.
 
-The same lazily constructing shape without `[Derived]` is quieter still: a non-partial property is not intercepted at all, so nothing ever evaluates it and no rule can reject it. See [Structural Properties and Lazy Getters](tracking.md#structural-properties-and-lazy-getters) for where a lazy getter is supported and why it has to cache.
+The same lazily constructing shape without `[Derived]` is quieter still: a non-partial property is not intercepted at all, so nothing ever evaluates it. See [Structural Properties and Lazy Getters](tracking.md#structural-properties-and-lazy-getters) for where a lazy getter is supported and why it has to cache.
 
 ### Interface Default Properties
 

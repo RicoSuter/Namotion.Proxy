@@ -22,17 +22,50 @@ public class SingletonContextServiceTests
         Assert.Same(existingService, Assert.Single(context.GetServices<IFirstContract>()));
     }
 
-    [Fact]
-    public void WhenSameSingletonInstanceIsAddedTwice_ThenThrows()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void WhenSameSingletonInstanceIsAddedTwice_ThenRegistrationIsIdempotent(bool useFactory)
     {
         // Arrange
         var context = InterceptorSubjectContext.Create();
         var service = new FirstContractAuthority();
         context.AddService(service);
 
-        // Act & Assert: the registration generic type only describes the call site, so a
-        // different one must not bypass the reservation.
-        Assert.Throws<InvalidOperationException>(() => context.AddService<object>(service));
+        // Act
+        if (useFactory)
+        {
+            Assert.False(context.TryAddService<object>(() => service, _ => false));
+        }
+        else
+        {
+            context.AddService<object>(service);
+        }
+
+        // Assert
+        Assert.Same(service, Assert.Single(context.GetServices<IFirstContract>()));
+        Assert.Same(service, Assert.Single(context.GetServices<object>()));
+    }
+
+    [Fact]
+    public void WhenAFactoryRegistersItsOwnSingletonReentrantly_ThenTheOuterRegistrationIsIdempotent()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create();
+        var service = new DualContractAuthority();
+
+        // Act
+        var added = context.TryAddService<object>(() =>
+        {
+            context.AddService(service);
+            return service;
+        }, _ => false);
+
+        // Assert
+        Assert.False(added);
+        Assert.Same(service, Assert.Single(context.GetServices<IFirstContract>()));
+        Assert.Same(service, Assert.Single(context.GetServices<ISecondContract>()));
+        Assert.Throws<InvalidOperationException>(() => context.AddService(new CompetingFirstContractAuthority()));
     }
 
     [Fact]

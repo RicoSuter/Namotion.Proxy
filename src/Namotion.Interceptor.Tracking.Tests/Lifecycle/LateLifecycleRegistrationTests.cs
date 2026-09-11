@@ -13,6 +13,37 @@ namespace Namotion.Interceptor.Tracking.Tests.Lifecycle;
 /// </summary>
 public class LateLifecycleRegistrationTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void WhenALifecycleIsRegisteredDirectlyAfterAnAttach_ThenTheRegistrationIsRejected(bool useFactory)
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create();
+        var garage = new Garage();
+        garage.AttachToContext(context);
+
+        // Act
+        var exception = Record.Exception(() =>
+        {
+            if (useFactory)
+            {
+                context.TryAddService<object>(() => new LifecycleInterceptor(context), _ => false);
+            }
+            else
+            {
+                context.AddService<object>(new LifecycleInterceptor(context));
+            }
+        });
+
+        // Assert
+        Assert.IsType<InvalidOperationException>(exception);
+        Assert.Null(context.TryGetService<ILifecycleInterceptor>());
+        Assert.Same(context, garage.TryGetContext());
+        garage.DetachFromContext(context);
+        Assert.Null(garage.TryGetContext());
+    }
+
     [Fact]
     public void WhenALifecycleIsRegisteredAfterASubjectWasAttached_ThenTheRegistrationIsRejected()
     {

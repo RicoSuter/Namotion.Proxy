@@ -20,28 +20,78 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
     /// </summary>
     public List<(IInterceptorSubject Subject, long Revision)>? ConsumedAnchors { get; set; }
 
-    public void SeedChildrenIfNeeded(IInterceptorSubject subject)
-    {
-        if (!graph.AreBaselinesSeeded(subject))
-        {
-            SeedAndAttachChildren(subject);
-        }
-    }
+    /// <summary>
+    /// The reconciler a resumed seed replays its captured properties through. Assigned by the
+    /// lifecycle right after construction, because the reconciler takes this traversal in turn.
+    /// </summary>
+    public StructuralReconciler Reconciler { get; set; } = null!;
 
     public void SeedAndAttachChildren(IInterceptorSubject subject)
     {
+        var ownership = graph.TryGetOwnership(subject);
         var children = LifecycleScratch.RentChildList();
+        var journals = LifecycleScratch.RentJournalList();
+        var completed = false;
         try
         {
-            graph.CollectStructuralChildren(subject, children, seed: true);
-            foreach (var (property, occurrence) in children)
+            graph.CollectStructuralChildren(subject, children, seed: true, journals);
+            foreach (var (property, occurrence, baselineRevision) in children)
             {
+                if (!graph.IsSeedOwnerCurrent(subject, ownership))
+                {
+                    return;
+                }
+
+                if (graph.GetBaselineRevision(property) != baselineRevision)
+                {
+                    continue;
+                }
+
                 AttachEdge(occurrence.Subject, property, occurrence.Index);
             }
+
+            completed = true;
+        }
+        catch
+        {
+            graph.MarkSeedIncomplete(subject, ownership);
+            throw;
         }
         finally
         {
+            foreach (var (journal, revision) in journals)
+            {
+                if (completed && ReferenceEquals(graph.TryGetOwnership(subject), ownership) &&
+                    graph.GetBaselineRevision(journal.Property) == revision) journal.IsComplete = true;
+                graph.EndPropertyJournal(journal);
+            }
+
+            LifecycleScratch.Return(journals);
             LifecycleScratch.Return(children);
+        }
+    }
+
+    /// <summary>Resumes captured and unread properties of a retained subject whose seed failed.</summary>
+    public bool ResumeFailedSeed(IInterceptorSubject subject)
+    {
+        if (!graph.TryBeginSeedRecovery(subject, out var ownership)) return false;
+        try
+        {
+            foreach (var entry in subject.Properties)
+            {
+                if (!OwnershipGraph.IsStructural(entry.Value)) continue;
+                var property = new PropertyReference(subject, entry.Key);
+                if (graph.HasBaseline(property)) Reconciler.Reconcile(property, entry.Value, null, useCapturedBaseline: true);
+                if (!ReferenceEquals(graph.TryGetOwnership(subject), ownership)) return true;
+            }
+
+            SeedAndAttachChildren(subject);
+            return true;
+        }
+        catch
+        {
+            graph.MarkSeedIncomplete(subject, ownership);
+            throw;
         }
     }
 
@@ -70,6 +120,7 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
         }
 
         ownership.AddIncoming(property, index);
+        graph.RecordIncomingAdded(property, subject, index);
         var referenceCount = ownership.IncomingCount;
 
         // Authoritative parent and anchor state before the first handler observes the change.
@@ -87,6 +138,11 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
         };
 
         Publish(subject, change, isContextAttach);
+
+        // The edge may have landed on a subject whose own seed failed earlier. Resuming here rather
+        // than at each call site covers every route that can reach one: the attach descent below,
+        // a reconcile of an attached parent, and an explicit attach.
+        ResumeFailedSeed(subject);
     }
 
     /// <summary>Publishes a subject entering the graph without an edge, as an anchored root.</summary>
@@ -113,17 +169,22 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
         // Snapshotted before the handlers run: a handler may add properties, and those are attached
         // by that call rather than a second time here.
         var properties = subject.Properties.Keys;
-        notifier.InvokeAddedLifecycleHandlers(subject, change);
-
-        if (!isContextAttach)
+        try
         {
-            return;
+            notifier.InvokeAddedLifecycleHandlers(subject, change);
         }
-
-        notifier.RaiseSubjectAttached(change);
-        foreach (var propertyName in properties)
+        finally
         {
-            subject.AttachSubjectProperty(new PropertyReference(subject, propertyName));
+            // Ownership and its incoming occurrence committed before descent. Complete their
+            // notification history even when a getter fails, so seed retry replays no old edge.
+            if (isContextAttach)
+            {
+                notifier.RaiseSubjectAttached(change);
+                foreach (var propertyName in properties)
+                {
+                    notifier.QueueProperty(new PropertyReference(subject, propertyName), attach: true);
+                }
+            }
         }
     }
 

@@ -50,9 +50,10 @@ public interface ILifecycleInterceptor :
     /// every subject its structural properties reach.
     /// </summary>
     /// <remarks>
-    /// The whole prospective component is validated and claimed before any callback runs, so a
-    /// rejected attach leaves no residue. A subject already owned by <paramref name="context"/> is
-    /// promoted to <paramref name="anchor"/> without repeating its attach callbacks, except for a
+    /// Prospective component validation precedes publication. A queued callback failure is reported
+    /// after publication and does not undo the attachment. A subject already owned by
+    /// <paramref name="context"/> is promoted to <paramref name="anchor"/> without repeating its attach
+    /// callbacks, except for a
     /// <see cref="SubjectAttachmentAnchorKind.Provisional"/> request, which is a construction-time
     /// default and never demotes an anchor already in place.
     /// </remarks>
@@ -79,18 +80,18 @@ public interface ILifecycleInterceptor :
     /// Admits an <see cref="IInterceptorSubject.AddProperties"/> batch for a subject attached to
     /// the context this lifecycle owns: rejects a cross-context callback before the input is
     /// enumerated, then, under the lifecycle's structural gate, materializes the batch once,
-    /// classifies the initial ownership candidates (intercepted, non-derived, subject-capable
-    /// declared type, getter available), invokes each qualifying getter exactly once, validates and
-    /// claims the complete prospective subgraph, publishes the metadata atomically, invokes the
+    /// rechecks ownership after enumeration, and classifies structural properties using their
+    /// declared metadata, including stored derived properties. It reads each qualifying getter once, validates and
+    /// claims the complete prospective subgraph, publishes the metadata atomically, queues the
     /// property lifecycle callbacks in input order, and commits the captured values as ordinary
-    /// structural assignments. If enumeration, duplicate validation, a getter, context validation
-    /// or claiming fails, nothing is published and provisional claims are released before the
-    /// failure escapes.
+    /// structural assignments before queued delivery. If enumeration, duplicate validation, a getter,
+    /// context validation or claiming fails before the metadata swap, this batch is not published
+    /// and its unused provisional claims are released. Iterator side effects are not rolled back.
     /// </summary>
     /// <remarks>
-    /// Ownership getters used during admission must be synchronous, stable, side-effect-free,
-    /// callable before the metadata is published, and authoritative for the property's initial
-    /// stored value; they must not mutate ownership or metadata. Later changes to the stored value
+    /// Ownership getters used during admission must be synchronous, stable, callable before the
+    /// metadata is published, and authoritative for the property's initial stored value. Private
+    /// lazy initialization is allowed; they must not mutate ownership or metadata. Later changes to the stored value
     /// must pass through the property's intercepted setter.
     /// </remarks>
     /// <param name="registration">The registration carrying the batch.</param>

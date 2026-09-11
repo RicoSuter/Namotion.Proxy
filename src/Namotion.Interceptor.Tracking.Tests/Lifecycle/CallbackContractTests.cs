@@ -1,3 +1,4 @@
+using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Tracking.Change;
 using Namotion.Interceptor.Tracking.Lifecycle;
 using Namotion.Interceptor.Tracking.Tests.Models;
@@ -14,13 +15,10 @@ public class CallbackContractTests
     }
 
     [Fact]
-    public void WhenAPropertyCallbackWritesStructuralPropertyAtTopLevel_ThenItThrows()
+    public void WhenAPropertyCallbackWritesStructuralPropertyAtTopLevel_ThenBothRootsSettle()
     {
         // Arrange
-        // The one-shot flag is load-bearing twice over. The handler also fires during stranger's
-        // OWN construction, while the local is still null, which would record a
-        // NullReferenceException and gate out every later invocation. And pre-fix the write
-        // succeeds, so without the flag each attempt publishes another attach and recurses.
+        // Construction also publishes callbacks before the local receives the constructed subject.
         Exception? callbackException = null;
         var attempted = false;
         Person? stranger = null;
@@ -35,22 +33,29 @@ public class CallbackContractTests
             callbackException = Record.Exception(() => stranger.Father = new Person());
         });
 
-        var context = CreateContext().WithService(() => handler, _ => false);
+        var context = CreateContext().WithRegistry().WithService(() => handler, _ => false);
         stranger = new Person(context) { FirstName = "S" };
 
         // Act
         var root = new Person(context) { FirstName = "R" };
 
         // Assert
-        Assert.IsType<LifecycleContractViolationException>(callbackException);
-        Assert.NotNull(root);
+        Assert.True(attempted);
+        Assert.Null(callbackException);
+        var child = Assert.IsType<Person>(stranger.Father);
+        SupportContractAssertions.Settled(context, [stranger, root], stranger, root, child);
+        stranger.AttachToContext(context);
+        root.AttachToContext(context);
+        stranger.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [root], stranger, root, child);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], stranger, root, child);
     }
 
     [Fact]
-    public void WhenAPropertyCallbackWritesStructuralPropertyBelowTheFirstLevel_ThenItThrows()
+    public void WhenAPropertyCallbackWritesStructuralPropertyBelowTheFirstLevel_ThenBothSubtreesSettle()
     {
-        // Arrange: three levels, so the callback for the deepest subject runs inside the
-        // descent's own callback scope. This is the case a single-level test cannot see.
+        // Arrange
         Exception? deepException = null;
         var attempted = false;
         Person? stranger = null;
@@ -65,7 +70,7 @@ public class CallbackContractTests
             deepException = Record.Exception(() => stranger.Father = new Person());
         });
 
-        var context = CreateContext().WithService(() => handler, _ => false);
+        var context = CreateContext().WithRegistry().WithService(() => handler, _ => false);
         stranger = new Person(context) { FirstName = "S" };
 
         var top = new Person(context) { FirstName = "top" };
@@ -77,20 +82,27 @@ public class CallbackContractTests
         top.Father = mid;
 
         // Assert
-        Assert.IsType<LifecycleContractViolationException>(deepException);
+        Assert.True(attempted);
+        Assert.Null(deepException);
+        var child = Assert.IsType<Person>(stranger.Father);
+        SupportContractAssertions.Settled(context, [stranger, top], stranger, top, mid, leaf, child);
+        stranger.AttachToContext(context);
+        top.AttachToContext(context);
+        stranger.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [top], stranger, top, mid, leaf, child);
+        top.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], stranger, top, mid, leaf, child);
     }
 
     [Fact]
-    public void WhenALifecycleCallbackAttachesASubject_ThenItThrows()
+    public void WhenALifecycleCallbackAttachesASubject_ThenBothRootsRemainIndependentlyDetachable()
     {
         // Arrange
-        // The flag must be set BEFORE the attempt. Pre-fix the attach succeeds and publishes
-        // another attach, which re-enters this handler before callbackException is assigned, and
-        // the recursion ends in a stack overflow that kills the whole assembly rather than
-        // failing one test.
+        // Nested attachment queues further callbacks, so the handler runs only once.
         Exception? callbackException = null;
         var attempted = false;
-        var context = CreateContext()
+        var introduced = new Person { FirstName = "X" };
+        var context = CreateContext().WithRegistry()
             .WithService(() => new DelegateLifecycleHandler(change =>
             {
                 if (attempted)
@@ -100,30 +112,40 @@ public class CallbackContractTests
 
                 attempted = true;
                 callbackException = Record.Exception(
-                    () => new Person { FirstName = "X" }.AttachToContext(change.Subject.GetContext()));
+                    () => introduced.AttachToContext(change.Subject.GetContext()));
             }), _ => false);
 
         // Act
-        _ = new Person(context) { FirstName = "R" };
+        var root = new Person(context) { FirstName = "R" };
 
         // Assert
-        Assert.IsType<LifecycleContractViolationException>(callbackException);
+        Assert.True(attempted);
+        Assert.Null(callbackException);
+        Assert.Equal(SubjectAttachmentAnchorKind.Explicit, ((IInterceptorSubject)introduced).Executor.AttachmentAnchor);
+        SupportContractAssertions.Settled(context, [root, introduced], root, introduced);
+        introduced.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [root], root, introduced);
+        root.AttachToContext(context);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], root, introduced);
     }
 
     [Fact]
-    public void WhenALifecycleCallbackDetachesASubject_ThenItThrows()
+    public void WhenALifecycleCallbackDetachesASubject_ThenTheExplicitRootIsReleased()
     {
         // Arrange
         Exception? callbackException = null;
         Person? pinned = null;
-        var context = CreateContext()
+        var attempted = false;
+        var context = CreateContext().WithRegistry()
             .WithService(() => new DelegateLifecycleHandler(change =>
             {
-                if (callbackException is not null || pinned is null || ReferenceEquals(change.Subject, pinned))
+                if (attempted || pinned is null || ReferenceEquals(change.Subject, pinned))
                 {
                     return;
                 }
 
+                attempted = true;
                 callbackException = Record.Exception(() => pinned.DetachFromContext(pinned.GetContext()));
             }), _ => false);
 
@@ -134,11 +156,15 @@ public class CallbackContractTests
         pinned.AttachToContext(context);
 
         // Act
-        _ = new Person(context) { FirstName = "R" };
+        var root = new Person(context) { FirstName = "R" };
 
         // Assert
-        Assert.IsType<LifecycleContractViolationException>(callbackException);
-        Assert.NotNull(pinned.TryGetContext());
+        Assert.True(attempted);
+        Assert.Null(callbackException);
+        SupportContractAssertions.Settled(context, [root], root, pinned);
+        root.AttachToContext(context);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], root, pinned);
     }
 
     [Fact]
@@ -187,35 +213,35 @@ public class CallbackContractTests
     }
 
     [Fact]
-    public void WhenADerivedPropertyExposesAnUnattachedSubject_ThenItThrows()
+    public void WhenADerivedPropertyExposesAnUnattachedSubject_ThenItRemainsAProjection()
     {
         // Arrange
         var context = CreateDerivedContext();
 
-        // Act & Assert: the lazily created child is owned by nothing, so it would never be
-        // tracked. Attach-time evaluation of the derived getter is where that surfaces.
-        var exception = Record.Exception(() => new LazyDerivedSubject(context));
+        // Act
+        var subject = new LazyDerivedSubject(context);
 
-        Assert.IsType<LifecycleContractViolationException>(exception);
-        Assert.Contains("derived", exception.Message, StringComparison.OrdinalIgnoreCase);
+        // Assert
+        Assert.Same(context, subject.TryGetContext());
+        Assert.Null(subject.Current.TryGetContext());
+        Assert.Equal(0, subject.Current.GetReferenceCount());
     }
 
     [Fact]
-    public void WhenTheAttachEvaluationExposesAnUnattachedSubject_ThenNoValueIsCommitted()
+    public void WhenTheAttachEvaluationReturnsAProjection_ThenItsValueIsRecordedWithoutOwnership()
     {
         // Arrange
         var context = CreateDerivedContext();
         var subject = new LazyDerivedSubject();
 
         // Act
-        var exception = Record.Exception(() => subject.AttachToContext(context));
+        subject.AttachToContext(context);
 
-        // Assert: the rejected value must never become LastKnownValue, matching the
-        // recalculation path, which checks before committing.
-        Assert.IsType<LifecycleContractViolationException>(exception);
+        // Assert
         var data = new PropertyReference(subject, nameof(LazyDerivedSubject.Current)).TryGetDerivedPropertyData();
         Assert.NotNull(data);
-        Assert.Null(data.LastKnownValue);
+        Assert.Same(subject.Current, data.LastKnownValue);
+        Assert.Null(subject.Current.TryGetContext());
     }
 
     [Fact]
@@ -236,8 +262,7 @@ public class CallbackContractTests
     [Fact]
     public void WhenAnObjectDeclaredDerivedPropertyReturnsAString_ThenItDoesNotThrow()
     {
-        // Arrange: the declared type object cannot exclude the property from the untracked-subject
-        // check, so the runtime type of the returned value must.
+        // Arrange
         var context = CreateDerivedContext();
 
         // Act
@@ -249,63 +274,63 @@ public class CallbackContractTests
     }
 
     [Fact]
-    public void WhenAnObjectDeclaredDerivedPropertyExposesAnUnattachedSubject_ThenItThrows()
+    public void WhenAnObjectDeclaredDerivedPropertyReturnsASubject_ThenItRemainsUnowned()
     {
-        // Arrange: the runtime-type fast path must stay fail-closed for a real subject hiding
-        // behind an object declaration.
+        // Arrange
         var context = CreateDerivedContext();
 
-        // Act & Assert
-        var exception = Record.Exception(() => new ObjectDerivedLazySubject(context));
+        // Act
+        var subject = new ObjectDerivedLazySubject(context);
 
-        Assert.IsType<LifecycleContractViolationException>(exception);
+        // Assert
+        var projected = Assert.IsType<Person>(subject.Value);
+        Assert.Null(projected.TryGetContext());
+        Assert.Equal(0, projected.GetReferenceCount());
     }
 
     [Fact]
-    public void WhenADerivedValueExposesAnUnattachedSubjectTransiently_ThenTheRecalculationRetriesAndConverges()
+    public void WhenAComputedProjectionReturnsADetachedSubjectOnce_ThenThatValueCanPublish()
     {
-        // Arrange: derived evaluation runs outside lock(data), so a concurrent structural write
-        // can detach a projected subject after evaluation but before its cascade marks the data
-        // stale. The one-shot flag reproduces that window deterministically: one evaluation
-        // returns an unattached subject, the re-evaluation is clean.
+        // Arrange
         var context = CreateDerivedContext();
         var subject = new TransientOrphanDerivedSubject(context);
         subject.ReturnUnattachedSubjectOnce = true;
 
-        // Act: the triggering write is innocent and must not observe a spurious throw.
+        // Act
         subject.Name = "x";
 
         // Assert
+        var data = new PropertyReference(subject, nameof(TransientOrphanDerivedSubject.Current)).GetDerivedPropertyData();
+        var projected = Assert.IsType<Person>(data.LastKnownValue);
+        Assert.Null(projected.TryGetContext());
+        Assert.Equal(0, projected.GetReferenceCount());
         Assert.Null(subject.Current);
     }
 
     [Fact]
-    public void WhenADerivedValueKeepsExposingAnUnattachedSubject_ThenTheRecalculationThrowsAfterTheRetryBound()
+    public void WhenAProjectionKeepsAReleasedChild_ThenRecalculationPreservesTheValueWithoutAnEdge()
     {
-        // Arrange: attach passes because the getter projects nothing yet; the projection is then
-        // cached in a plain field, so clearing the stored edge turns every re-evaluation into the
-        // same genuine orphan that no retry converges away.
+        // Arrange
         var context = CreateDerivedContext();
         var subject = new CachingOrphanDerivedSubject(context);
-        subject.Stored = new Person { FirstName = "C" };
-        var evaluationsBeforeDetach = subject.EvaluationCount;
+        var child = new Person { FirstName = "C" };
+        subject.Stored = child;
+        Assert.Same(child, subject.Current);
 
         // Act
-        var exception = Record.Exception(() => subject.Stored = null);
+        subject.Stored = null;
 
-        // Assert: the throw must come out of the bounded retry loop, not the first detection.
-        Assert.IsType<LifecycleContractViolationException>(exception);
-        Assert.True(
-            subject.EvaluationCount - evaluationsBeforeDetach >= DerivedPropertyChangeHandler.MaxStabilizationIterations,
-            "the recalculation must re-evaluate up to the retry bound before declaring a genuine orphan");
+        // Assert
+        Assert.Same(child, subject.Current);
+        Assert.Null(child.TryGetContext());
+        Assert.Equal(0, child.GetReferenceCount());
     }
 
     [Fact]
-    public void WhenADerivedPropertyWithABackingFieldStoresASubject_ThenTheUntrackedSubjectCheckAccepts()
+    public void WhenADerivedPropertyWithABackingFieldStoresASubject_ThenItOwnsTheSubject()
     {
         // Arrange: a derived property with a generator-emitted backing field is the sole store of
         // whatever is assigned, so it carries an ownership edge like any other stored property.
-        // The untracked-subject check must then find the subject owned rather than reject it.
         var context = CreateDerivedContext();
         var subject = new StoringDerivedSubject(context);
         var child = new Person { FirstName = "Child" };

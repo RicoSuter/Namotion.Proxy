@@ -10,11 +10,13 @@ namespace Namotion.Interceptor.Registry;
 /// Registers subjects and their property edges as they enter the object graph.
 /// </summary>
 /// <remarks>
-/// Runs before <see cref="LifecycleInterceptor"/>'s handler slot, which walks down into a newly
-/// attached subtree, so a subject is registered before the descent reaches its children. That holds
-/// at every level, so while attaching, any handler running at or behind this one finds every
-/// ancestor of a subject already registered. Detach does not mirror that; see the design doc and
-/// "Handler Order" in docs/design/tracking-lifecycle.md.
+/// Ordered before <see cref="LifecycleInterceptor"/>'s handler slot, which walks down into a newly
+/// attached subtree. That slot runs its descent inline while this handler is only queued, so the
+/// descent reaches a subject's children before this handler registers the subject itself. Delivery
+/// keeps the order the notifications were queued in, which is ancestor before descendant, so while
+/// attaching, any handler running at or behind this one finds every ancestor of a subject already
+/// registered. Detach does not mirror that; see the design doc and "Handler Order" in
+/// docs/design/tracking-lifecycle.md.
 ///
 /// A projection only: no registry state participates in ownership or reachability.
 /// </remarks>
