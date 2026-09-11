@@ -253,6 +253,13 @@ internal sealed class SingleAttachmentHost<TService>
         {
             if (_attachment is not { } attachment)
             {
+                // Nothing to detach, but the reported state still has to become Stopped. A wrapper whose
+                // start failed sits at Error with no attachment, and a stop is the only thing that can
+                // take it out of there: disabling it in the configuration stops it and never starts it
+                // again, so a status left alone here is left alone forever.
+                _owner.Status = ServiceStatus.Stopped;
+                _owner.StatusMessage = null;
+                _owner.ResetDiagnostics();
                 return;
             }
 

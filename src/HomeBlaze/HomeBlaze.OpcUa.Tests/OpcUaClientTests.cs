@@ -280,7 +280,7 @@ public class OpcUaClientTests
         Assert.NotNull(client.Root);
     }
 
-    [Fact(Skip = "Reproduces PR #440 follow-up item 3: disabling a wrapper that never attached leaves the failed start reported.")]
+    [Fact]
     public async Task WhenAWrapperThatNeverAttachedIsDisabled_ThenItReportsStopped()
     {
         // Arrange
