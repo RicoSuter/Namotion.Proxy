@@ -147,6 +147,7 @@ internal static class SubjectMetadataExtractor
                 needsGeneratedParameterlessConstructor,
                 hasOrWillHaveParameterlessConstructor,
                 parameterlessConstructorSetsRequiredMembers,
+                HasDeclaredContextConstructor(typeSymbol, semanticModel.Compilation),
                 constructors,
                 baseClass,
                 properties,
@@ -877,6 +878,69 @@ internal static class SubjectMetadataExtractor
             if (type.GetMembers().Any(member => member is IPropertySymbol { IsRequired: true } or IFieldSymbol { IsRequired: true }))
             {
                 return false;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Whether a declared constructor already occupies the context-only call, so emitting
+    /// "Subject(IInterceptorSubjectContext)" would either collide with it (CS0111) or, when its
+    /// later parameters are all optional or params, win that call by better overload resolution and
+    /// leave the hand-written body silently unreachable.
+    /// </summary>
+    /// <remarks>
+    /// A by-reference or params context parameter is a legal overload alongside the by-value form
+    /// and does not take the call, and neither does a derived interface or the concrete context
+    /// class, so those keep the generated overload. Accessibility only matters beyond arity one,
+    /// because a non-public constructor of the exact context-only signature still collides.
+    /// </remarks>
+    private static bool HasDeclaredContextConstructor(INamedTypeSymbol typeSymbol, Compilation compilation)
+    {
+        var contextType = compilation.GetTypeByMetadataName(KnownTypes.IInterceptorSubjectContext);
+        if (contextType is null)
+        {
+            return false;
+        }
+
+        foreach (var constructor in typeSymbol.InstanceConstructors)
+        {
+            if (constructor.Parameters.Length == 0)
+            {
+                continue;
+            }
+
+            var first = constructor.Parameters[0];
+            if (first.RefKind != RefKind.None || first.IsParams ||
+                !SymbolEqualityComparer.Default.Equals(first.Type, contextType))
+            {
+                continue;
+            }
+
+            if (constructor.Parameters.Length == 1)
+            {
+                return true;
+            }
+
+            if (constructor.DeclaredAccessibility != Accessibility.Public)
+            {
+                continue;
+            }
+
+            var takesContextAlone = true;
+            for (var index = 1; index < constructor.Parameters.Length; index++)
+            {
+                if (constructor.Parameters[index] is { IsOptional: false, IsParams: false })
+                {
+                    takesContextAlone = false;
+                    break;
+                }
+            }
+
+            if (takesContextAlone)
+            {
+                return true;
             }
         }
 

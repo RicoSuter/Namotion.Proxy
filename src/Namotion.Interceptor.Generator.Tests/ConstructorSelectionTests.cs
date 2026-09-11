@@ -109,6 +109,90 @@ public class ConstructorSelectionTests
         Assert.True((bool)type.GetProperty("WasHandWritten")!.GetValue(subject)!);
         Assert.Null(subject.TryGetContext());
     }
+    /// <summary>
+    /// A declared constructor whose later parameters are all optional or params is callable with the
+    /// context alone. The generated arity-one overload would win that call by better overload
+    /// resolution, so the hand-written body would silently never run.
+    /// </summary>
+    [Theory]
+    [InlineData("bool initialize = true")]
+    [InlineData("params int[] values")]
+    [InlineData("bool initialize = true, params int[] values")]
+    public void WhenADeclaredContextConstructorIsCallableWithTheContextAlone_ThenNoGeneratedOverloadDisplacesIt(string tail)
+    {
+        // Arrange
+        var source = $$"""
+            using Namotion.Interceptor.Attributes;
+            [InterceptorSubject]
+            public partial class Subject
+            {
+                public Subject() { }
+                public Subject(Namotion.Interceptor.IInterceptorSubjectContext context, {{tail}}) { WasHandWritten = true; }
+                public bool WasHandWritten { get; }
+                public partial string Name { get; set; }
+            }
+            public static class SubjectFactory
+            {
+                public static Subject Create(Namotion.Interceptor.IInterceptorSubjectContext context) => new Subject(context);
+            }
+            """;
+
+        // Act
+        var result = GeneratorTestHost.RunForExecution(source);
+
+        // Assert
+        Assert.Empty(result.CompilationErrors);
+        Assert.Empty(result.CompilationWarnings);
+        var assembly = result.LoadAssembly();
+        var subject = (IInterceptorSubject)assembly.GetType("SubjectFactory")!
+            .GetMethod("Create")!.Invoke(null, [InterceptorSubjectContext.Create()])!;
+        Assert.True((bool)assembly.GetType("Subject")!.GetProperty("WasHandWritten")!.GetValue(subject)!);
+    }
+
+    /// <summary>
+    /// None of these can take the context alone, so dropping the generated overload would leave the
+    /// subject with no way to receive a context at all.
+    /// </summary>
+    [Theory]
+    [InlineData("public", "Namotion.Interceptor.IInterceptorSubjectContext context, int value")]
+    [InlineData("private", "Namotion.Interceptor.IInterceptorSubjectContext context, bool initialize = true")]
+    [InlineData("public", "in Namotion.Interceptor.IInterceptorSubjectContext context")]
+    [InlineData("public", "ref Namotion.Interceptor.IInterceptorSubjectContext context")]
+    [InlineData("public", "params Namotion.Interceptor.IInterceptorSubjectContext[] contexts")]
+    [InlineData("public", "Namotion.Interceptor.InterceptorSubjectContext context")]
+    [InlineData("public", "IDerivedContext context")]
+    public void WhenADeclaredConstructorCannotTakeTheContextAlone_ThenTheGeneratedOverloadRemains(
+        string accessibility, string parameters)
+    {
+        // Arrange
+        var source = $$"""
+            using Namotion.Interceptor.Attributes;
+            public interface IDerivedContext : Namotion.Interceptor.IInterceptorSubjectContext { }
+            [InterceptorSubject]
+            public partial class Subject
+            {
+                public Subject() { }
+                {{accessibility}} Subject({{parameters}}) { }
+                public partial string Name { get; set; }
+            }
+            public static class SubjectFactory
+            {
+                public static Subject Create(Namotion.Interceptor.IInterceptorSubjectContext context) => new Subject(context);
+            }
+            """;
+
+        // Act
+        var result = GeneratorTestHost.RunForExecution(source);
+
+        // Assert
+        Assert.Empty(result.CompilationErrors);
+        Assert.Empty(result.CompilationWarnings);
+        var context = InterceptorSubjectContext.Create();
+        var subject = (IInterceptorSubject)result.LoadAssembly().GetType("SubjectFactory")!
+            .GetMethod("Create")!.Invoke(null, [context])!;
+        Assert.Same(context, subject.TryGetContext());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
