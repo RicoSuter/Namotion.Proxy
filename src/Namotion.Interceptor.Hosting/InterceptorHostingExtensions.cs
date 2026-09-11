@@ -62,6 +62,13 @@ public static class InterceptorHostingExtensions
 
         var attachment = AddAttachment(subject, factory);
 
+        // Resolved again when the first lookup found none, because the read above and the add below it
+        // are the wrong way round against a context entering the graph: that path publishes the context
+        // and then reads the subject's attachments, so a publication landing between these two
+        // statements is missed by both sides and leaves the subject inside a hosting graph holding a
+        // factory nothing will ever invoke, with no fault and nothing logged.
+        handler ??= TryResolveHandlerAfterPublish(subject);
+
         // Liveness before the take, because the take reads it: the attach path records only subjects
         // that host something, so a subject that hosted nothing when it entered the graph has no entry
         // and this is the moment it earns one.
@@ -87,6 +94,10 @@ public static class InterceptorHostingExtensions
         var handler = subject.Context.TryGetService<HostedServiceHandler>();
 
         var attachment = AddAttachment(subject, factory);
+
+        // Resolved again for the reason on the synchronous overload.
+        handler ??= TryResolveHandlerAfterPublish(subject);
+
         if (handler is null)
         {
             // No handler means no context to bound the lifetime, so the factory is stored and nothing runs.
@@ -198,6 +209,28 @@ public static class InterceptorHostingExtensions
 
         await stop.WaitAsync(cancellationToken).ConfigureAwait(false);
         return true;
+    }
+
+    /// <summary>
+    /// Resolves the handler once more, after an attach has published its attachment, for a first lookup
+    /// that found none.
+    /// </summary>
+    /// <remarks>
+    /// Counts the reachable handlers instead of going through TryGetService, whose throw on two of them
+    /// would land after the subject has already been mutated and hand back exactly the half changed
+    /// call the first lookup exists to rule out. Two reachable handlers is therefore the one shape this
+    /// declines to act on, and it is the shape every other path on this subject throws on anyway.
+    /// </remarks>
+    private static HostedServiceHandler? TryResolveHandlerAfterPublish(IInterceptorSubject subject)
+    {
+        // The add and this read are a store followed by a load of what the publishing side writes and
+        // reads in the opposite order, so without a fence here both sides may miss each other however
+        // the two are ordered in time. The publishing side fences for free: it enters the lifecycle
+        // lock between its own publish and its read of the attachments.
+        Interlocked.MemoryBarrier();
+
+        var handlers = subject.Context.GetServices<HostedServiceHandler>();
+        return handlers.Length == 1 ? handlers[0] : null;
     }
 
     private static HostedServiceAttachment<T> AddAttachment<T>(IInterceptorSubject subject, Func<T> factory)

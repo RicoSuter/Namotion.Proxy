@@ -272,6 +272,88 @@ public class WithHostedServicesTests
         }
     }
 
+    [Fact]
+    public async Task WhenASubjectEntersAHostingGraphBetweenAnAttachsLookupAndItsAdd_ThenTheAttachStartsTheService()
+    {
+        // Arrange - the subject is in no hosting graph, so the lookup ahead of the add finds no handler.
+        // The gate then runs the whole context entry inside the window between that lookup and the add.
+        // The entry publishes the context first and reads the subject's attachments second, so the graph
+        // event reads an empty list while the caller has already decided there is nothing to start, and
+        // without the second lookup the subject sits in a hosting graph with a factory nothing invokes.
+        var builder = HostingTestHost.CreateBuilder();
+        var context = HostingTestHost.CreateContext(builder);
+
+        var host = builder.Build();
+        await host.StartAsync();
+
+        try
+        {
+            var subject = new DataGatedSubject();
+
+            var attachmentsAtContextEntry = -1;
+            subject.GateNextDataRead(() =>
+            {
+                subject.Context.AddFallbackContext(context);
+                attachmentsAtContextEntry = subject.GetHostedServiceAttachments().Length;
+            });
+
+            // Act
+            var attachment = subject.AttachHostedService(() => new TrackedBackgroundService());
+
+            // Assert - the premise first: the graph event ran and found nothing to start
+            Assert.Equal(0, attachmentsAtContextEntry);
+
+            await attachment.DrainAsync();
+
+            var instance = attachment.Current;
+            Assert.NotNull(instance);
+            Assert.True(instance.IsStarted);
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task WhenASubjectEntersAHostingGraphBetweenAnAwaitedAttachsLookupAndItsAdd_ThenTheAttachStartsTheService()
+    {
+        // Arrange - the awaiting overload adds its attachment on its own path, so it needs its own test.
+        // See the synchronous overload for the window the gate holds open.
+        var builder = HostingTestHost.CreateBuilder();
+        var context = HostingTestHost.CreateContext(builder);
+
+        var host = builder.Build();
+        await host.StartAsync();
+
+        try
+        {
+            var subject = new DataGatedSubject();
+
+            var attachmentsAtContextEntry = -1;
+            subject.GateNextDataRead(() =>
+            {
+                subject.Context.AddFallbackContext(context);
+                attachmentsAtContextEntry = subject.GetHostedServiceAttachments().Length;
+            });
+
+            // Act
+            var attachment = await subject.AttachHostedServiceAsync(
+                () => new TrackedBackgroundService(), CancellationToken.None);
+
+            // Assert
+            Assert.Equal(0, attachmentsAtContextEntry);
+
+            var instance = attachment.Current;
+            Assert.NotNull(instance);
+            Assert.True(instance.IsStarted);
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
     /// <summary>
     /// Takes the subject down to one hosting context and cycles it out of that one and back in, which
     /// is the graph event that starts whatever attachments the subject holds. Drains every chain the
