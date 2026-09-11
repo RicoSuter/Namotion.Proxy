@@ -10,16 +10,7 @@ public class WithHostedServicesTests
     public async Task WhenTwoContextsShareOneServiceCollection_ThenBothHandlersRun()
     {
         // Arrange
-        var builder = HostingTestHost.CreateBuilder();
-
-        var firstContext = HostingTestHost.CreateContext(builder);
-
-        var secondContext = HostingTestHost.CreateContext(builder);
-
-        var host = builder.Build();
-        await host.StartAsync();
-
-        try
+        await HostingTestHost.RunWithTwoContextsAsync(async (firstContext, secondContext) =>
         {
             // Act
             var firstPerson = new Person(firstContext);
@@ -31,11 +22,7 @@ public class WithHostedServicesTests
             await AsyncTestHelpers.WaitUntilAsync(() => firstPerson.FirstName == "John");
             await AsyncTestHelpers.WaitUntilAsync(() => secondPerson.FirstName == "John",
                 message: "The second context's handler was dropped by TryAddEnumerable dedupe.");
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     [Fact]
@@ -43,16 +30,7 @@ public class WithHostedServicesTests
     {
         // Arrange - both contexts resolve their own handler and both see the subject's context attach,
         // so without a single owner per target the subject is started twice.
-        var builder = HostingTestHost.CreateBuilder();
-
-        var firstContext = HostingTestHost.CreateContext(builder);
-
-        var secondContext = HostingTestHost.CreateContext(builder);
-
-        var host = builder.Build();
-        await host.StartAsync();
-
-        try
+        await HostingTestHost.RunWithTwoContextsAsync(async (firstContext, secondContext) =>
         {
             var subject = new CountingHostedSubject();
 
@@ -62,16 +40,10 @@ public class WithHostedServicesTests
 
             // Assert - the empty transition drains the target's chain, so the count is read once every
             // queued start has run.
-            await ((IInterceptorSubject)subject)
-                .TryGetSubjectTarget()!
-                .AppendAsync(() => Task.CompletedTask);
+            await ((IInterceptorSubject)subject).TryGetSubjectTarget()!.DrainAsync();
 
             Assert.Equal(1, subject.StartCount);
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     [Fact]
@@ -80,16 +52,7 @@ public class WithHostedServicesTests
         // Arrange - two reachable hosting contexts make the handler lookup throw, and the attach has to
         // be all or nothing: a factory stored by a call the caller saw fail is started by the next
         // context attach, and nothing holds a handle to stop it.
-        var builder = HostingTestHost.CreateBuilder();
-
-        var firstContext = HostingTestHost.CreateContext(builder);
-
-        var secondContext = HostingTestHost.CreateContext(builder);
-
-        var host = builder.Build();
-        await host.StartAsync();
-
-        try
+        await HostingTestHost.RunWithTwoContextsAsync(async (firstContext, secondContext) =>
         {
             var person = new Person(firstContext);
             var subject = (IInterceptorSubject)person;
@@ -116,27 +79,14 @@ public class WithHostedServicesTests
 
             Assert.Empty(subject.GetHostedServiceAttachments());
             Assert.Equal(0, Volatile.Read(ref created));
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     [Fact]
     public async Task WhenAnAwaitedAttachCannotResolveOneHandler_ThenTheSubjectStoresNoAttachment()
     {
         // Arrange - the awaiting overload adds its attachment on its own path, so it needs its own test.
-        var builder = HostingTestHost.CreateBuilder();
-
-        var firstContext = HostingTestHost.CreateContext(builder);
-
-        var secondContext = HostingTestHost.CreateContext(builder);
-
-        var host = builder.Build();
-        await host.StartAsync();
-
-        try
+        await HostingTestHost.RunWithTwoContextsAsync(async (firstContext, secondContext) =>
         {
             var person = new Person(firstContext);
             var subject = (IInterceptorSubject)person;
@@ -162,11 +112,7 @@ public class WithHostedServicesTests
 
             Assert.Empty(subject.GetHostedServiceAttachments());
             Assert.Equal(0, Volatile.Read(ref created));
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     [Fact]
@@ -175,16 +121,7 @@ public class WithHostedServicesTests
         // Arrange - the attachment is taken while one context is reachable, so the detach below is the
         // first call whose lookup throws. A detach that removed it first would leave the instance
         // running with no stop appended and nothing left to reach it through.
-        var builder = HostingTestHost.CreateBuilder();
-
-        var firstContext = HostingTestHost.CreateContext(builder);
-
-        var secondContext = HostingTestHost.CreateContext(builder);
-
-        var host = builder.Build();
-        await host.StartAsync();
-
-        try
+        await HostingTestHost.RunWithTwoContextsAsync(async (firstContext, secondContext) =>
         {
             var person = new Person(firstContext);
             var subject = (IInterceptorSubject)person;
@@ -214,11 +151,7 @@ public class WithHostedServicesTests
             await attachment.DrainAsync();
             Assert.True(instance.IsStopped);
             Assert.True(instance.IsDisposed);
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     [Fact]
@@ -226,16 +159,7 @@ public class WithHostedServicesTests
     {
         // Arrange - the awaiting overload removes its attachment on its own path, so it needs its own
         // test. See the synchronous overload for what the removal would cost.
-        var builder = HostingTestHost.CreateBuilder();
-
-        var firstContext = HostingTestHost.CreateContext(builder);
-
-        var secondContext = HostingTestHost.CreateContext(builder);
-
-        var host = builder.Build();
-        await host.StartAsync();
-
-        try
+        await HostingTestHost.RunWithTwoContextsAsync(async (firstContext, secondContext) =>
         {
             var person = new Person(firstContext);
             var subject = (IInterceptorSubject)person;
@@ -265,11 +189,7 @@ public class WithHostedServicesTests
             Assert.True(await person.DetachHostedServiceAsync(attachment, CancellationToken.None));
             Assert.True(instance.IsStopped);
             Assert.True(instance.IsDisposed);
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     [Fact]
@@ -280,13 +200,7 @@ public class WithHostedServicesTests
         // The entry publishes the context first and reads the subject's attachments second, so the graph
         // event reads an empty list while the caller has already decided there is nothing to start, and
         // without the second lookup the subject sits in a hosting graph with a factory nothing invokes.
-        var builder = HostingTestHost.CreateBuilder();
-        var context = HostingTestHost.CreateContext(builder);
-
-        var host = builder.Build();
-        await host.StartAsync();
-
-        try
+        await HostingTestHost.RunAsync(async context =>
         {
             var subject = new DataGatedSubject();
 
@@ -308,11 +222,7 @@ public class WithHostedServicesTests
             var instance = attachment.Current;
             Assert.NotNull(instance);
             Assert.True(instance.IsStarted);
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     [Fact]
@@ -320,13 +230,7 @@ public class WithHostedServicesTests
     {
         // Arrange - the awaiting overload adds its attachment on its own path, so it needs its own test.
         // See the synchronous overload for the window the gate holds open.
-        var builder = HostingTestHost.CreateBuilder();
-        var context = HostingTestHost.CreateContext(builder);
-
-        var host = builder.Build();
-        await host.StartAsync();
-
-        try
+        await HostingTestHost.RunAsync(async context =>
         {
             var subject = new DataGatedSubject();
 
@@ -347,11 +251,7 @@ public class WithHostedServicesTests
             var instance = attachment.Current;
             Assert.NotNull(instance);
             Assert.True(instance.IsStarted);
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     /// <summary>

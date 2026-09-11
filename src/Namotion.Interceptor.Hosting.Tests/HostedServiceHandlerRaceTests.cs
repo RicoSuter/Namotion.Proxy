@@ -42,11 +42,9 @@ public class HostedServiceHandlerRaceTests
         // the detach read Owner as null is one nothing releases: the target stays owned by this handler
         // and stays in its owned set, which roots the detached subject until shutdown and makes the
         // next handler over that subject lose the compare and exchange for good.
-        var (host, context) = await HostingTestHost.StartAsync();
-        var handler = context.TryGetService<HostedServiceHandler>()!;
-
-        try
+        await HostingTestHost.RunAsync(async context =>
         {
+            var handler = context.TryGetService<HostedServiceHandler>()!;
             var parent = new Parent(context);
             var child = new Person();
             parent.Child = child;
@@ -57,8 +55,6 @@ public class HostedServiceHandlerRaceTests
             // A second attachment, so the act below has a target whose ownership is still unclaimed at
             // the moment the detach runs. The first one is what keeps the subject live until then.
             var created = 0;
-            var takeReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var releaseTake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
             // Armed on the handler rather than on the target, because the target the act creates does
             // not exist until the act runs. The first attachment above already took its ownership, so
@@ -66,11 +62,7 @@ public class HostedServiceHandlerRaceTests
             // chain lock, which the detach below never needs: that target has no owner yet, so the
             // detach appends no stop for it. A test whose detach must append on the held target would
             // deadlock here.
-            handler.LivenessReadGate = () =>
-            {
-                takeReached.TrySetResult();
-                releaseTake.Task.GetAwaiter().GetResult();
-            };
+            using var take = handler.HoldAtLivenessRead();
 
             HostedServiceTarget? secondTarget = null;
             var attaching = Task.Run(() =>
@@ -85,12 +77,12 @@ public class HostedServiceHandlerRaceTests
                 return second;
             });
 
-            await takeReached.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            await take.WaitUntilReachedAsync();
 
             // Act - the whole detach runs while the take is held before its compare and exchange, so
             // it clears liveness, reads Owner as null and releases nothing.
             parent.Child = null;
-            releaseTake.SetResult();
+            take.Release();
             await attaching.WaitAsync(TimeSpan.FromSeconds(30));
 
             // Assert
@@ -102,12 +94,7 @@ public class HostedServiceHandlerRaceTests
             // take was undone. Asserted because a leaked ownership that also started something is the
             // worse of the two failures, and this separates them.
             Assert.Equal(0, Volatile.Read(ref created));
-        }
-        finally
-        {
-            handler.LivenessReadGate = null;
-            await host.StopAsync();
-        }
+        });
     }
 
     [Fact]
@@ -132,14 +119,13 @@ public class HostedServiceHandlerRaceTests
             await AsyncTestHelpers.WaitUntilAsync(
                 () => child.StartCount == 1 && created.ToArray() is [{ IsStarted: true }]);
 
-            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            ((IInterceptorSubject)child).TryGetSubjectTarget()!.TransitionGate = () => release.Task;
+            using var subjectStop = ((IInterceptorSubject)child).TryGetSubjectTarget()!.HoldAtTransition();
 
             // Act - both graph moves are made while the subject's stop is held, so the re-attach's
             // create-and-start is queued behind the detach's stop on the attachment's chain.
             parent.Child = null;
             parent.Child = child;
-            release.SetResult();
+            subjectStop.Release();
 
             // Assert
             await AsyncTestHelpers.WaitUntilAsync(
@@ -156,108 +142,23 @@ public class HostedServiceHandlerRaceTests
         });
     }
 
-    [Fact]
-    public async Task WhenAnAttachmentIsDetachedBeforeItsStartIsAppended_ThenNothingIsStarted()
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task WhenAnAttachmentIsDetachedBeforeItsStartIsAppended_ThenNothingIsStarted(
+        bool attachIsAwaited, bool detachIsAwaited)
     {
         // Arrange - the window between publishing the attachment and appending its start. A detach
         // that lands inside it removes the attachment from the subject, so the start it leaves
         // running is reachable from nothing: a later context detach enumerates no attachment for it
         // and never stops it. Taking a startup hold is the only user code the attach path runs inside
         // that window, so the deferrer drives the interleaving rather than a delay.
-        var (host, context, detacher) = await StartHostWithDeferrerAsync();
-
-        try
-        {
-            var parent = new Parent(context);
-            var child = new Person();
-            parent.Child = child;
-
-            var created = 0;
-            detacher.OnDefer = () =>
-            {
-                foreach (var published in child.GetHostedServiceAttachments())
-                {
-                    child.DetachHostedService(published);
-                }
-            };
-
-            // Act
-            var attachment = child.AttachHostedService(() =>
-            {
-                Interlocked.Increment(ref created);
-                return new TrackedBackgroundService();
-            });
-
-            // Assert
-            var target = ((IHostedServiceAttachmentTarget)attachment).Target;
-            await target.AppendAsync(() => Task.CompletedTask);
-
-            Assert.Equal(1, detacher.Taken);
-            Assert.Empty(child.GetHostedServiceAttachments());
-            Assert.Equal(0, Volatile.Read(ref created));
-            Assert.Null(attachment.Current);
-            Assert.Null(target.Owner);
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
-    }
-
-    [Fact]
-    public async Task WhenAnAwaitedAttachmentIsDetachedBeforeItsStartIsAppended_ThenNothingIsStarted()
-    {
-        // Arrange - the same window on the awaiting overload, which appends through the same call.
-        var (host, context, detacher) = await StartHostWithDeferrerAsync();
-
-        try
-        {
-            var parent = new Parent(context);
-            var child = new Person();
-            parent.Child = child;
-
-            var created = 0;
-            detacher.OnDefer = () =>
-            {
-                foreach (var published in child.GetHostedServiceAttachments())
-                {
-                    child.DetachHostedService(published);
-                }
-            };
-
-            // Act
-            var attachment = await child.AttachHostedServiceAsync(() =>
-            {
-                Interlocked.Increment(ref created);
-                return new TrackedBackgroundService();
-            }, CancellationToken.None);
-
-            // Assert
-            var target = ((IHostedServiceAttachmentTarget)attachment).Target;
-            await target.AppendAsync(() => Task.CompletedTask);
-
-            Assert.Equal(1, detacher.Taken);
-            Assert.Empty(child.GetHostedServiceAttachments());
-            Assert.Equal(0, Volatile.Read(ref created));
-            Assert.Null(attachment.Current);
-            Assert.Null(target.Owner);
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
-    }
-
-    [Fact]
-    public async Task WhenAnAttachmentIsDetachedByTheAwaitingOverloadBeforeItsStartIsAppended_ThenNothingIsStarted()
-    {
-        // Arrange - the same window, reached through the awaiting detach overload. Both overloads mark
-        // the target before appending their stop, and each mark has to be pinned separately: the two
-        // tests above drive the window through the synchronous overload only, so deleting the mark from
-        // DetachHostedServiceAsync alone leaves them green.
-        var (host, context, detacher) = await StartHostWithDeferrerAsync();
-
-        try
+        //
+        // One case per overload that reaches the window, because each attach overload appends through
+        // its own call and each detach overload marks the target from its own code: deleting the mark
+        // from DetachHostedServiceAsync leaves the two synchronous detach cases green.
+        await RunWithDeferrerAsync(async (context, detacher) =>
         {
             var parent = new Parent(context);
             var child = new Person();
@@ -269,23 +170,34 @@ public class HostedServiceHandlerRaceTests
             {
                 foreach (var published in child.GetHostedServiceAttachments())
                 {
-                    // Not awaited here: the detach runs synchronously up to and past its append, which
-                    // is the whole window, and awaiting it from inside the hold would park the attach
-                    // that is taking the hold. The tasks are awaited below instead.
-                    detaches.Enqueue(child.DetachHostedServiceAsync(published, CancellationToken.None));
+                    if (detachIsAwaited)
+                    {
+                        // Not awaited here: the detach runs synchronously up to and past its append,
+                        // which is the whole window, and awaiting it from inside the hold would park
+                        // the attach that is taking the hold. The tasks are awaited below instead.
+                        detaches.Enqueue(child.DetachHostedServiceAsync(published, CancellationToken.None));
+                    }
+                    else
+                    {
+                        child.DetachHostedService(published);
+                    }
                 }
             };
 
-            // Act
-            var attachment = child.AttachHostedService(() =>
+            TrackedBackgroundService Factory()
             {
                 Interlocked.Increment(ref created);
                 return new TrackedBackgroundService();
-            });
+            }
+
+            // Act
+            var attachment = attachIsAwaited
+                ? await child.AttachHostedServiceAsync(Factory, CancellationToken.None)
+                : child.AttachHostedService(Factory);
 
             // Assert
             var target = ((IHostedServiceAttachmentTarget)attachment).Target;
-            await target.AppendAsync(() => Task.CompletedTask);
+            await target.DrainAsync();
 
             Assert.All(await Task.WhenAll(detaches), Assert.True);
             Assert.Equal(1, detacher.Taken);
@@ -293,11 +205,7 @@ public class HostedServiceHandlerRaceTests
             Assert.Equal(0, Volatile.Read(ref created));
             Assert.Null(attachment.Current);
             Assert.Null(target.Owner);
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     [Fact]
@@ -317,21 +225,15 @@ public class HostedServiceHandlerRaceTests
         await AsyncTestHelpers.WaitUntilAsync(() => instance.IsStarted);
 
         var target = ((IHostedServiceAttachmentTarget)attachment).Target;
-        var drainStopEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        target.TransitionGate = () =>
-        {
-            drainStopEntered.TrySetResult();
-            return release.Task;
-        };
+        using var drainStop = target.HoldAtTransition();
 
         // Act
         var stopping = host.StopAsync();
-        await drainStopEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await drainStop.WaitUntilReachedAsync();
 
         // The subject is still in the graph, so the explicit detach still resolves the handler.
         var detached = child.DetachHostedServiceAsync(attachment, CancellationToken.None);
-        release.SetResult();
+        drainStop.Release();
 
         // Assert
         await stopping;
@@ -355,17 +257,11 @@ public class HostedServiceHandlerRaceTests
         parent.Child = child;
 
         var handler = context.TryGetService<HostedServiceHandler>()!;
-        var drainEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseDrain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.DrainGate = () =>
-        {
-            drainEntered.TrySetResult();
-            return releaseDrain.Task;
-        };
+        using var drain = handler.HoldAtDrain();
 
         // Act
         var stopping = host.StopAsync();
-        await drainEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await drain.WaitUntilReachedAsync();
 
         var created = 0;
         var attachment = child.AttachHostedService(() =>
@@ -378,7 +274,7 @@ public class HostedServiceHandlerRaceTests
         // go: this is what pins the start body inside the window rather than merely near it.
         await attachment.DrainAsync();
 
-        releaseDrain.SetResult();
+        drain.Release();
 
         // Assert - the drain awaits the stop it appends for the new target, and that stop is queued
         // behind the new target's start, so awaiting the drain is a full quiesce of that chain.
@@ -401,22 +297,13 @@ public class HostedServiceHandlerRaceTests
         var child = new Person();
         parent.Child = child;
 
-        // Liveness is recorded when a subject gains its first target, not when it enters the graph, so
-        // the child has to host something before the drain or the window does not exist. The recording
-        // is synchronous inside this call, so whether this first service ever starts is irrelevant.
-        child.AttachHostedService(() => new TrackedBackgroundService());
+        MakeLive(child);
 
         var handler = context.TryGetService<HostedServiceHandler>()!;
-        var drainEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseDrain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.DrainGate = () =>
-        {
-            drainEntered.TrySetResult();
-            return releaseDrain.Task;
-        };
+        using var drain = handler.HoldAtDrain();
 
         var stopping = host.StopAsync();
-        await drainEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await drain.WaitUntilReachedAsync();
         Assert.True(handler.IsLive(child), "The drain cleared liveness early, so the window under test is unreachable.");
 
         // Act
@@ -427,7 +314,7 @@ public class HostedServiceHandlerRaceTests
         // ownership is only observable here.
         Assert.Null(((IHostedServiceAttachmentTarget)attachment).Target.Owner);
 
-        releaseDrain.SetResult();
+        drain.Release();
         await stopping;
 
         Assert.Null(attachment.Current);
@@ -441,9 +328,7 @@ public class HostedServiceHandlerRaceTests
         // ownership of the fresh target itself. The subject is constructed with the context, so its
         // own context keeps resolving the handler after the graph detach and the attach really does
         // reach the handler.
-        var (host, context) = await HostingTestHost.StartAsync();
-
-        try
+        await HostingTestHost.RunAsync(async context =>
         {
             var parent = new Parent(context);
             var child = new Person(context);
@@ -464,11 +349,7 @@ public class HostedServiceHandlerRaceTests
 
             Assert.Equal(0, Volatile.Read(ref created));
             Assert.Null(attachment.Current);
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     [Fact]
@@ -538,25 +419,18 @@ public class HostedServiceHandlerRaceTests
         await AsyncTestHelpers.WaitUntilAsync(
             () => child.StartCount == 1 && created.ToArray() is [{ IsStarted: true }]);
 
-        var releaseStop = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var subjectTarget = ((IInterceptorSubject)child).TryGetSubjectTarget()!;
-        subjectTarget.TransitionGate = () => releaseStop.Task;
+        using var subjectStop = subjectTarget.HoldAtTransition();
 
         var handler = context.TryGetService<HostedServiceHandler>()!;
-        var drainEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseDrain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.DrainGate = () =>
-        {
-            drainEntered.TrySetResult();
-            return releaseDrain.Task;
-        };
+        using var drain = handler.HoldAtDrain();
 
         var stopping = host.StopAsync();
-        await drainEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await drain.WaitUntilReachedAsync();
 
         // Act
         parent.Child = null;
-        releaseDrain.SetResult();
+        drain.Release();
 
         // Assert - the stop is held, so a drain that does not wait for it returns here.
         var returnedEarly = await Task.WhenAny(stopping, Task.Delay(DrainMustNotReturnWithin)) == stopping;
@@ -565,11 +439,8 @@ public class HostedServiceHandlerRaceTests
             "StopAsync returned while a stop appended inside the drain window was still held, so the "
             + "barrier missed it and that stop would run against a disposed service provider.");
 
-        releaseStop.SetResult();
+        subjectStop.Release();
         await stopping.WaitAsync(TimeSpan.FromSeconds(30));
-
-        subjectTarget.TransitionGate = null;
-        handler.DrainGate = null;
 
         Assert.Equal(1, child.StopCount);
         Assert.True(created.ToArray() is [{ IsStopped: true, IsDisposed: true }]);
@@ -598,29 +469,21 @@ public class HostedServiceHandlerRaceTests
         });
 
         var target = ((IHostedServiceAttachmentTarget)attachment).Target;
-        var takeReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseTake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        target.ChainLockGate = () =>
-        {
-            takeReached.TrySetResult();
-            releaseTake.Task.Wait(TimeSpan.FromSeconds(30));
-        };
+        using var take = target.HoldAtChainLock();
 
         // Act
         var parent = new Parent(context);
         var attaching = Task.Run(() => { parent.Child = child; });
-        await takeReached.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await take.WaitUntilReachedAsync();
 
         var stopping = Task.Run(() => host.StopAsync());
 
         // Assert - a drain whose snapshot missed this target has nothing to append and returns here.
         var returnedEarly = await Task.WhenAny(stopping, Task.Delay(DrainMustNotReturnWithin)) == stopping;
 
-        releaseTake.SetResult();
+        take.Release();
         await attaching.WaitAsync(TimeSpan.FromSeconds(30));
         await stopping.WaitAsync(TimeSpan.FromSeconds(30));
-
-        target.ChainLockGate = null;
 
         Assert.False(
             returnedEarly,
@@ -661,27 +524,20 @@ public class HostedServiceHandlerRaceTests
         await AsyncTestHelpers.WaitUntilAsync(() => attachment.Fault is not null);
 
         var target = ((IHostedServiceAttachmentTarget)attachment).Target;
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        target.TransitionGate = () => release.Task;
+        using var start = target.HoldAtTransition();
 
         var handler = context.TryGetService<HostedServiceHandler>()!;
-        var drainEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseDrain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.DrainGate = () =>
-        {
-            drainEntered.TrySetResult();
-            return releaseDrain.Task;
-        };
+        using var drain = handler.HoldAtDrain();
 
         // Act - the re-attach's start is queued behind the held stop and runs once draining began.
         parent.Child = null;
         parent.Child = child;
 
         var stopping = host.StopAsync();
-        await drainEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await drain.WaitUntilReachedAsync();
 
-        release.SetResult();
-        releaseDrain.SetResult();
+        start.Release();
+        drain.Release();
 
         // Assert - the drain appends its own stop behind that start and awaits it, so the start has
         // provably run by the time the shutdown returns.
@@ -697,9 +553,7 @@ public class HostedServiceHandlerRaceTests
         // disposed underneath it while it unwinds. The shutdown path builds the same shape from its own
         // code, so it pins nothing here: dropping the wait DetachSubject passes leaves the drain test
         // below green. The hold makes the window the subject is inside observable rather than timed.
-        var (host, context) = await HostingTestHost.StartAsync();
-
-        try
+        await HostingTestHost.RunAsync(async context =>
         {
             var parent = new HostedParent(context);
             var child = new CountingHostedSubject();
@@ -709,17 +563,11 @@ public class HostedServiceHandlerRaceTests
             parent.Child = child;
             await AsyncTestHelpers.WaitUntilAsync(() => child.StartCount == 1 && instance.IsStarted);
 
-            var subjectStopEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            child.StopHold = () =>
-            {
-                subjectStopEntered.TrySetResult();
-                return release.Task;
-            };
+            using var subjectStop = child.HoldAtStop();
 
             // Act
             parent.Child = null;
-            await subjectStopEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            await subjectStop.WaitUntilReachedAsync();
 
             // Assert - an unordered detach clears Current at the top of the attachment's stop body,
             // which runs the moment that stop is appended, a whole transition delay before the
@@ -728,18 +576,14 @@ public class HostedServiceHandlerRaceTests
             Assert.False(instance.IsStopped);
             Assert.False(instance.IsDisposed);
 
-            release.SetResult();
+            subjectStop.Release();
 
             await AsyncTestHelpers.WaitUntilAsync(
                 () => instance.IsStopped && instance.IsDisposed,
                 message: "The attachment was never stopped and disposed after the subject's stop returned.");
 
             Assert.Equal(1, child.StopCount);
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     [Fact]
@@ -758,17 +602,11 @@ public class HostedServiceHandlerRaceTests
         parent.Child = child;
         await AsyncTestHelpers.WaitUntilAsync(() => child.StartCount == 1 && instance.IsStarted);
 
-        var subjectStopEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        child.StopHold = () =>
-        {
-            subjectStopEntered.TrySetResult();
-            return release.Task;
-        };
+        using var subjectStop = child.HoldAtStop();
 
         // Act
         var stopping = host.StopAsync();
-        await subjectStopEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await subjectStop.WaitUntilReachedAsync();
 
         // Assert - an unordered drain clears Current at the top of the attachment's stop body, which
         // runs the moment that stop is appended, a whole transition delay before the subject's own
@@ -777,7 +615,7 @@ public class HostedServiceHandlerRaceTests
         Assert.False(instance.IsStopped);
         Assert.False(instance.IsDisposed);
 
-        release.SetResult();
+        subjectStop.Release();
         await stopping;
 
         Assert.True(instance.IsStopped);
@@ -842,17 +680,14 @@ public class HostedServiceHandlerRaceTests
         // returns. That is the constraint on where the hold may be taken, and it is why the take is
         // still inside the lifecycle lock: the event that appends the start arrives already inside
         // that lock, so taking the hold anywhere later reopens the window.
-        var (host, context, deferrer) = await StartHostWithDeferrerAsync();
-
-        try
+        await RunWithDeferrerAsync(async (context, deferrer) =>
         {
             var parent = new Parent(context);
             var child = new Person();
             var attachment = child.AttachHostedService(() => new TrackedBackgroundService());
 
             var target = ((IHostedServiceAttachmentTarget)attachment).Target;
-            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            target.TransitionGate = () => release.Task;
+            using var start = target.HoldAtTransition();
 
             // Act - the start is appended while the graph write runs, and its body is held at the
             // seam, so the hold is read while the start it belongs to is provably still pending.
@@ -862,16 +697,12 @@ public class HostedServiceHandlerRaceTests
             Assert.Equal(1, deferrer.Taken);
             Assert.Equal(1, deferrer.Outstanding);
 
-            release.SetResult();
-            await target.AppendAsync(() => Task.CompletedTask);
+            start.Release();
+            await target.DrainAsync();
 
             Assert.Equal(0, deferrer.Outstanding);
             Assert.NotNull(attachment.Current);
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     [Fact]
@@ -894,28 +725,20 @@ public class HostedServiceHandlerRaceTests
             return new TrackedBackgroundService();
         });
 
-        var target = ((IHostedServiceAttachmentTarget)attachment).Target;
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        target.TransitionGate = () => release.Task;
+        using var start = ((IHostedServiceAttachmentTarget)attachment).Target.HoldAtTransition();
 
         parent.Child = child;
         Assert.Equal(1, deferrer.Outstanding);
 
         var handler = context.TryGetService<HostedServiceHandler>()!;
-        var drainEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseDrain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.DrainGate = () =>
-        {
-            drainEntered.TrySetResult();
-            return releaseDrain.Task;
-        };
+        using var drain = handler.HoldAtDrain();
 
         // Act
         var stopping = host.StopAsync();
-        await drainEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await drain.WaitUntilReachedAsync();
 
-        release.SetResult();
-        releaseDrain.SetResult();
+        start.Release();
+        drain.Release();
 
         // Assert - the drain appends its own stop behind that start and awaits it, so the start body
         // has provably run by the time the shutdown returns.
@@ -929,9 +752,7 @@ public class HostedServiceHandlerRaceTests
     public async Task WhenAQueuedStartFindsItsSubjectDetached_ThenItsStartupHoldIsReleased()
     {
         // Arrange - the same leak through the liveness guard, which is the way out a graph move takes.
-        var (host, context, deferrer) = await StartHostWithDeferrerAsync();
-
-        try
+        await RunWithDeferrerAsync(async (context, deferrer) =>
         {
             var parent = new Parent(context);
             var child = new Person();
@@ -944,26 +765,21 @@ public class HostedServiceHandlerRaceTests
             });
 
             var target = ((IHostedServiceAttachmentTarget)attachment).Target;
-            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            target.TransitionGate = () => release.Task;
+            using var start = target.HoldAtTransition();
 
             parent.Child = child;
             Assert.Equal(1, deferrer.Outstanding);
 
             // Act - the detach clears liveness while the start is held at the seam.
             parent.Child = null;
-            release.SetResult();
+            start.Release();
 
             // Assert
-            await target.AppendAsync(() => Task.CompletedTask);
+            await target.DrainAsync();
 
             Assert.Equal(0, Volatile.Read(ref created));
             Assert.Equal(0, deferrer.Outstanding);
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     [Fact]
@@ -973,27 +789,18 @@ public class HostedServiceHandlerRaceTests
         // hosting contexts raises one context attach per context and the OWNING handler sees both, so
         // it appends a second start for a target that is already running. That start skips its work
         // in the body, where the chain serializes the two, and owes the release from there.
-        var builder = HostingTestHost.CreateBuilder();
-
-        var firstContext = HostingTestHost.CreateContext(builder);
-
-        var secondContext = HostingTestHost.CreateContext(builder);
-
-        // Registered on one context only: the subject's own context reaches it through the fallback,
-        // so both handlers resolve the same single deferrer.
-        var deferrer = new CallbackStartupDeferrer();
-        firstContext.AddService<IStartupCompletionDeferrer>(deferrer);
-
-        var host = builder.Build();
-        await host.StartAsync();
-
-        try
+        await HostingTestHost.RunWithTwoContextsAsync(async (firstContext, secondContext) =>
         {
+            // Registered on one context only: the subject's own context reaches it through the fallback,
+            // so both handlers resolve the same single deferrer.
+            var deferrer = new CallbackStartupDeferrer();
+            firstContext.AddService<IStartupCompletionDeferrer>(deferrer);
+
             var subject = new CountingHostedSubject();
             ((IInterceptorSubject)subject).Context.AddFallbackContext(firstContext);
 
             var target = ((IInterceptorSubject)subject).TryGetSubjectTarget()!;
-            await target.AppendAsync(() => Task.CompletedTask);
+            await target.DrainAsync();
 
             Assert.Equal(1, subject.StartCount);
             var takenByTheFirstAttach = deferrer.Taken;
@@ -1002,7 +809,7 @@ public class HostedServiceHandlerRaceTests
             ((IInterceptorSubject)subject).Context.AddFallbackContext(secondContext);
 
             // Assert
-            await target.AppendAsync(() => Task.CompletedTask);
+            await target.DrainAsync();
 
             Assert.Equal(1, subject.StartCount);
 
@@ -1015,11 +822,7 @@ public class HostedServiceHandlerRaceTests
                 deferrer.Taken);
 
             Assert.Equal(0, deferrer.Outstanding);
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     [Fact]
@@ -1032,22 +835,8 @@ public class HostedServiceHandlerRaceTests
         // next handler over the same subject then loses the compare and exchange for good. Taking a
         // startup hold is the one piece of user code the attach path runs between the gate read and
         // the chain lock, so the deferrer drives the detach rather than a delay.
-        var firstBuilder = HostingTestHost.CreateBuilder();
-
-        var firstContext = HostingTestHost.CreateContext(firstBuilder);
-
-        var deferrer = new CallbackStartupDeferrer();
-        firstContext.AddService<IStartupCompletionDeferrer>(deferrer);
-
-        var firstHost = firstBuilder.Build();
-        await firstHost.StartAsync();
-
-        var secondBuilder = HostingTestHost.CreateBuilder();
-
-        var secondContext = HostingTestHost.CreateContext(secondBuilder);
-
-        var secondHost = secondBuilder.Build();
-        await secondHost.StartAsync();
+        var (firstHost, firstContext, deferrer) = await StartHostWithDeferrerAsync();
+        var (secondHost, secondContext) = await HostingTestHost.StartAsync();
 
         try
         {
@@ -1086,7 +875,7 @@ public class HostedServiceHandlerRaceTests
             var secondParent = new Parent(secondContext);
             secondParent.Child = child;
 
-            await target.AppendAsync(() => Task.CompletedTask);
+            await target.DrainAsync();
 
             Assert.Equal(1, Volatile.Read(ref created));
             Assert.NotNull(attachment.Current);
@@ -1115,13 +904,7 @@ public class HostedServiceHandlerRaceTests
         parent.Child = child;
 
         var handler = context.TryGetService<HostedServiceHandler>()!;
-        var drainEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseDrain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.DrainGate = () =>
-        {
-            drainEntered.TrySetResult();
-            return releaseDrain.Task;
-        };
+        using var drain = handler.HoldAtDrain();
 
         Task? stopping = null;
         deferrer.OnDefer = () =>
@@ -1132,7 +915,7 @@ public class HostedServiceHandlerRaceTests
             }
 
             stopping = host.StopAsync();
-            drainEntered.Task.Wait(TimeSpan.FromSeconds(30));
+            drain.WaitUntilReached();
         };
 
         var created = 0;
@@ -1148,14 +931,14 @@ public class HostedServiceHandlerRaceTests
         // target its snapshot held, so a take that survived here would be released a moment later for
         // an unrelated reason and the window would be unobservable.
         var target = ((IHostedServiceAttachmentTarget)attachment).Target;
-        Assert.True(drainEntered.Task.IsCompleted, "The attach did not land its writes inside the drain window.");
+        Assert.True(drain.WasReached, "The attach did not land its writes inside the drain window.");
         Assert.True(handler.IsLive(child), "The drain cleared liveness early, so the take was refused for another reason.");
         Assert.Null(target.Owner);
 
-        releaseDrain.SetResult();
+        drain.Release();
         await stopping!;
 
-        await target.AppendAsync(() => Task.CompletedTask);
+        await target.DrainAsync();
 
         Assert.Equal(0, Volatile.Read(ref created));
         Assert.Null(attachment.Current);
@@ -1176,36 +959,20 @@ public class HostedServiceHandlerRaceTests
         var child = new Person();
         parent.Child = child;
 
-        // Liveness is recorded when a subject gains its first target, not when it enters the graph, so
-        // the child has to host something before the drain or the window does not exist. The recording
-        // is synchronous inside this call, so whether this first service ever starts is irrelevant.
-        child.AttachHostedService(() => new TrackedBackgroundService());
+        MakeLive(child);
 
         var handler = context.TryGetService<HostedServiceHandler>()!;
-        var drainEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseDrain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.DrainGate = () =>
-        {
-            drainEntered.TrySetResult();
-            return releaseDrain.Task;
-        };
-
-        var ownershipInstalled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var liveHandlerTried = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.OwnershipTakenGate = () =>
-        {
-            ownershipInstalled.TrySetResult();
-            liveHandlerTried.Task.Wait(TimeSpan.FromSeconds(30));
-        };
+        using var drain = handler.HoldAtDrain();
+        using var take = handler.HoldAtOwnershipTake();
 
         var stopping = host.StopAsync();
-        await drainEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await drain.WaitUntilReachedAsync();
         Assert.True(handler.IsLive(child), "The drain cleared liveness early, so the window under test is unreachable.");
 
         // Act - the attach runs on its own task, because it parks on the seam when the read on entry
         // is gone and returns without touching it when it is there.
         var attaching = Task.Run(() => child.AttachHostedService(() => new TrackedBackgroundService()));
-        await Task.WhenAny(ownershipInstalled.Task, attaching);
+        await Task.WhenAny(take.Reached, attaching);
 
         // A stand-in for the live handler that takes over from a draining one. It only has to win the
         // compare and exchange, which is the one thing a target owned by a draining handler denies it.
@@ -1220,10 +987,10 @@ public class HostedServiceHandlerRaceTests
         var claimed = target.TryTakeOwnership(liveHandler, child, out var ownershipTaken);
         target.ReleaseOwnership(liveHandler);
 
-        liveHandlerTried.SetResult();
+        take.Release();
         await attaching;
 
-        releaseDrain.SetResult();
+        drain.Release();
         await stopping;
 
         // Assert
@@ -1241,9 +1008,7 @@ public class HostedServiceHandlerRaceTests
         // context detach enumerates it and it is never stopped and never disposed. The two racing
         // appenders are the two the chain lock exists for, a lifecycle driven attach holding the
         // lifecycle lock and a user driven detach on another thread.
-        var (host, context) = await HostingTestHost.StartAsync();
-
-        try
+        await HostingTestHost.RunAsync(async context =>
         {
             var parent = new Parent(context);
             var leakedRounds = 0;
@@ -1259,11 +1024,7 @@ public class HostedServiceHandlerRaceTests
 
             // Assert
             Assert.Equal(0, leakedRounds);
-        }
-        finally
-        {
-            await host.StopAsync();
-        }
+        });
     }
 
     /// <summary>
@@ -1336,7 +1097,7 @@ public class HostedServiceHandlerRaceTests
         Assert.True(detachStarted, "The detaching thread never started.");
         Assert.True(detachSettled, "The detaching thread neither blocked on the chain lock nor finished.");
 
-        await target.AppendAsync(() => Task.CompletedTask);
+        await target.DrainAsync();
 
         var leaked = attachment.Current is not null;
         Assert.Equal(1, Volatile.Read(ref created));
@@ -1359,48 +1120,31 @@ public class HostedServiceHandlerRaceTests
         // The repeat take needs a target this handler already owns, which one subject visible from two
         // hosting contexts gives: the second context raises one more attach that the owning handler
         // also sees, and its take finds itself already installed.
-        var builder = HostingTestHost.CreateBuilder();
-        var firstContext = HostingTestHost.CreateContext(builder);
-        var secondContext = HostingTestHost.CreateContext(builder);
-
-        var host = builder.Build();
-        await host.StartAsync();
+        var (host, firstContext, secondContext) = await HostingTestHost.StartWithTwoContextsAsync();
 
         var subject = new CountingHostedSubject();
         ((IInterceptorSubject)subject).Context.AddFallbackContext(firstContext);
 
         var target = ((IInterceptorSubject)subject).TryGetSubjectTarget()!;
-        await target.AppendAsync(() => Task.CompletedTask);
+        await target.DrainAsync();
         Assert.Equal(1, subject.StartCount);
 
         var handler = firstContext.TryGetService<HostedServiceHandler>()!;
-        var drainEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseDrain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.DrainGate = () =>
-        {
-            drainEntered.TrySetResult();
-            return releaseDrain.Task;
-        };
+        using var drain = handler.HoldAtDrain();
 
         // Armed only now, so the first attach's own take runs past it untouched and the next call to
         // reach it is the repeat take under test. It fires outside the chain lock, so the drain below
         // is held by its own seam rather than by this one.
-        var takeReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseTake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.OwnershipTakenGate = () =>
-        {
-            takeReached.TrySetResult();
-            releaseTake.Task.Wait(TimeSpan.FromSeconds(30));
-        };
+        using var take = handler.HoldAtOwnershipTake();
 
         // Act - the repeat take lands, the drain begins under it, and only then does it re-read.
         var attaching = Task.Run(() => ((IInterceptorSubject)subject).Context.AddFallbackContext(secondContext));
-        await takeReached.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await take.WaitUntilReachedAsync();
 
         var stopping = Task.Run(() => host.StopAsync());
-        await drainEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await drain.WaitUntilReachedAsync();
 
-        releaseTake.SetResult();
+        take.Release();
         await attaching.WaitAsync(TimeSpan.FromSeconds(30));
 
         // Assert - read while the drain is still held, which is before its snapshot. Once it is let go
@@ -1411,11 +1155,8 @@ public class HostedServiceHandlerRaceTests
         // target pulled out of the snapshot is never stopped.
         Assert.Same(handler, target.Owner);
 
-        releaseDrain.SetResult();
+        drain.Release();
         await stopping.WaitAsync(TimeSpan.FromSeconds(30));
-
-        handler.DrainGate = null;
-        handler.OwnershipTakenGate = null;
 
         Assert.Equal(1, subject.StartCount);
         Assert.Equal(1, subject.StopCount);
@@ -1432,18 +1173,13 @@ public class HostedServiceHandlerRaceTests
         //
         // The clear the second liveness read has to see is the drain's own, and the repeat take needs a
         // target this handler already owns, which one subject visible from two hosting contexts gives.
-        var builder = HostingTestHost.CreateBuilder();
-        var firstContext = HostingTestHost.CreateContext(builder);
-        var secondContext = HostingTestHost.CreateContext(builder);
-
-        var host = builder.Build();
-        await host.StartAsync();
+        var (host, firstContext, secondContext) = await HostingTestHost.StartWithTwoContextsAsync();
 
         var subject = new CountingHostedSubject();
         ((IInterceptorSubject)subject).Context.AddFallbackContext(firstContext);
 
         var target = ((IInterceptorSubject)subject).TryGetSubjectTarget()!;
-        await target.AppendAsync(() => Task.CompletedTask);
+        await target.DrainAsync();
         Assert.Equal(1, subject.StartCount);
 
         var handler = firstContext.TryGetService<HostedServiceHandler>()!;
@@ -1451,38 +1187,22 @@ public class HostedServiceHandlerRaceTests
         // Armed only now, so the first attach's own take ran past it untouched. It fires inside the
         // chain lock, between the take's first liveness read and its compare and exchange, which is
         // where the drain's liveness clear has to land for the second read to see it.
-        var takeReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseTake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.LivenessReadGate = () =>
-        {
-            takeReached.TrySetResult();
-            releaseTake.Task.Wait(TimeSpan.FromSeconds(30));
-        };
-
-        var drainAtAppend = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseDrainAppend = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.DrainAppendGate = () =>
-        {
-            drainAtAppend.TrySetResult();
-            return releaseDrainAppend.Task;
-        };
+        using var take = handler.HoldAtLivenessRead();
+        using var drainAppend = handler.HoldAtDrainAppend();
 
         // Act - the repeat take holds the chain lock, the drain clears liveness and snapshots what it
         // owns underneath it, and only then does the take read liveness for the second time.
         var attaching = Task.Run(() => ((IInterceptorSubject)subject).Context.AddFallbackContext(secondContext));
-        await takeReached.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await take.WaitUntilReachedAsync();
 
         var stopping = Task.Run(() => host.StopAsync());
-        await drainAtAppend.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await drainAppend.WaitUntilReachedAsync();
 
-        releaseTake.SetResult();
+        take.Release();
         await attaching.WaitAsync(TimeSpan.FromSeconds(30));
 
-        releaseDrainAppend.SetResult();
+        drainAppend.Release();
         await stopping.WaitAsync(TimeSpan.FromSeconds(30));
-
-        handler.LivenessReadGate = null;
-        handler.DrainAppendGate = null;
 
         // Assert
         Assert.Equal(1, subject.StartCount);
@@ -1515,33 +1235,21 @@ public class HostedServiceHandlerRaceTests
         Assert.True(created.ToArray() is [{ IsStarted: true }]);
 
         // Holds the detach's stop body, so a drain that missed it returns while it has provably not run.
-        var releaseStop = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var target = ((IHostedServiceAttachmentTarget)attachment).Target;
-        target.TransitionGate = () => releaseStop.Task;
-
-        var snapshotTaken = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseAppends = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.DrainAppendGate = () =>
-        {
-            snapshotTaken.TrySetResult();
-            return releaseAppends.Task;
-        };
+        using var stop = ((IHostedServiceAttachmentTarget)attachment).Target.HoldAtTransition();
+        using var snapshot = handler.HoldAtDrainAppend();
 
         var stopping = Task.Run(() => host.StopAsync());
-        await snapshotTaken.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await snapshot.WaitUntilReachedAsync();
 
         // Act - the whole detach, appended and released, lands here.
         parent.Child = null;
-        releaseAppends.SetResult();
+        snapshot.Release();
 
         // Assert
         var returnedEarly = await Task.WhenAny(stopping, Task.Delay(DrainMustNotReturnWithin)) == stopping;
 
-        releaseStop.SetResult();
+        stop.Release();
         await stopping.WaitAsync(TimeSpan.FromSeconds(30));
-
-        target.TransitionGate = null;
-        handler.DrainAppendGate = null;
 
         Assert.False(
             returnedEarly,
@@ -1583,44 +1291,29 @@ public class HostedServiceHandlerRaceTests
             return instance;
         });
 
-        var takeReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseTake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.OwnershipTakenGate = () =>
-        {
-            takeReached.TrySetResult();
-            releaseTake.Task.Wait(TimeSpan.FromSeconds(30));
-        };
+        using var take = handler.HoldAtOwnershipTake();
 
         var parent = new Parent(context);
         var attaching = Task.Run(() => { parent.Child = child; });
 
-        await takeReached.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await take.WaitUntilReachedAsync();
         await factoryReached.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
-        var drainEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseDrain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.DrainGate = () =>
-        {
-            drainEntered.TrySetResult();
-            return releaseDrain.Task;
-        };
+        using var drain = handler.HoldAtDrain();
 
         var stopping = Task.Run(() => host.StopAsync());
-        await drainEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await drain.WaitUntilReachedAsync();
 
         // Act - the appending thread reaches its re-read, sees Draining, and undoes a take whose start
         // is parked in its factory.
-        releaseTake.SetResult();
+        take.Release();
         await attaching.WaitAsync(TimeSpan.FromSeconds(30));
 
-        releaseDrain.SetResult();
+        drain.Release();
         releaseFactory.SetResult();
 
         // Assert - the drain has to wait for that start and for the stop behind it.
         await stopping.WaitAsync(TimeSpan.FromSeconds(30));
-
-        handler.OwnershipTakenGate = null;
-        handler.DrainGate = null;
 
         Assert.True(
             created.ToArray() is [{ IsStarted: true, IsStopped: true, IsDisposed: true }],
@@ -1641,15 +1334,8 @@ public class HostedServiceHandlerRaceTests
         // instance the second host started and owns, and the second graph is left live with nothing
         // running and no error anywhere. The seam holds the drain between the snapshot and the appends,
         // which is the only place that interleaving is reachable.
-        var firstBuilder = HostingTestHost.CreateBuilder();
-        var firstContext = HostingTestHost.CreateContext(firstBuilder);
-        var firstHost = firstBuilder.Build();
-        await firstHost.StartAsync();
-
-        var secondBuilder = HostingTestHost.CreateBuilder();
-        var secondContext = HostingTestHost.CreateContext(secondBuilder);
-        var secondHost = secondBuilder.Build();
-        await secondHost.StartAsync();
+        var (firstHost, firstContext) = await HostingTestHost.StartAsync();
+        var (secondHost, secondContext) = await HostingTestHost.StartAsync();
 
         try
         {
@@ -1667,18 +1353,12 @@ public class HostedServiceHandlerRaceTests
             await AsyncTestHelpers.WaitUntilAsync(() => created.ToArray() is [{ IsStarted: true }]);
 
             var firstHandler = firstContext.TryGetService<HostedServiceHandler>()!;
-            var snapshotTaken = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var releaseAppends = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            firstHandler.DrainAppendGate = () =>
-            {
-                snapshotTaken.TrySetResult();
-                return releaseAppends.Task;
-            };
+            using var snapshot = firstHandler.HoldAtDrainAppend();
 
             // Act - the whole move lands after the first host snapshotted the target and before it
             // appends anything for it.
             var stopping = firstHost.StopAsync();
-            await snapshotTaken.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            await snapshot.WaitUntilReachedAsync();
 
             firstParent.Child = null;
             var secondParent = new Parent(secondContext);
@@ -1687,9 +1367,8 @@ public class HostedServiceHandlerRaceTests
                 () => created.ToArray() is [_, { IsStarted: true }],
                 message: "The second host never started its own instance, so the drain below proves nothing.");
 
-            releaseAppends.SetResult();
+            snapshot.Release();
             await stopping.WaitAsync(TimeSpan.FromSeconds(30));
-            firstHandler.DrainAppendGate = null;
 
             // Assert - an empty transition behind whatever the drain appended, so the reads below are
             // deterministic rather than timed.
@@ -1732,9 +1411,7 @@ public class HostedServiceHandlerRaceTests
         Assert.True(instance.IsStarted);
         Assert.Equal(0, handler.InFlightTransitionCount);
 
-        var releaseStop = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var target = ((IHostedServiceAttachmentTarget)attachment).Target;
-        target.TransitionGate = () => releaseStop.Task;
+        using var stop = ((IHostedServiceAttachmentTarget)attachment).Target.HoldAtTransition();
 
         // Act
         var stopping = host.StopAsync();
@@ -1742,9 +1419,8 @@ public class HostedServiceHandlerRaceTests
         // Assert - the drain's own stop is held, so a drain that did not wait for it returns here.
         var returnedEarly = await Task.WhenAny(stopping, Task.Delay(DrainMustNotReturnWithin)) == stopping;
 
-        releaseStop.SetResult();
+        stop.Release();
         await stopping.WaitAsync(TimeSpan.FromSeconds(30));
-        target.TransitionGate = null;
 
         Assert.False(
             returnedEarly,
@@ -1775,34 +1451,27 @@ public class HostedServiceHandlerRaceTests
         Assert.True(instance.IsStarted);
 
         var target = ((IHostedServiceAttachmentTarget)attachment).Target;
-        var releaseStop = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var firstWaitReturned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseSeam = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.DrainReleaseGate = () =>
-        {
-            // Armed from inside the seam, so the drain's own stop ran unheld and the count provably
-            // reached zero before the detach below appends anything.
-            target.TransitionGate = () => releaseStop.Task;
-            firstWaitReturned.TrySetResult();
-            return releaseSeam.Task;
-        };
+        using var firstWait = handler.HoldAtDrainRelease();
+
+        // Armed from inside the seam, so the drain's own stop ran unheld and the count provably reached
+        // zero before the detach below appends anything.
+        TestGate? stop = null;
+        firstWait.OnReached = () => stop = target.HoldAtTransition();
 
         // Act
         var stopping = host.StopAsync();
-        await firstWaitReturned.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await firstWait.WaitUntilReachedAsync();
         Assert.Equal(0, handler.InFlightTransitionCount);
 
         parent.Child = null;
-        releaseSeam.SetResult();
+        firstWait.Release();
 
         // Assert - the appended stop is held, so a drain that read the count once returns here.
         var returnedEarly = await Task.WhenAny(stopping, Task.Delay(DrainMustNotReturnWithin)) == stopping;
 
-        releaseStop.SetResult();
+        stop!.Release();
         await stopping.WaitAsync(TimeSpan.FromSeconds(30));
-
-        handler.DrainReleaseGate = null;
-        target.TransitionGate = null;
+        stop.Dispose();
 
         Assert.False(
             returnedEarly,
@@ -1840,6 +1509,35 @@ public class HostedServiceHandlerRaceTests
             handler.IsOwned(target),
             "The drained handler still holds the target, which roots the subject and denies every later "
             + "handler the compare and exchange.");
+    }
+
+    /// <summary>
+    /// Gives the subject its first target, which is what makes it live.
+    /// </summary>
+    /// <remarks>
+    /// Liveness is recorded when a subject gains its first target, not when it enters the graph, so a
+    /// subject has to host something before a drain begins or the window under test does not exist. The
+    /// recording is synchronous inside this call, so whether this service ever starts is irrelevant.
+    /// </remarks>
+    private static void MakeLive(IInterceptorSubject subject)
+        => subject.AttachHostedService(() => new TrackedBackgroundService());
+
+    /// <summary>
+    /// Runs <paramref name="action"/> against a started host whose context carries a deferrer, and
+    /// stops the host afterwards.
+    /// </summary>
+    private static async Task RunWithDeferrerAsync(
+        Func<IInterceptorSubjectContext, CallbackStartupDeferrer, Task> action)
+    {
+        var (host, context, deferrer) = await StartHostWithDeferrerAsync();
+        try
+        {
+            await action(context, deferrer);
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
     }
 
     private static async Task<(IHost Host, IInterceptorSubjectContext Context, CallbackStartupDeferrer Deferrer)>

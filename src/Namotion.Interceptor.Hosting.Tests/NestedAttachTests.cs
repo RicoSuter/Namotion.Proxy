@@ -55,8 +55,8 @@ public class NestedAttachTests
             var childTarget = ((IInterceptorSubject)child).TryGetSubjectTarget()!;
 
             // Empty transitions on both chains drain what the two attaches appended.
-            await containerTarget.AppendAsync(() => Task.CompletedTask);
-            await childTarget.AppendAsync(() => Task.CompletedTask);
+            await containerTarget.DrainAsync();
+            await childTarget.DrainAsync();
 
             Assert.Equal(1, container.StartCount);
             Assert.Equal(1, child.StartCount);
@@ -102,8 +102,8 @@ public class NestedAttachTests
             // Act
             holder.Container = null;
 
-            await containerTarget.AppendAsync(() => Task.CompletedTask);
-            await childTarget.AppendAsync(() => Task.CompletedTask);
+            await containerTarget.DrainAsync();
+            await childTarget.DrainAsync();
 
             // Assert
             Assert.Equal(1, container.StopCount);
@@ -117,8 +117,8 @@ public class NestedAttachTests
             // the same two subjects again rather than a third one appearing.
             holder.Container = container;
 
-            await containerTarget.AppendAsync(() => Task.CompletedTask);
-            await childTarget.AppendAsync(() => Task.CompletedTask);
+            await containerTarget.DrainAsync();
+            await childTarget.DrainAsync();
 
             Assert.Equal(1, initializer.Created);
             Assert.Same(child, container.Child);
@@ -158,16 +158,10 @@ public class NestedAttachTests
         // container would never reach the handler at all.
         var holder = new ContainerHolder(context);
 
-        var stopEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        ((IInterceptorSubject)running).TryGetSubjectTarget()!.TransitionGate = () =>
-        {
-            stopEntered.TrySetResult();
-            return release.Task;
-        };
+        using var subjectStop = ((IInterceptorSubject)running).TryGetSubjectTarget()!.HoldAtTransition();
 
         var stopping = host.StopAsync();
-        await stopEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await subjectStop.WaitUntilReachedAsync();
 
         // Act
         var container = new HostedContainer();
@@ -180,7 +174,7 @@ public class NestedAttachTests
         Assert.False(handler.IsLive(container));
         Assert.False(handler.IsLive(child));
 
-        release.SetResult();
+        subjectStop.Release();
         await stopping;
 
         Assert.False(handler.IsLive(container));
@@ -237,8 +231,8 @@ public class NestedAttachTests
 
             var containerTarget = ((IInterceptorSubject)container).TryGetSubjectTarget()!;
             var childTarget = ((IInterceptorSubject)child).TryGetSubjectTarget()!;
-            await containerTarget.AppendAsync(() => Task.CompletedTask);
-            await childTarget.AppendAsync(() => Task.CompletedTask);
+            await containerTarget.DrainAsync();
+            await childTarget.DrainAsync();
 
             Assert.Equal(1, container.StartCount);
             Assert.Equal(1, child.StartCount);
@@ -270,13 +264,7 @@ public class NestedAttachTests
         await host.StartAsync();
 
         var handler = context.TryGetService<HostedServiceHandler>()!;
-        var drainEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseDrain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        handler.DrainGate = () =>
-        {
-            drainEntered.TrySetResult();
-            return releaseDrain.Task;
-        };
+        using var drain = handler.HoldAtDrain();
 
         var holder = new ContainerHolder(context);
         var container = new HostedContainer();
@@ -293,7 +281,7 @@ public class NestedAttachTests
             if (stopping is null)
             {
                 stopping = host.StopAsync();
-                drainEntered.Task.Wait(TimeSpan.FromSeconds(30));
+                drain.WaitUntilReached();
             }
         };
 
@@ -305,14 +293,14 @@ public class NestedAttachTests
         // go the clear removes both for an unrelated reason and the window is unobservable.
         var child = container.Child;
         Assert.NotNull(child);
-        Assert.True(drainEntered.Task.IsCompleted, "The attach did not land inside the drain window.");
+        Assert.True(drain.WasReached, "The attach did not land inside the drain window.");
         Assert.False(handler.IsLive(container));
         Assert.False(handler.IsLive(child));
 
         Assert.Null(((IInterceptorSubject)container).TryGetSubjectTarget()!.Owner);
         Assert.Null(((IInterceptorSubject)child).TryGetSubjectTarget()!.Owner);
 
-        releaseDrain.SetResult();
+        drain.Release();
         await stopping!;
 
         Assert.Equal(0, container.StartCount);

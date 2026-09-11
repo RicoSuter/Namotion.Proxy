@@ -12,21 +12,21 @@ namespace Namotion.Interceptor.Hosting.Tests;
 internal static class HostingTestHost
 {
     /// <summary>
-    /// Waits for everything already queued on the attachment's chain to have run.
+    /// Waits for everything already queued on the target's chain to have run.
     /// </summary>
     /// <remarks>
     /// An empty transition on the same chain. Appending never runs a body, so this completes only once
     /// everything ahead of it has, which is what makes a read after it deterministic rather than timed.
     /// </remarks>
-    public static Task DrainAsync(this IHostedServiceAttachment attachment)
-        => ((IHostedServiceAttachmentTarget)attachment).Target.AppendAsync(() => Task.CompletedTask);
+    public static Task DrainAsync(this HostedServiceTarget target)
+        => target.AppendAsync(() => Task.CompletedTask);
 
     /// <summary>
-    /// Waits for everything already queued on the subject's own chain to have run. See
-    /// <see cref="DrainAsync(IHostedServiceAttachment)"/>.
+    /// Waits for everything already queued on the attachment's chain to have run. See
+    /// <see cref="DrainAsync(HostedServiceTarget)"/>.
     /// </summary>
-    public static Task DrainSubjectTargetAsync(this IInterceptorSubject subject)
-        => subject.TryGetSubjectTarget()!.AppendAsync(() => Task.CompletedTask);
+    public static Task DrainAsync(this IHostedServiceAttachment attachment)
+        => ((IHostedServiceAttachmentTarget)attachment).Target.DrainAsync();
 
     /// <summary>
     /// Creates the host builder every test in this suite builds on.
@@ -64,12 +64,28 @@ internal static class HostingTestHost
     /// </summary>
     public static async Task<(IHost Host, IInterceptorSubjectContext Context)> StartAsync()
     {
-        var builder = HostingTestHost.CreateBuilder();
+        var builder = CreateBuilder();
         var context = CreateContext(builder);
 
         var host = builder.Build();
         await host.StartAsync();
         return (host, context);
+    }
+
+    /// <summary>
+    /// Starts one host over two hosting enabled contexts, which is what every scenario needs where one
+    /// subject is reachable from two handlers.
+    /// </summary>
+    public static async Task<(IHost Host, IInterceptorSubjectContext First, IInterceptorSubjectContext Second)>
+        StartWithTwoContextsAsync()
+    {
+        var builder = CreateBuilder();
+        var first = CreateContext(builder);
+        var second = CreateContext(builder);
+
+        var host = builder.Build();
+        await host.StartAsync();
+        return (host, first, second);
     }
 
     /// <summary>
@@ -81,6 +97,23 @@ internal static class HostingTestHost
         try
         {
             await action(context);
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="action"/> against the two contexts of a started host and stops it afterwards.
+    /// </summary>
+    public static async Task RunWithTwoContextsAsync(
+        Func<IInterceptorSubjectContext, IInterceptorSubjectContext, Task> action)
+    {
+        var (host, first, second) = await StartWithTwoContextsAsync();
+        try
+        {
+            await action(first, second);
         }
         finally
         {
