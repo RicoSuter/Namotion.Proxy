@@ -55,8 +55,12 @@ public static class InterceptorHostingExtensions
         this IInterceptorSubject subject, Func<T> factory)
         where T : class, IHostedService
     {
-        var attachment = AddAttachment(subject, factory);
+        // Resolved before the attachment is published, because the lookup throws when the subject is
+        // reachable from two hosting contexts. After the add, that throw would leave the caller with no
+        // attachment it knows about and the subject with a factory the next context attach starts.
         var handler = subject.Context.TryGetService<HostedServiceHandler>();
+
+        var attachment = AddAttachment(subject, factory);
 
         // Liveness before the take, because the take reads it: the attach path records only subjects
         // that host something, so a subject that hosted nothing when it entered the graph has no entry
@@ -79,9 +83,10 @@ public static class InterceptorHostingExtensions
         this IInterceptorSubject subject, Func<T> factory, CancellationToken cancellationToken)
         where T : class, IHostedService
     {
-        var attachment = AddAttachment(subject, factory);
-
+        // Resolved before the attachment is published, for the reason on the synchronous overload.
         var handler = subject.Context.TryGetService<HostedServiceHandler>();
+
+        var attachment = AddAttachment(subject, factory);
         if (handler is null)
         {
             // No handler means no context to bound the lifetime, so the factory is stored and nothing runs.
@@ -133,6 +138,11 @@ public static class InterceptorHostingExtensions
     /// </summary>
     public static bool DetachHostedService(this IInterceptorSubject subject, IHostedServiceAttachment attachment)
     {
+        // Resolved before the attachment is removed, because the lookup throws when the subject is
+        // reachable from two hosting contexts. After the removal, that throw would leave the instance
+        // running with no stop appended and no attachment left for any graph event to reach it through.
+        var handler = subject.Context.TryGetService<HostedServiceHandler>();
+
         if (!RemoveAttachment(subject, attachment))
         {
             return false;
@@ -145,7 +155,6 @@ public static class InterceptorHostingExtensions
         // nothing, or appends ahead of the stop below, which then stops and disposes what it created.
         target.MarkDetached();
 
-        var handler = subject.Context.TryGetService<HostedServiceHandler>();
         handler?.AppendStop(subject, target, signal: null, waitFor: null, CancellationToken.None);
 
         // Retired without releasing ownership, and that asymmetry is load bearing: a release here makes
@@ -162,6 +171,9 @@ public static class InterceptorHostingExtensions
     public static async Task<bool> DetachHostedServiceAsync(
         this IInterceptorSubject subject, IHostedServiceAttachment attachment, CancellationToken cancellationToken)
     {
+        // Resolved before the attachment is removed, for the reason on the synchronous overload.
+        var handler = subject.Context.TryGetService<HostedServiceHandler>();
+
         if (!RemoveAttachment(subject, attachment))
         {
             return false;
@@ -172,7 +184,6 @@ public static class InterceptorHostingExtensions
         // Marked before the stop is appended, for the reason on the synchronous overload.
         target.MarkDetached();
 
-        var handler = subject.Context.TryGetService<HostedServiceHandler>();
         if (handler is null)
         {
             return true;
