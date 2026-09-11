@@ -262,6 +262,10 @@ internal sealed class SingleAttachmentHost<TService>
                 return;
             }
 
+            // A wrapper that faulted with its attachment still held arrives here from Error. The message
+            // is the text behind that status alone, and is cleared ahead of the status write so it never
+            // stands under one that is not Error.
+            _owner.StatusMessage = null;
             _owner.Status = ServiceStatus.Stopping;
 
             try
@@ -297,13 +301,9 @@ internal sealed class SingleAttachmentHost<TService>
     }
 
     /// <summary>
-    /// Reports the terminal state: the status, the message that only <see cref="ServiceStatus.Error"/>
-    /// carries, and the diagnostics that read null whenever nothing is running.
+    /// Reports a stop. <see cref="IAttachmentOwner{TService}.DropInstanceState"/> is deliberately not
+    /// part of it: each caller decides that for itself.
     /// </summary>
-    /// <remarks>
-    /// Dropping what the instance published is deliberately not part of this, because the unwind reports
-    /// the stop while that instance is still live. Each caller decides it for itself.
-    /// </remarks>
     private void ReportStopped()
     {
         _owner.Status = ServiceStatus.Stopped;

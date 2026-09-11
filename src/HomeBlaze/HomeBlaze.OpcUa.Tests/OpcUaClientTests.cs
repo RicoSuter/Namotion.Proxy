@@ -31,12 +31,6 @@ public class OpcUaClientTests
     /// </summary>
     private static readonly TimeSpan PollObservation = TimeSpan.FromMilliseconds(500);
 
-    /// <summary>
-    /// How long the start is held while the poll skips its rounds, which is ten of them. Shorter than
-    /// <see cref="PollObservation"/> because the hold occupies a thread pool thread inside a property
-    /// write, and the rest of the suite runs beside it.
-    /// </summary>
-
     /// <summary>A diagnostics value no reconciliation produces, so the poll replacing it is visible.</summary>
     private const int SentinelItemCount = -1;
 
@@ -350,6 +344,60 @@ public class OpcUaClientTests
     }
 
     [Fact]
+    public async Task WhenAFaultedClientStillHoldsItsAttachment_ThenDisablingItDropsTheErrorTextWithTheStatus()
+    {
+        // Arrange
+        await using var testHost = await OpcUaTestHost.StartReAttachableAsync();
+        var client = testHost.CreateClient(diagnosticsPollInterval: FastPoll);
+        testHost.Container.Client = client;
+        await OpcUaTestHost.WaitForStatusAsync(() => client.Status, ServiceStatus.Running);
+
+        var attachment = Assert.Single(client.GetHostedServiceAttachments());
+
+        // Disabled before the re-attach, so the run loop the re-attach restarts issues no start of its
+        // own. The poll is then the only thing that writes, and it is gated against the stop below.
+        client.IsEnabled = false;
+        await ReAttachWithAFailingFactoryAsync(testHost, client, attachment);
+
+        // The fault only reaches the wrapper through a reconciliation, which the stop the unwind reported
+        // short circuits until something asks for a start again. Lifting it by hand rather than through
+        // the Start operation, which would enable the client and hand the run loop a start.
+        client.Status = ServiceStatus.Starting;
+        await OpcUaTestHost.WaitForStatusAsync(() => client.Status, ServiceStatus.Error);
+        Assert.Equal(FactoryFailureMessage, client.StatusMessage);
+        Assert.Same(attachment, Assert.Single(client.GetHostedServiceAttachments()));
+
+        // The stop publishes its status and then awaits the detach, so what stands beside that status is
+        // what the client reports for the whole of that window. Read from the write, because nothing here
+        // can hold the detach open to read it afterwards.
+        var messageBesideStopping = default(string);
+        var reachedStopping = 0;
+        testHost.WriteSeam.ArmAfterWrite((property, value) =>
+        {
+            if (ReferenceEquals(property.Subject, client) &&
+                property.Name == nameof(OpcUaClient.Status) &&
+                value is ServiceStatus.Stopping &&
+                Interlocked.Increment(ref reachedStopping) == 1)
+            {
+                messageBesideStopping = client.StatusMessage;
+            }
+        });
+
+        // Act
+        await client.ApplyConfigurationAsync(CancellationToken.None);
+
+        // Assert
+        // The message is the text behind Error and nothing else, so the status that leaves Error has to
+        // leave it behind too rather than carry it across the detach.
+        Assert.Equal(1, reachedStopping);
+        Assert.Null(messageBesideStopping);
+
+        Assert.Equal(ServiceStatus.Stopped, client.Status);
+        Assert.Null(client.StatusMessage);
+        Assert.Empty(client.GetHostedServiceAttachments());
+    }
+
+    [Fact]
     public async Task WhenTheServerUrlIsNotConfigured_ThenTheStartFailsWithoutAttaching()
     {
         // Arrange
@@ -510,7 +558,7 @@ public class OpcUaClientTests
         await using var testHost = await OpcUaTestHost.StartAsync();
         var client = testHost.CreateClient(diagnosticsPollInterval: FastPoll);
         testHost.Container.Client = client;
-        await OpcUaTestHost.WaitForStatusAsync(() => client.Status, ServiceStatus.Running);
+        await OpcUaTestHost.WaitForRunningClientAsync(client);
 
         // Nothing but the poll writes the diagnostics once the start has returned, so the sentinel being
         // replaced is what establishes that the loop is running at the interval this test assumes.
@@ -545,9 +593,12 @@ public class OpcUaClientTests
 
         // Assert
         // The same loop, still running and still reconciling the same attachment, which is what rules
-        // out a window that passed because the loop had died.
-        await OpcUaTestHost.WaitForStatusAsync(() => client.Status, ServiceStatus.Running);
-        Assert.NotEqual(SentinelItemCount, client.PollingItemCount);
+        // out a window that passed because the loop had died. Both are waited for rather than the status
+        // alone: the reconciliation writes Running before it publishes the numbers, and the numbers here
+        // were never reset, so nothing else distinguishes the round that wrote them.
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => client.Status == ServiceStatus.Running && client.PollingItemCount != SentinelItemCount,
+            message: "The diagnostics poll did not resume once the reported stop was lifted.");
     }
 
     [Fact]
@@ -555,11 +606,14 @@ public class OpcUaClientTests
     {
         // Arrange
         await using var testHost = await OpcUaTestHost.StartAsync();
-        var client = testHost.CreateClient(isEnabled: false, diagnosticsPollInterval: FastPoll);
-        testHost.Container.Client = client;
+        var client = testHost.CreateClient(diagnosticsPollInterval: FastPoll);
 
         // The factory's first act is publishing the tree it is about to bind a source to, and the start
         // holds the gate across the whole attach, so holding it there holds the gate.
+        //
+        // Armed before the client enters the graph, and the start left to the run loop rather than
+        // invoked here: the Start operation enables the client, which is what the loop reads, so a second
+        // start would queue on the gate and write Starting after the first one has reported Running.
         using var factoryReached = new ManualResetEventSlim();
         using var releaseFactory = new ManualResetEventSlim();
         var held = 0;
@@ -577,11 +631,10 @@ public class OpcUaClientTests
             releaseFactory.Wait(HoldTimeout);
         });
 
-        Task start;
         try
         {
             // Act
-            start = client.StartAsync();
+            testHost.Container.Client = client;
             Assert.True(factoryReached.Wait(HoldTimeout), "The start never reached the factory.");
 
             // Nothing is observed while the gate is held. A poll that queued behind it instead would
@@ -594,10 +647,11 @@ public class OpcUaClientTests
             releaseFactory.Set();
         }
 
-        await start;
-
         // Assert
-        Assert.Equal(ServiceStatus.Running, client.Status);
+        // The diagnostics as well as the status, because the start writes Running before it publishes
+        // them: the sentinel below has to go in after that write, or the start replacing it would stand
+        // in for the poll that is what this waits for.
+        await OpcUaTestHost.WaitForRunningClientAsync(client);
         var attachment = Assert.Single(client.GetHostedServiceAttachments());
         Assert.NotNull(attachment.Current);
         Assert.NotNull(client.Root);

@@ -80,8 +80,12 @@ public class OpcUaServerTests
         await testHost.LoadRootAsync();
 
         // Assert
-        await OpcUaTestHost.WaitForStatusAsync(() => server.Status, ServiceStatus.Error);
-        Assert.Equal("Could not resolve subject at path: /NotInTheGraph", server.StatusMessage);
+        // The message as well as the status, because the failing start writes the status first: waiting
+        // for that alone and then reading the message lands between the two writes.
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => server.Status == ServiceStatus.Error &&
+                  server.StatusMessage == "Could not resolve subject at path: /NotInTheGraph",
+            message: "The start did not fail against the configured path once the root had loaded.");
     }
 
     [Fact]
@@ -116,8 +120,13 @@ public class OpcUaServerTests
 
         var server = testHost.CreateServer("/NotInTheGraph");
         testHost.Container.Server = server;
-        await OpcUaTestHost.WaitForStatusAsync(() => server.Status, ServiceStatus.Error);
-        Assert.Equal("Could not resolve subject at path: /NotInTheGraph", server.StatusMessage);
+
+        // The message as well as the status, because the failing start writes the status first: waiting
+        // for that alone and then reading the message lands between the two writes.
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => server.Status == ServiceStatus.Error &&
+                  server.StatusMessage == "Could not resolve subject at path: /NotInTheGraph",
+            message: "The start did not fail against the configured path.");
 
         // Act
         server.Path = "/AlsoNotInTheGraph";
@@ -149,12 +158,13 @@ public class OpcUaServerTests
         // Assert
         // The unwind neither detaches nor takes the gate, so a detach that had to wait for the
         // wrapper's own stop transition would hang here rather than fail.
+        //
+        // The message is waited for alongside the status rather than read after it: the wrapper arrives
+        // here from Error, the message is the text behind that status alone, and the reported stop
+        // writes the status first.
         await AsyncTestHelpers.WaitUntilAsync(
-            () => server.Status == ServiceStatus.Stopped,
-            message: "The server subject did not report its stop.");
-
-        // The wrapper arrives here from Error, and the message is the text behind that status alone.
-        Assert.Null(server.StatusMessage);
+            () => server.Status == ServiceStatus.Stopped && server.StatusMessage is null,
+            message: "The server subject did not report its stop, or kept the error text behind it.");
 
         // The diagnostics are deliberately not asserted here. This server never reaches Running, since
         // its path does not resolve, so they were never set and asserting them null passes with the
