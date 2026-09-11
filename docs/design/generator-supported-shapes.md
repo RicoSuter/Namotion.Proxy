@@ -307,7 +307,7 @@ Most of these surface as a compile error. Some do not, and are worth knowing ind
 
 **NI0013 and NI0014 fire only in derived mode.** A root mode subject that declares its own `GetInstanceProperties` gets a raw CS0111 inside the generated file rather than a diagnostic. Accepted because the name is new, so no existing source can carry it, and the error is loud.
 
-**NI0011 verifies shape, not behaviour.** A base can satisfy every symbol check and still be wrong in three ways, listed under the base class contract in `docs/subject-guidelines.md`. The most damaging is a base whose helpers route through a different executor from the one its `Context` publishes, which reproduces the original bug exactly while passing every check.
+**NI0011 verifies shape, not behaviour.** A base can satisfy every symbol check and still be wrong in three ways, listed under [Three things the compiler cannot check for you](../generator.md#three-things-the-compiler-cannot-check-for-you). The most damaging is a base whose helpers route through a different executor from the one its `Context` publishes: every check passes, and writes are then tracked by an executor nobody reads, so the model and the metadata disagree with no diagnostic anywhere.
 
 **The contract check compares return types and the leading `string` parameter, not the delegate parameters.** A base whose `readValue` parameter is `Func<IInterceptorSubject, int>` rather than `Func<IInterceptorSubject, TProperty>` still satisfies the check and then fails at the call site. The cheap checks catch every realistic typo in a hand copied signature; constructing the expected `Func<>` and `Action<>` types to compare exactly is the remaining work.
 

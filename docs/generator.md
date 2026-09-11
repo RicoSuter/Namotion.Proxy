@@ -186,9 +186,47 @@ public partial class John : IMale
 
 The property is reached by casting to the interface that declares the member (`IHuman` here), so it always resolves through the normal dispatch rules for interface default implementations. A property reached this way is not intercepted, because an explicitly implemented member cannot be routed through the interception pipeline. C# forbids `partial` on an explicit interface implementation (CS0754, joined by CS9248 for the implementation part that can then never exist), so no explicit implementation can be intercepted whatever its accessors look like. Implement the interface implicitly when the property has to be tracked.
 
-An explicit implementation written directly in the subject class is included only when the implemented member is reachable from generated code (at least one accessor accessible through a cast to the declaring interface); if neither accessor is reachable, the member is skipped and reported as NI0006, because writing the explicit implementation in the subject's own file is an opt-in the author can act on. It is skipped, and reported the same way, when the accessors surviving that check leave no emittable `get` or `set`, which is what an `init`-only pair does. The same accessibility check on an explicit implementation declared inside an interface (not the subject class) is silent when it fails, because there is no remedy to offer the subject's author for code they do not own.
+For a property that comes from an interface, whether you implement it explicitly or adopt its default implementation, it becomes a subject property only if the generated code can call at least one accessor. An `init` accessor does not count: C# allows calling it from an object initializer only, never from the generated getter and setter.
 
-An interface default whose only accessor the generated code can call is `init` is dropped from the metadata without a diagnostic, because the interface may not be the subject author's to change. The key is then absent from `IInterceptorSubject.Properties` rather than present with both accessors null.
+What happens when nothing is callable depends on who owns the declaration:
+
+| The member is declared | Result |
+|---|---|
+| In your subject class, as an explicit implementation | Skipped and reported as NI0006, since you wrote it and can change it |
+| In the interface, as a default implementation | Skipped silently, since the interface may not be yours to change |
+
+Written in your own class, so you get told:
+
+```csharp
+public interface IProbe { string Probe { protected get; init; } }
+
+[InterceptorSubject]
+public partial class Sensor : IProbe
+{
+    // NI0006: the protected getter is unreachable and init cannot be called from
+    // the generated accessors, so nothing callable is left.
+    string IProbe.Probe { get => "x"; init { } }
+
+    public partial string Name { get; set; }
+}
+```
+
+Adopted from the interface, so it is dropped in silence and the key is simply absent:
+
+```csharp
+public interface IProbe { string Probe { protected get => "x"; init { } } }
+
+[InterceptorSubject]
+public partial class Sensor : IProbe
+{
+    public partial string Name { get; set; }
+}
+
+// ((IInterceptorSubject)sensor).Properties holds "Name" only; "Probe" is absent
+// rather than present and inert.
+```
+
+This applies to interface members. A plain `init`-only property declared in the subject class itself is a known gap: it still produces an entry, and reading or writing that entry through the metadata does nothing.
 
 Attributes such as `[Derived]` must be declared on the interface member rather than on the explicit implementation, because the property metadata reflects the interface member. Any attribute on the implementation reports NI0007 (see [Diagnostics](#diagnostics)), including an implementation-local one such as `[SuppressMessage]`, which keeps its usual meaning but is simply not part of the metadata.
 
