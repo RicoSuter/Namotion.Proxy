@@ -19,9 +19,9 @@ public partial class SideEffectPerson
     public partial Person? Companion { get; set; }
 
     /// <summary>
-    /// Counts Companion writes that actually landed. The absorption below eats every write that
-    /// runs inside a callback scope, so without this count the deadlock regression test cannot
-    /// tell a live recalculation path from one whose writes are all silently absorbed.
+    /// Counts Companion writes that actually landed. The absorption below eats a write the topology
+    /// gate contract refuses, so without this count the deadlock regression test cannot tell a live
+    /// recalculation path from one whose writes are all silently absorbed.
     /// </summary>
     public int SuccessfulCompanionWriteCount => Volatile.Read(ref _successfulCompanionWrites);
 
@@ -35,11 +35,10 @@ public partial class SideEffectPerson
         // Without the unlocked evaluation in RecalculateDerivedProperty, this would
         // deadlock when concurrent lifecycle operations acquire lock(data) for Greeting.
         //
-        // The write is only legal on that recalculation path, which runs outside any
-        // lifecycle callback. Attach-time evaluation runs inside the derived handler's
-        // attach callback, where the callback contract rejects a structural write, so the
-        // violation is absorbed here to let attach complete and the tests keep driving
-        // the recalculation path, which is the one under test.
+        // A getter runs wherever the evaluation that needs it runs, including inside a thread that
+        // already holds another context's topology transaction, which the gate contract refuses.
+        // That violation is absorbed here so the tests keep driving the recalculation path, which
+        // is the one under test.
         try
         {
             Companion = null;

@@ -83,7 +83,6 @@ internal sealed class LifecycleNotifier(IInterceptorSubjectContext context, Owne
         List<Exception>? failures = null;
         try
         {
-            using var scope = CallbackReentrancyGuard.EnterDeliveryScope();
             var notificationIndex = 0;
             var propertyChangeIndex = 0;
             while (notificationIndex < _notifications.Count || propertyChangeIndex < _propertyChanges.Count)
