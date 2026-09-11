@@ -108,6 +108,31 @@ public class OpcUaServerTests
     }
 
     [Fact]
+    public async Task WhenAnEnabledServerIsReconfigured_ThenTheStartRunsAgainstTheEditedPath()
+    {
+        // Arrange
+        await using var testHost = await OpcUaTestHost.StartAsync();
+        await testHost.LoadRootAsync();
+
+        var server = testHost.CreateServer("/NotInTheGraph");
+        testHost.Container.Server = server;
+        await OpcUaTestHost.WaitForStatusAsync(() => server.Status, ServiceStatus.Error);
+        Assert.Equal("Could not resolve subject at path: /NotInTheGraph", server.StatusMessage);
+
+        // Act
+        server.Path = "/AlsoNotInTheGraph";
+        await server.ApplyConfigurationAsync(CancellationToken.None);
+
+        // Assert
+        // The failed start kept no attachment, so the stop here has nothing to do and the edit is
+        // applied by the start alone. The factory resolves the path on every attach, so a message
+        // naming the edited path is that start having run rather than the previous one still reported.
+        Assert.Equal(ServiceStatus.Error, server.Status);
+        Assert.Equal("Could not resolve subject at path: /AlsoNotInTheGraph", server.StatusMessage);
+        Assert.Empty(server.GetHostedServiceAttachments());
+    }
+
+    [Fact]
     public async Task WhenTheServerSubjectLeavesTheGraph_ThenTheUnwindReportsStopped()
     {
         // Arrange

@@ -33,7 +33,6 @@ internal sealed class OpcUaTestHost : IAsyncDisposable
 
     private readonly IHost _host;
     private readonly ServiceProvider _serializerServices;
-    private readonly SubjectPathResolver _pathResolver;
     private readonly string _rootConfigurationPath;
     private bool _hostStopped;
 
@@ -48,13 +47,13 @@ internal sealed class OpcUaTestHost : IAsyncDisposable
         string rootConfigurationPath)
     {
         _host = host;
-        _pathResolver = pathResolver;
         _serializerServices = serializerServices;
         _rootConfigurationPath = rootConfigurationPath;
 
         Context = context;
         Container = container;
         RootManager = rootManager;
+        PathResolver = pathResolver;
         WriteSeam = writeSeam;
     }
 
@@ -64,6 +63,8 @@ internal sealed class OpcUaTestHost : IAsyncDisposable
     public WrapperContainer Container { get; }
 
     public RootManager RootManager { get; }
+
+    public SubjectPathResolver PathResolver { get; }
 
     public PropertyWriteSeam WriteSeam { get; }
 
@@ -104,9 +105,15 @@ internal sealed class OpcUaTestHost : IAsyncDisposable
         await RootManager.RootLoaded;
     }
 
-    public OpcUaClient CreateClient(string? serverUrl = DeadServerUrl, bool isEnabled = true)
+    /// <summary>
+    /// A client whose diagnostics poll can be made fast enough to observe. The production interval is
+    /// ten seconds, so the reconciliation the poll performs is unreachable from a suite that runs in
+    /// seconds unless a test asks for a shorter one.
+    /// </summary>
+    public OpcUaClient CreateClient(
+        string? serverUrl = DeadServerUrl, bool isEnabled = true, TimeSpan? diagnosticsPollInterval = null)
     {
-        return new OpcUaClient(NullLogger<OpcUaClient>.Instance)
+        return new OpcUaClient(NullLogger<OpcUaClient>.Instance, diagnosticsPollInterval)
         {
             Name = "Test client",
             ServerUrl = serverUrl ?? string.Empty,
@@ -120,9 +127,9 @@ internal sealed class OpcUaTestHost : IAsyncDisposable
     /// OPC UA integration suite hardcodes: a stray listener there fails that suite in a way that looks
     /// like everything except a port conflict.
     /// </summary>
-    public OpcUaServer CreateServer(string path, bool isEnabled = true)
+    public OpcUaServer CreateServer(string path, bool isEnabled = true, TimeSpan? diagnosticsPollInterval = null)
     {
-        return new OpcUaServer(RootManager, _pathResolver, NullLogger<OpcUaServer>.Instance)
+        return new OpcUaServer(RootManager, PathResolver, NullLogger<OpcUaServer>.Instance, diagnosticsPollInterval)
         {
             Name = "Test server",
             Path = path,
@@ -141,6 +148,18 @@ internal sealed class OpcUaTestHost : IAsyncDisposable
         return AsyncTestHelpers.WaitUntilAsync(
             () => status() == expected,
             message: $"The wrapper did not reach {expected}.");
+    }
+
+    /// <summary>
+    /// Waits for a client to report a running instance and to have published that instance's
+    /// diagnostics. The status is written first and the numbers follow it through the whole interceptor
+    /// chain, so a test that waits for Running alone and then reads a number can land in between.
+    /// </summary>
+    public static Task WaitForRunningClientAsync(OpcUaClient client)
+    {
+        return AsyncTestHelpers.WaitUntilAsync(
+            () => client.Status == ServiceStatus.Running && client.TotalReconnections is not null,
+            message: "The client did not report a running instance with its diagnostics.");
     }
 
     /// <summary>
