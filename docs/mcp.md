@@ -322,6 +322,6 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 }
 ```
 
-`NODE_TLS_REJECT_UNAUTHORIZED=0` disables TLS certificate verification for the proxy process only — required because Node.js does not trust the ASP.NET Core development certificate by default. This is scoped to the `mcp-remote` process and only affects connections to your local server.
+`NODE_TLS_REJECT_UNAUTHORIZED=0` disables TLS certificate verification for the proxy process only. It is required because Node.js does not trust the ASP.NET Core development certificate by default. This is scoped to the `mcp-remote` process and only affects connections to your local server.
 
 Restart Claude Desktop after editing the config. The MCP tools should appear in the tools menu.
