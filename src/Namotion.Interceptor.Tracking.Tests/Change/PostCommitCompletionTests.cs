@@ -192,6 +192,51 @@ public class PostCommitCompletionTests
         Assert.Equal(3, Drain(queue).Count);
     }
 
+    [Fact]
+    public void WhenACommittedWriteAndSeveralDependentsFail_ThenTheReportedFailuresAreNotNested()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithFullPropertyTracking();
+        var subject = new CompletionSubject(context) { Name = "old" };
+        var writeFailure = new InvalidOperationException("downstream");
+        var firstFailure = new InvalidOperationException("first");
+        var secondFailure = new InvalidOperationException("second");
+        using var first = new PropertyReference(subject, nameof(CompletionSubject.First))
+            .SubscribeInline((in SubjectPropertyChange _) => throw firstFailure);
+        using var second = new PropertyReference(subject, nameof(CompletionSubject.Second))
+            .SubscribeInline((in SubjectPropertyChange _) => throw secondFailure);
+        context.WithService(() => new ThrowingInterceptor(writeFailure, () => { }));
+
+        // Act
+        var exception = Record.Exception(() => subject.Name = "new");
+
+        // Assert
+        var aggregate = Assert.IsType<AggregateException>(exception);
+        Assert.Same(writeFailure, aggregate.InnerExceptions[0]);
+        Assert.Equal(3, aggregate.InnerExceptions.Count);
+        Assert.Contains(firstFailure, aggregate.InnerExceptions);
+        Assert.Contains(secondFailure, aggregate.InnerExceptions);
+        AssertSettled(subject);
+    }
+
+    [Fact]
+    public void WhenASingleDependentFails_ThenItPropagatesAsItsOwnType()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithFullPropertyTracking();
+        var subject = new CompletionSubject(context) { Name = "old" };
+        var firstFailure = new InvalidOperationException("first");
+        using var first = new PropertyReference(subject, nameof(CompletionSubject.First))
+            .SubscribeInline((in SubjectPropertyChange _) => throw firstFailure);
+
+        // Act
+        var exception = Record.Exception(() => subject.Name = "new");
+
+        // Assert
+        Assert.Same(firstFailure, exception);
+        AssertSettled(subject);
+    }
+
     private static object? Data(CompletionSubject subject, string name) =>
         new PropertyReference(subject, name).GetDerivedPropertyData().LastKnownValue;
 

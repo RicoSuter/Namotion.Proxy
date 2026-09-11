@@ -167,7 +167,9 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
             }
             catch (Exception completionFailure)
             {
-                throw new AggregateException(writeFailure, completionFailure);
+                // Flattened so the reported failures stay one flat list whatever nesting the
+                // completion produced; the write failure keeps its leading position either way.
+                throw new AggregateException(writeFailure, completionFailure).Flatten();
             }
 
             throw;
@@ -223,8 +225,10 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
 
         if (failures is not null)
         {
+            // A lone failure keeps its own type so callers can still catch it directly; several are
+            // reported flat, because a recalculation can itself surface an aggregate.
             if (failures.Count == 1) ExceptionDispatchInfo.Capture(failures[0]).Throw();
-            throw new AggregateException(failures);
+            throw new AggregateException(failures).Flatten();
         }
     }
 
