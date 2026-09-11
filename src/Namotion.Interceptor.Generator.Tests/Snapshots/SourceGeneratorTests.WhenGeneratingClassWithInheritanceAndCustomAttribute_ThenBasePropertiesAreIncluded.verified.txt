@@ -200,7 +200,8 @@ using System.Text.Json.Serialization;
                         isDynamic: false),
             }
             .Concat(global::Light.DefaultProperties)
-            .DistinctBy(pair => pair.Key)
+            .GroupBy(pair => pair.Key)
+            .Select(group => group.First())
             .ToFrozenDictionary();
 
         public DimmableLight()

@@ -175,7 +175,8 @@ using System.Text.Json.Serialization;
                         isDynamic: false),
             }
             .Concat(global::BaseEntity.DefaultProperties)
-            .DistinctBy(pair => pair.Key)
+            .GroupBy(pair => pair.Key)
+            .Select(group => group.First())
             .ToFrozenDictionary();
 
         public Person()
@@ -278,7 +279,8 @@ using System.Text.Json.Serialization;
                         isDynamic: false),
             }
             .Concat(global::Person.DefaultProperties)
-            .DistinctBy(pair => pair.Key)
+            .GroupBy(pair => pair.Key)
+            .Select(group => group.First())
             .ToFrozenDictionary();
 
         public Employee()

@@ -175,7 +175,8 @@ using System.Text.Json.Serialization;
                         isDynamic: false),
             }
             .Concat(global::StatusMachine.DefaultProperties)
-            .DistinctBy(pair => pair.Key)
+            .GroupBy(pair => pair.Key)
+            .Select(group => group.First())
             .ToFrozenDictionary();
 
         public StatusPump()

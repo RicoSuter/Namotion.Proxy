@@ -237,9 +237,13 @@ internal static class SubjectCodeGenerator
             builder.AppendLine("            )");
         }
 
-        // Keeps the FIRST occurrence, which is what makes the order above a precedence order. Without
-        // it ToFrozenDictionary keeps the last, which is how the base used to overwrite the subject.
-        builder.AppendLine("            .DistinctBy(pair => pair.Key)");
+        // Keeps the FIRST occurrence of each key, which is what makes the order above a precedence
+        // order. Without it ToFrozenDictionary keeps the last, which is how the base used to overwrite
+        // the subject. GroupBy rather than the shorter DistinctBy because this runs in the consumer's
+        // compilation: DistinctBy is .NET 6 or later, and a subject may be declared in a netstandard2.0
+        // assembly, where ToFrozenDictionary still resolves through System.Collections.Immutable.
+        builder.AppendLine("            .GroupBy(pair => pair.Key)");
+        builder.AppendLine("            .Select(group => group.First())");
         builder.AppendLine("            .ToFrozenDictionary();");
         builder.AppendLine();
     }
@@ -256,7 +260,7 @@ internal static class SubjectCodeGenerator
         // Each entry is emitted as an indexer assignment (["Name"] = ...) rather than a
         // collection-initializer Add(...), so a duplicate key within one tier silently overwrites
         // rather than throwing at type init. The extractor dedups names and reports NI0008, so this
-        // should never trigger; across tiers DistinctBy resolves duplicates instead.
+        // should never trigger; across tiers the GroupBy below resolves duplicates instead.
         foreach (var property in properties)
         {
             // An explicitly implemented member is unreachable through the class, so it is emitted

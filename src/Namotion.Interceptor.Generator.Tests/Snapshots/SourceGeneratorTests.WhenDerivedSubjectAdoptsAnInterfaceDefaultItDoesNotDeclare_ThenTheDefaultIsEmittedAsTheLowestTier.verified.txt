@@ -180,7 +180,8 @@ using System.Text.Json.Serialization;
                             isDynamic: false),
                 }
             )
-            .DistinctBy(pair => pair.Key)
+            .GroupBy(pair => pair.Key)
+            .Select(group => group.First())
             .ToFrozenDictionary();
 
         public StatusPump()
