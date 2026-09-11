@@ -1,3 +1,5 @@
+using Namotion.Interceptor.Connectors.Reconciliation;
+using Namotion.Interceptor.Tracking.Change;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 using Namotion.Interceptor.Connectors.Diagnostics;
@@ -16,6 +18,41 @@ namespace Namotion.Interceptor.Connectors;
 /// </remarks>
 public sealed class SubjectPropertyWriter
 {
+    internal SourcePropertyReconciler? Reconciler { get; private set; }
+
+    /// <summary>Enables experimental scalar reconciliation. Call before claiming property ownership or loading initial state.</summary>
+    public void EnableReconciliation(ISourcePropertyReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        lock (_lock)
+        {
+            if (Reconciler is not null) return;
+            if (_updates is null) throw new InvalidOperationException("Enable reconciliation before loading initial state.");
+            Reconciler = new SourcePropertyReconciler(_source, reader, _logger);
+        }
+    }
+
+    /// <summary>A snapshot of known experimental verification work; not a synchronization barrier.</summary>
+    public bool HasPendingReconciliation => Reconciler?.HasPending ?? false;
+
+    /// <summary>Number of experimental verification read batches started.</summary>
+    public long VerificationReadCount => Reconciler?.ReadCount ?? 0;
+
+    /// <summary>Applies a scalar observation, or schedules authoritative verification when enabled.</summary>
+    public void WriteValue(PropertyReference property, object? value, DateTimeOffset? timestamp = null, DateTimeOffset? receivedTimestamp = null)
+    {
+        if (Reconciler is { } reconciler)
+        {
+            reconciler.Observe(property);
+            return;
+        }
+        Write((property, value, timestamp, receivedTimestamp, source: _source), static state =>
+            state.property.SetValueFromSource(state.source, state.timestamp, state.receivedTimestamp, state.value));
+    }
+
+    /// <summary>Requests an authoritative refresh without invalidating an in-flight read.</summary>
+    public void RequestReconciliation(PropertyReference property) => Reconciler?.RequestRefresh(property);
+
     private readonly SubjectSourceBase _source;
     private readonly ILogger _logger;
     private readonly QueueMetrics? _inboundBufferMetrics;
@@ -77,6 +114,7 @@ public sealed class SubjectPropertyWriter
     /// </summary>
     public void StartBuffering()
     {
+        Reconciler?.Invalidate();
         lock (_lock)
         {
             // The replaced list is a superseded snapshot that must not be applied. Counted anyway,
@@ -106,6 +144,7 @@ public sealed class SubjectPropertyWriter
     /// </remarks>
     internal void InvalidateGeneration()
     {
+        Reconciler?.Invalidate();
         lock (_lock)
         {
             _generation++;
@@ -174,6 +213,7 @@ public sealed class SubjectPropertyWriter
             // Lock order writer._lock -> _stateLock -> monitor._lock (TransitionTo can reach a
             // registered monitor synchronously) is never reversed anywhere, so it cannot deadlock.
             _source.TransitionStateTo(SourceState.Synchronized);
+            Reconciler?.Resume();
         }
     }
 

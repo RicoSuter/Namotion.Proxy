@@ -26,6 +26,7 @@ public abstract class SubjectSourceBase : SubjectConnectorBase, ISubjectSource
     private const ChangeDeliveryRule DeliveryRule = ChangeDeliveryRule.SourceValuesMayBeStale;
     private readonly TimeSpan _retryTime;
     private readonly SubjectPropertyWriter _propertyWriter;
+    internal SubjectPropertyWriter PropertyWriter => _propertyWriter;
 
     private static readonly TimeSpan ConnectWindowDrainInterval = TimeSpan.FromSeconds(1);
 
@@ -175,6 +176,7 @@ public abstract class SubjectSourceBase : SubjectConnectorBase, ISubjectSource
             // This source will never pump. Reporting a stop keeps it in scope as never-synchronized,
             // so in-scope waits answer Incomplete; unwinding left them on a vacuous Synchronized.
             // Nothing unregisters it until Dispose, which a graph-attached source may never get.
+            _propertyWriter.Reconciler?.Dispose();
             WriteRetryQueue.Retire();
             TransitionStateTo(SourceState.Stopped);
             throw;
@@ -334,6 +336,7 @@ public abstract class SubjectSourceBase : SubjectConnectorBase, ISubjectSource
         }
         finally
         {
+            _propertyWriter.Reconciler?.Dispose();
             WriteRetryQueue.Retire();
             TransitionStateTo(SourceState.Stopped);
         }
@@ -631,6 +634,7 @@ public abstract class SubjectSourceBase : SubjectConnectorBase, ISubjectSource
     /// <inheritdoc />
     public override void Dispose()
     {
+        _propertyWriter.Reconciler?.Dispose();
         // Close outbound admission before publishing the final Stopped, so an observer blocked inside
         // the notification cannot still hand a write to the transport. Publishing while registered keeps
         // a dispose without a stop visible to the monitors.

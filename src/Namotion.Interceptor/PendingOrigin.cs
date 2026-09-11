@@ -34,14 +34,14 @@ internal static class PendingOrigin
 
     [ThreadStatic] private static PendingFrame _frame;
 
-    internal static PendingOriginScope Set(PropertyReference target, ChangeOrigin origin, object? sentValue)
+    internal static PendingOriginScope Set(PropertyReference target, ChangeOrigin origin, object? sentValue, IPropertyWriteGuard? guard = null)
     {
         var scope = new PendingOriginScope(_frame);
         _frame = new PendingFrame
         {
             HasValue = true,
             Target = target,
-            Attempted = new AttemptedOrigin(origin, sentValue)
+            Attempted = new AttemptedOrigin(origin, sentValue, guard)
         };
         return scope;
     }

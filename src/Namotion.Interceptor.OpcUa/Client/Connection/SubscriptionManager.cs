@@ -247,7 +247,10 @@ internal class SubscriptionManager : IAsyncDisposable
                     var change = s.changes[i];
                     try
                     {
-                        change.Property.SetValueFromSource(s.source, change.Timestamp, s.receivedTimestamp, change.Value);
+                        if (s.manager._configuration.EnableExperimentalSourceReconciliation)
+                            s.manager._propertyWriter.WriteValue(change.Property, change.Value, change.Timestamp, s.receivedTimestamp);
+                        else
+                            change.Property.SetValueFromSource(s.source, change.Timestamp, s.receivedTimestamp, change.Value);
                     }
                     catch (Exception e)
                     {

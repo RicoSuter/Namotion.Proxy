@@ -30,6 +30,8 @@ public delegate void WriteInterceptionDelegate<TProperty>(ref PropertyWriteConte
 /// </summary>
 public struct PropertyWriteContext<TProperty>
 {
+    internal IPropertyWriteGuard? WriteGuard;
+
     // Lazy-cache for the write timestamp. One long encodes three states:
     //   == 0    uninitialized; first read calls ResolveAndCacheWriteTimestamp() to populate it.
     //   >  0    real UtcNow ticks.
@@ -131,6 +133,7 @@ public struct PropertyWriteContext<TProperty>
         IsWritten = false;
         _writeTimestamp = 0;
         PendingOrigin.TryConsume(in property, out _attempted);
+        WriteGuard = _attempted.Guard;
     }
 
     /// <summary>
@@ -154,6 +157,7 @@ public struct PropertyWriteContext<TProperty>
         FinalValueIsNewValue = true;
         _writeTimestamp = rawTimestamp;
         PendingOrigin.TryConsume(in property, out _attempted);
+        WriteGuard = _attempted.Guard;
     }
 
     /// <summary>

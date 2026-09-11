@@ -75,6 +75,7 @@ namespace Namotion.Interceptor.Tracking.Change
         public static void SetValueFromOrigin(this Namotion.Interceptor.PropertyReference property, Namotion.Interceptor.ChangeOrigin origin, System.DateTimeOffset? changedTimestamp, System.DateTimeOffset? receivedTimestamp, object? value) { }
         public static void SetValueFromOrigin(this Namotion.Interceptor.PropertyReference property, Namotion.Interceptor.ChangeOrigin origin, System.DateTimeOffset? changedTimestamp, System.DateTimeOffset? receivedTimestamp, object? value, object? sentValue) { }
         public static void SetValueFromSource(this Namotion.Interceptor.PropertyReference property, object source, System.DateTimeOffset? changedTimestamp, System.DateTimeOffset? receivedTimestamp, object? valueFromSource) { }
+        public static void SetValueFromSource(this Namotion.Interceptor.PropertyReference property, object source, System.DateTimeOffset? changedTimestamp, System.DateTimeOffset? receivedTimestamp, object? value, Namotion.Interceptor.IPropertyWriteGuard guard) { }
     }
     public readonly struct SubjectPropertyChange : System.IEquatable<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange>
     {
@@ -247,6 +248,10 @@ namespace Namotion.Interceptor.Tracking.Recorder
 }
 namespace Namotion.Interceptor.Tracking.Transactions
 {
+    public interface ITransactionWriteCoordinator
+    {
+        System.IDisposable BeginCoordination();
+    }
     public interface ITransactionWriter
     {
         System.Threading.Tasks.ValueTask<Namotion.Interceptor.Tracking.Transactions.SourceRevertResult> RevertSourceWritesAsync(System.Collections.Generic.IReadOnlyList<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange> written, object? revertState, System.Threading.CancellationToken cancellationToken);

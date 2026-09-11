@@ -75,6 +75,11 @@ namespace Namotion.Interceptor
         bool TryAddService<TService>(System.Func<TService> factory, System.Func<TService, bool> exists);
         TInterface? TryGetService<TInterface>();
     }
+    public interface IPropertyWriteGuard
+    {
+        void Exit(bool committed);
+        bool TryEnter(Namotion.Interceptor.PropertyReference property);
+    }
     public interface IRaisePropertyChanged
     {
         void RaisePropertyChanged(string propertyName);

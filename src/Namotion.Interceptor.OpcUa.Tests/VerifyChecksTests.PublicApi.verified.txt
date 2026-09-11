@@ -93,6 +93,7 @@ namespace Namotion.Interceptor.OpcUa.Client
         public int DefaultPublishingInterval { get; set; }
         public uint? DefaultQueueSize { get; set; }
         public int? DefaultSamplingInterval { get; set; }
+        public bool EnableExperimentalSourceReconciliation { get; set; }
         public bool EnablePollingFallback { get; set; }
         public bool EnableReadAfterWrite { get; set; }
         public System.TimeSpan KeepAliveInterval { get; set; }

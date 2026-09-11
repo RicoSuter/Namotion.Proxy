@@ -322,6 +322,11 @@ internal sealed class PollingManager : IAsyncDisposable
 
     private async Task ReadBatchAsync(ISession session, ArraySegment<PollingItem> batch, CancellationToken cancellationToken)
     {
+        if (_configuration.EnableExperimentalSourceReconciliation)
+        {
+            foreach (var item in batch) _propertyWriter.RequestReconciliation(item.Property.Reference);
+            return;
+        }
         try
         {
             // Build read request - pre-size to avoid resizing

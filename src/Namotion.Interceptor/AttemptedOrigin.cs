@@ -12,10 +12,12 @@ internal readonly struct AttemptedOrigin
 
     /// <summary>The value the source sent, valid when <see cref="Origin"/> is stamped.</summary>
     public readonly object? SentValue;
+    internal readonly IPropertyWriteGuard? Guard;
 
-    public AttemptedOrigin(ChangeOrigin origin, object? sentValue)
+    public AttemptedOrigin(ChangeOrigin origin, object? sentValue, IPropertyWriteGuard? guard = null)
     {
         Origin = origin;
         SentValue = sentValue;
+        Guard = guard;
     }
 }

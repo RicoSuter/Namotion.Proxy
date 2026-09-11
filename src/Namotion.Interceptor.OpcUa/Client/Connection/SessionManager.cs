@@ -216,7 +216,7 @@ internal sealed class SessionManager : IAsyncDisposable, IDisposable
             PollingManager.Start();
         }
 
-        if (_configuration.EnableReadAfterWrite)
+        if (_configuration.EnableReadAfterWrite && !_configuration.EnableExperimentalSourceReconciliation)
         {
             ReadAfterWriteManager = new ReadAfterWriteManager(
                 sessionProvider: () => CurrentSession,

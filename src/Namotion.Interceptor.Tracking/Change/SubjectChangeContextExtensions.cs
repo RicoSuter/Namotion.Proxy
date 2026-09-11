@@ -4,6 +4,15 @@ namespace Namotion.Interceptor.Tracking.Change;
 
 public static class SubjectChangeContextExtensions
 {
+    /// <summary>Attempts a source apply with admission validated at the property commit boundary.</summary>
+    public static void SetValueFromSource(this PropertyReference property, object source,
+        DateTimeOffset? changedTimestamp, DateTimeOffset? receivedTimestamp, object? value, IPropertyWriteGuard guard)
+    {
+        using (SubjectChangeContext.WithTimestamps(changedTimestamp, receivedTimestamp))
+        using (PendingOrigin.Set(property, ChangeOrigin.FromSource(source), value, guard))
+            property.Metadata.SetValue?.Invoke(property.Subject, value);
+    }
+
     /// <summary>
     /// Sets the value of the property, arming the pending origin so the resulting write carries the
     /// given <paramref name="origin"/> instead of scoping an ambient source. This is the intent-level

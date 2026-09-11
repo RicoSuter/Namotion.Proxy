@@ -45,6 +45,7 @@ namespace Namotion.Interceptor.Mqtt.Client
         public string ClientId { get; init; }
         public System.TimeSpan ConnectTimeout { get; init; }
         public MQTTnet.Protocol.MqttQualityOfServiceLevel DefaultQualityOfService { get; init; }
+        public Namotion.Interceptor.Connectors.Reconciliation.ISourcePropertyReader? ExperimentalReconciliationReader { get; init; }
         public System.TimeSpan HealthCheckInterval { get; init; }
         public System.TimeSpan KeepAliveInterval { get; init; }
         public Namotion.Interceptor.Connectors.Mapping.IReversePropertyMapper<Namotion.Interceptor.Mqtt.Mapping.MqttPropertyMapping, Namotion.Interceptor.Mqtt.Mapping.MqttLookupKey> Mapper { get; init; }
