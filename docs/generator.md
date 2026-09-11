@@ -184,7 +184,7 @@ public partial class John : IMale
 }
 ```
 
-The property is reached by casting to the interface that declares the member (`IHuman` here), so it always resolves through the normal dispatch rules for interface default implementations. A property reached this way is not intercepted, because an explicitly implemented member cannot be routed through the interception pipeline.
+The property is reached by casting to the interface that declares the member (`IHuman` here), so it always resolves through the normal dispatch rules for interface default implementations. A property reached this way is not intercepted, because an explicitly implemented member cannot be routed through the interception pipeline. C# forbids `partial` on an explicit interface implementation (CS0754, joined by CS9248 for the implementation part that can then never exist), so no explicit implementation can be intercepted whatever its accessors look like. Implement the interface implicitly when the property has to be tracked.
 
 An explicit implementation written directly in the subject class is included only when the implemented member is reachable from generated code (at least one accessor accessible through a cast to the declaring interface); if neither accessor is reachable, the member is skipped and reported as NI0006, because writing the explicit implementation in the subject's own file is an opt-in the author can act on. It is skipped, and reported the same way, when the accessors surviving that check leave no emittable `get` or `set`, which is what an `init`-only pair does. The same accessibility check on an explicit implementation declared inside an interface (not the subject class) is silent when it fails, because there is no remedy to offer the subject's author for code they do not own.
 
@@ -231,18 +231,10 @@ public partial class BoosterPump : Pump
 |---|---|---|---|
 | declared by | `IHasLocation.Location` | `Pump.Location` | `Pump.Location` |
 | `IsIntercepted` | `false` | `true` | `true` |
-| `SetValue` | `null` | writes the property | writes the property |
+| `SetValue` | `null` | writes through the interceptor chain | writes through the interceptor chain |
+| `[Required]` among `Attributes` | absent | present | present |
 
-Before this rule was fixed, the base class's entry won over the subject's own declaration, so the default `Device` contributed travelled down the chain and displaced the real property from `Pump` downwards:
-
-| `Properties["Location"]` on `Pump` and `BoosterPump` | before | now |
-|---|---|---|
-| declared by | `IHasLocation.Location` | `Pump.Location` |
-| `IsIntercepted` | `false` | `true` |
-| `SetValue` | `null`, so a write through the metadata had nowhere to go | writes through the interceptor chain |
-| `[Required]` among `Attributes` | absent | present |
-
-Direct C# access was never affected, which is what made the displacement so quiet. `pump.Location = "Hall 2"` wrote the real property and both `pump.Location` and `((IHasLocation)pump).Location` read `"Hall 2"` back before the fix as well, and so did the displaced entry's own getter, since it casts to `IHasLocation` and normal dispatch lands on `Pump.Location` anyway. Only the metadata disagreed with the model: everything reading it saw an unintercepted read-only interface default, which is how the `[Required]` above ended up skipped by data annotation validation.
+Attributes travel with the entry the metadata resolves to, which is what the rest of the library reads: the `[Required]` above is enforced by data annotation validation on `Pump` and `BoosterPump`, while an entry contributed by an interface default carries only the attributes the interface member itself declares.
 
 ### Method Interception
 
@@ -305,7 +297,7 @@ public partial class SealedDog : Animal
 }
 ```
 
-`new` over a plain base class, as above, is supported. Re-declaring an **ancestor subject's** property is not, with or without `new` and whether or not the new declaration is `partial`: two members would then share one property key, so the metadata can reach only one of them while both stay writable through a differently typed reference. The generator rejects it as NI0015, shown with its fix under [Fixing NI0005, NI0008 and NI0015](#fixing-ni0005-ni0008-and-ni0015). Use `virtual` and `override` across a chain of subjects instead.
+`new` over a plain base class, as above, is supported. Re-declaring an **ancestor subject's** property is not, with or without `new` and whether or not the new declaration is `partial`: two members would then share one property key, so the metadata can reach only one of them while both stay writable through a differently typed reference. The generator rejects it as NI0015, shown with its fix under [Fixing NI0005, NI0008 and NI0015](#fixing-ni0005-ni0008-and-ni0015). Use `virtual` and `override` across a chain of subjects instead. Adding `new` is not an alternative to either remedy, because it only silences the CS0108 warning about hiding and neither moves the interface slot nor satisfies NI0005 or NI0015.
 
 ### Access Modifiers
 
@@ -342,6 +334,8 @@ public partial class Config
     }
 }
 ```
+
+An `init` property is assignable from the parameterless constructor, which the generated context constructor chains to, so it can be initialized the same way every other property is. A `required` property is not, because the language demands it at every construction site: `new Config(context) { ConnectionString = "..." }` compiles and `new Config(context)` is CS9035.
 
 ### Nested Classes
 
@@ -396,7 +390,7 @@ public partial class Employee : PersonBase
 }
 ```
 
-The `DefaultProperties` of `Employee` includes properties from both classes, and properties declared on `PersonBase` are intercepted like any other: reads and writes go through the interceptor chain, so change tracking records them and connectors see them. The per instance interception members are emitted once, in the class at the root of the hierarchy, and every subject below it inherits them.
+The `DefaultProperties` of `Employee` includes properties from both classes, and properties declared on `PersonBase` are intercepted like any other: reads and writes go through the interceptor chain, so change tracking records them and connectors see them. The per instance interception members (the context, the property table, the sync root and the helper methods the generated accessors call) are emitted once, in the class at the root of the hierarchy, and every subject below it inherits them.
 
 Note that `PropertyChanged` firing is not evidence that a property is intercepted. A subject with no context still raises it, because the setter calls `RaisePropertyChanged` directly rather than through the chain. If you are testing whether interception reaches a property, assert on an interceptor.
 
@@ -445,7 +439,7 @@ internal partial class InternalSubject
 | Generic subjects, or subjects nested in a generic containing type, are not supported | Use non-generic types. See NI0009 in [Diagnostics](#diagnostics) |
 | File-local subjects are not supported | Remove the `file` modifier. See NI0010 in [Diagnostics](#diagnostics) |
 | Attributes on an explicit interface implementation are not part of the property metadata | Declare an attribute the library reads on the interface member. See NI0007 in [Diagnostics](#diagnostics) |
-| Abstract properties not supported | Use `virtual` instead |
+| Abstract properties not supported | A partial member cannot carry `abstract` (CS0750), so declare the property `virtual` on the base subject and `override` it below |
 | Init-only properties cannot be set after construction | Design constraint of C# |
 | Partial properties cannot have field initializers | Initialize in constructor |
 | A `WithoutInterceptor` method whose stripped name collides with an existing method fails with CS0111 | Rename one of the two. No `NI` diagnostic is reported for this, unless the stripped name is one the generated half occupies, which is reported as NI0006 |
@@ -467,7 +461,7 @@ The generator reports the following diagnostics, all in the `Namotion.Intercepto
 | NI0009 | Error | The subject itself is generic, or the subject is nested inside a generic containing type | Remove the type parameters from the subject or its containing type |
 | NI0010 | Error | The subject is declared `file`-local | Remove the `file` modifier |
 | NI0011 | Error | The nearest base class that is a subject has no usable static `DefaultProperties` of type `IReadOnlyDictionary<string, SubjectPropertyMetadata>`, which leaves nothing for the subject's own property set to concatenate with. The message also lists whatever else is missing, such as `IInterceptorSubject` or the helper members, but a base missing only those still generates and gets NI0012 instead | Put `[InterceptorSubject]` on the base class, or make it satisfy the [subject base class contract](#hand-written-base-classes-and-subclasses). If the base class only exists to add properties at runtime, drop it and call `AddProperties` on the subject instead |
-| NI0012 | Warning | The base class is recognized as a subject but does not expose the shared interception members, either because it was built by an older version of the generator or because it is a hand-written class that provides only `DefaultProperties`. The message lists the members that are missing, which is what separates a stale base from one that lacks a single clause. The subject falls back to emitting its own interception members, so it compiles and behaves exactly as it did before they became shared, which means properties declared on that base class stay unintercepted | Rebuild the base assembly against the current package version, or make the base class satisfy the contract. Suppressing the rule keeps the previous behaviour and the unintercepted base properties with it. Note that under `TreatWarningsAsErrors` this warning fails the build |
+| NI0012 | Warning | The base class is recognized as a subject but does not expose the shared interception members, either because it was built by an older version of the generator or because it is a hand-written class that provides only `DefaultProperties`. The message lists the members that are missing, which is what separates a stale base from one that lacks a single clause. The subject falls back to emitting its own interception members, so it compiles, and properties declared on that base class stay unintercepted | Rebuild the base assembly against the current package version, or make the base class satisfy the contract. Suppressing the rule accepts the fallback and the unintercepted base properties with it. Note that under `TreatWarningsAsErrors` this warning fails the build |
 | NI0013 | Error | The subject, or a class between the subject and its base subject, declares a member named `GetPropertyValue`, `SetPropertyValue`, `InvokeMethod` or `GetInstanceProperties`. The generated bodies call those by simple name, so the declared member can capture the call. The rule matches on the name alone, for any member kind and any signature, because a `new` annotated member of the same shape captures the call with no compiler warning at all | Rename the member. On a class between the two subjects, a `private` member of that name is not reported, because it neither hides nor binds |
 | NI0014 | Error | A class anywhere in the subject's base chain declares a public member that implements `IInterceptorSubject.Context`, `Data`, `SyncRoot` or `AddProperties`, or implements one of those explicitly. Every subject re-lists `IInterceptorSubject`, which recomputes the interface map, so that member takes the slot from the base class implementation. Below the subject's base subject the report is unconditional; at that class and above it, the member is only reported when a class further up already implements the same member, which is what keeps a hand-written subject root deriving from `object` quiet. A same-named member that does not match the interface member's type and signature is not reported, and neither is an `override`, which occupies the slot it already had | Rename the member, or remove the explicit implementation and let the inherited one stand. See [Hierarchy Hazards](#hierarchy-hazards) |
 | NI0015 | Error | A subject declares a property, or an explicit interface implementation, whose name an ancestor subject already exposes. Two members then share one key: the metadata can read only one, both stay writable through a differently typed reference, and both raise changes under that name. Not reported for an `override`, which shares one slot, nor when the hidden member is on a class that does not carry `[InterceptorSubject]`, including a hand-written base that satisfies the subject base contract and does contribute a property set. A declaration that also fails to take an interface slot reports NI0015 alone; NI0005 stands down on that property name, including when NI0015 is suppressed | Rename one of the two, or, where the declaration can carry `override`, make the ancestor property `virtual` and `override` it instead. Several shapes cannot, an explicit interface implementation among them, and renaming is then the only remedy |
@@ -483,7 +477,7 @@ Suppress a rule at the point of use with `#pragma warning disable NI0005`, or pr
 
 These three are errors, so each one is met at a broken build. Their remedies are in the table above; below is the smallest shape that triggers each one, with the version that builds.
 
-**NI0005** is reported when the subject's declaration does not take the interface slot, because the slot was fixed at the class that listed the interface:
+**NI0005** is reported when the subject's declaration does not take the interface slot, because the slot is bound at the class that lists the interface:
 
 ```csharp
 public interface IHasOrigin { string Origin { get; } }
@@ -557,7 +551,7 @@ public partial class Pump : Device
 
 ## Hierarchy Hazards
 
-Emitting the interception members once per hierarchy means a derived subject inherits members it does not declare itself. The first three consequences below follow directly from that; the two after them are listed alongside because they are hierarchy hazards of the same shape, even though their own root cause predates this change. Most need a subject base class to reproduce at all, which is why none of this needs any action for an ordinary hierarchy of `[InterceptorSubject]` classes; where an item does not need a base class, its own section below says so.
+Emitting the interception members once per hierarchy means a derived subject inherits members it does not declare itself. The first three consequences below follow directly from that; the two after them come from a different mechanism, the order in which constructors run and the way C# hides members by name, and are listed alongside because they are hierarchy hazards of the same shape. Most need a subject base class to reproduce at all, which is why none of this needs any action for an ordinary hierarchy of `[InterceptorSubject]` classes; where an item does not need a base class, its own section below says so.
 
 ### A member in a derived class can take an interface slot
 
@@ -567,7 +561,7 @@ The explicit form counts too, and the check does not treat it as safer. Because 
 
 Taking `Context` is the severe case: the inherited helpers keep reading the root's field, which nothing populates any more, so interception stops without an error and the property values still look correct. NI0014 turns the whole shape into a build error, so this is caught at compile time.
 
-This is a behaviour change. A derived subject declaring `public object SyncRoot { get; }` compiled cleanly before, because that class emitted its own explicit implementation which won over its own public member. It is now NI0014.
+A derived subject declaring `public object SyncRoot { get; }` is therefore NI0014, even though the member it takes over is one it never declared.
 
 ### A base class can hijack a slot later, without the consuming assembly being rebuilt
 
@@ -578,7 +572,7 @@ NI0014 runs where the derived subject is compiled, so a member added to the base
 3. that member matches an `IInterceptorSubject` member by name and signature exactly;
 4. the consuming assembly ships without being recompiled.
 
-Recompiling the consuming assembly against the new base turns it into an NI0014 build error, so the window is exactly "shipped, not rebuilt". This is accepted rather than fixed, for the reason under [Why not a virtual hook](#why-not-a-virtual-hook).
+Recompiling the consuming assembly against the new base turns it into an NI0014 build error, so the window is exactly "shipped, not rebuilt". It stays open by design, for the reason under [Why not a virtual hook](#why-not-a-virtual-hook).
 
 ### Members added to IInterceptorSubject in future need the same review
 
@@ -592,7 +586,7 @@ The context is published inside the generated `Subject(IInterceptorSubjectContex
 - field initializers of a derived class, which the language runs before the base constructor;
 - statements in a constructor body that run before the base constructor publishes the context.
 
-The rule is not new, but one case changed. A write in a hand-written subclass constructor body after `: base(context)` has run is now intercepted, including a write to a property declared on the base class, where before it silently was not.
+A write in a hand-written subclass constructor body after `: base(context)` has run is on the other side of that line: the base constructor has published the context by then, so the write is intercepted, including a write to a property declared on the base class.
 
 ### Hiding `RaisePropertyChanged` swallows change notifications
 
@@ -700,7 +694,7 @@ Details that are easy to get wrong:
 - `GetInstanceProperties` may likewise return something that implements the dictionary interface, such as `FrozenDictionary<string, SubjectPropertyMetadata>?`, but it has to be a reference type. The generated code combines the two as `GetInstanceProperties() ?? DefaultProperties`, and `??` rejects a value type on its left, so a struct implementing the interface fails the contract even though the same struct is accepted for `DefaultProperties`, which is only concatenated.
 - The `IRaisePropertyChanged` row is the only one that is not needed for the generated code to compile. A base class that satisfies everything else but not that one still produces code that compiles, with the subject declaring its own change notification members, but it fails the contract all the same: the subject re-emits the whole block and NI0012 is reported, which `TreatWarningsAsErrors` turns into a build error.
 
-What happens when a base class does not satisfy the contract depends on `DefaultProperties`. If it is present and usable, the subject falls back to emitting its own interception members and the generator reports NI0012: the code compiles and behaves as it did before they became shared, which means properties declared on that base class are not intercepted. If `DefaultProperties` is missing or unusable as well, the generator reports NI0011 and generates nothing for the subject.
+What happens when a base class does not satisfy the contract depends on `DefaultProperties`. If it is present and usable, the subject falls back to emitting its own interception members and the generator reports NI0012: the code compiles, and properties declared on that base class are not intercepted. If `DefaultProperties` is missing or unusable as well, the generator reports NI0011 and generates nothing for the subject.
 
 Here is a base class that satisfies the whole contract:
 
@@ -777,7 +771,7 @@ public partial class Machine : TrackedEntityBase
 The list above is checked by looking at member signatures, which cannot see what the members do. Three requirements are behavioural, and a base class that gets one of them wrong passes every check and then misbehaves at runtime.
 
 1. **`AddProperties` must merge starting from `((IInterceptorSubject)this).Properties`**, not from its own `DefaultProperties` and not from its own backing field, and it must store the result in the field that `GetInstanceProperties()` returns. Merging from its own field drops the subclass's `DefaultProperties` on the first call, so the subject loses its own generated properties.
-2. **The three helpers must route through the same executor that `IInterceptorSubject.Context` publishes for that instance.** A base class that keeps a second executor for the helpers still compiles, and reproduces the exact bug that per hierarchy interception members were introduced to fix: writes look fine and no interceptor ever sees them.
+2. **The three helpers must route through the same executor that `IInterceptorSubject.Context` publishes for that instance.** A base class that keeps a second executor for the helpers still compiles, and then writes look fine while no interceptor ever sees them.
 3. **`IInterceptorSubject.Context` must return an `IInterceptorExecutor` built for that instance.** `InterceptorExecutor` binds to its subject when it is constructed, and other parts of the library cast `Context` to `IInterceptorExecutor` without checking, so a borrowed or shared context misroutes every property reference.
 
 ### Writing a subclass by hand

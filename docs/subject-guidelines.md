@@ -123,7 +123,7 @@ public Entity(IInterceptorSubjectContext context) : this() { /* setup */ }
 
 ### Intercepted Explicit Interface Implementation
 
-C# doesn't allow `partial` on explicit interface implementations, so an explicitly implemented property can never be intercepted.
+C# does not allow `partial` on an explicit interface implementation (CS0754), so an explicitly implemented property can never be intercepted. Implement the interface implicitly instead:
 
 ```csharp
 public interface INamed { string Name { get; set; } }
@@ -131,45 +131,15 @@ public interface INamed { string Name { get; set; } }
 [InterceptorSubject]
 public partial class Entity : INamed
 {
-    // ❌ Won't compile (CS0754)
-    // partial string INamed.Name { get; set; }
-    
-    // ✅ Use implicit implementation to get interception
-    public partial string Name { get; set; }
+    public partial string Name { get; set; }  // implicit, and intercepted
 }
 ```
 
-A **non-partial** explicit implementation is supported and does appear in the subject's property metadata, keyed by the member's simple name, but it is not intercepted. Use it for values that are fixed or computed rather than tracked:
-
-```csharp
-public interface IHuman { Gender Gender { get; } }
-public interface IMale : IHuman { Gender IHuman.Gender => Gender.Male; }
-
-[InterceptorSubject]
-public partial class John : IMale
-{
-    // "Gender" is in the metadata and reads as Gender.Male. IHuman.Gender has no setter here;
-    // even a writable explicit implementation would not be intercepted, since C# does not allow
-    // "partial" on an explicit interface implementation.
-}
-```
-
-Attributes belong on the interface member, not the implementation. See [Interface Default Properties](generator.md#interface-default-properties) in the generator documentation.
+A **non-partial** explicit implementation is supported and does appear in the subject's property metadata, keyed by the member's simple name, but it is not intercepted. Use it for values that are fixed or computed rather than tracked, and put attributes on the interface member rather than on the implementation. See [Interface Default Properties](generator.md#interface-default-properties) in the generator reference for that shape and the diagnostics around it.
 
 ### Abstract Properties
 
-Abstract properties can't be partial.
-
-```csharp
-public abstract class Base
-{
-    // ❌ Won't compile
-    // public abstract partial string Name { get; set; }
-    
-    // ✅ Use virtual instead
-    public virtual partial string Name { get; set; }
-}
-```
+A partial property cannot be `abstract` (CS0750). Declare it `virtual` on the base subject and `override` it below, as under [Virtual and Override](#virtual-and-override). See [Limitations](generator.md#limitations) in the generator reference.
 
 ## Patterns That Work
 
@@ -189,45 +159,15 @@ public partial class Dog : Animal
 }
 ```
 
-`new` and `sealed` are also supported on a partial property, and are repeated on the generated half automatically. `new` silences the CS0108 warning that accompanies NI0005, but does not resolve NI0005 by itself. When a subject re-declares a property that an ancestor already exposes through an interface, re-list that interface in the subject's own base list, which is what makes the new declaration take the interface slot; see [New and Sealed Properties](generator.md#new-and-sealed-properties) for the mechanism and [Fixing NI0005, NI0008 and NI0015](generator.md#fixing-ni0005-ni0008-and-ni0015) for the broken shape next to the one that builds.
-
-Re-declaring an **ancestor subject's** property is not supported, with or without `new` and whether or not the new declaration is `partial`; the generator rejects it as NI0015. Use `virtual` on the ancestor and `override` here instead, as in the example above. See [New and Sealed Properties](generator.md#new-and-sealed-properties) for the mechanism.
+`virtual` and `override` are the only way to re-declare a property an ancestor subject already exposes. Hiding it with `new` is rejected as NI0015, whether or not the new declaration is `partial`, because one metadata key cannot reach two backing fields. `new` and `sealed` are supported where the hidden member is not an ancestor subject's property, such as a property on a plain base class. See [New and Sealed Properties](generator.md#new-and-sealed-properties) and [Fixing NI0005, NI0008 and NI0015](generator.md#fixing-ni0005-ni0008-and-ni0015) in the generator reference for the broken shapes next to the ones that build.
 
 ### Interface Default Properties
 
-Interface default implementations are automatically included in property tracking. Mark computed properties with `[Derived]` for change notification:
-
-```csharp
-public interface ITemperatureSensor
-{
-    double Celsius { get; set; }
-
-    [Derived]
-    double Fahrenheit => Celsius * 9.0 / 5.0 + 32;
-}
-
-[InterceptorSubject]
-public partial class Sensor : ITemperatureSensor
-{
-    public partial double Celsius { get; set; }
-    // Fahrenheit is automatically tracked from the interface
-}
-```
-
-An adopted default is a fallback, so a property declared anywhere in a hierarchy beats it. Where the two meet, [Property Precedence Across a Hierarchy](generator.md#property-precedence-across-a-hierarchy) works the resolution through on a three-level example and shows what it used to report.
+Interface default implementations are automatically included in property tracking. Mark a computed one with `[Derived]` on the interface member, not on your class, because the property metadata reflects the interface member. An adopted default is a fallback, so a property declared anywhere in a hierarchy beats it. See [Interface Default Properties](generator.md#interface-default-properties) for the samples and [Property Precedence Across a Hierarchy](generator.md#property-precedence-across-a-hierarchy) for the resolution worked through on a three-level hierarchy.
 
 ### Required and Init
 
-```csharp
-[InterceptorSubject]
-public partial class Config
-{
-    public required partial string ConnectionString { get; set; }
-    public partial string Environment { get; init; }
-    
-    public Config() { Environment = "Development"; }
-}
-```
+`required` and `init` work on partial properties. An `init` property is still assignable from the constructor, which is where every property has to be initialized. See [Init-Only and Required Properties](generator.md#init-only-and-required-properties).
 
 ### Nullable Reference Types
 
@@ -308,23 +248,7 @@ public partial class Sensor
 
 ## Base Classes and Subclasses
 
-A subject can derive from another subject, and properties declared anywhere in the hierarchy are intercepted. The set of members that interception needs (the context, the property table, the sync root and the helper methods the generated accessors call) is emitted once, in the class at the root of the hierarchy, and every subject below it inherits it.
-
-```csharp
-[InterceptorSubject]
-public partial class PersonBase
-{
-    public partial string Name { get; set; }
-}
-
-[InterceptorSubject]
-public partial class Employee : PersonBase
-{
-    public partial string Department { get; set; }
-}
-```
-
-Writing `Name` on an `Employee` goes through the interceptor chain exactly like writing `Department`. A plain class with no attribute may sit between two subjects, and a subject may be `sealed` at any level. Nothing below is needed for this case.
+A subject can derive from another subject: mark both classes `[InterceptorSubject]` and `partial`, and properties declared anywhere in the hierarchy are intercepted, so writing a base-declared property on a derived instance goes through the interceptor chain exactly like writing one the derived class declares. A plain class with no attribute may sit between two subjects, and a subject may be `sealed` at any level. See [Inheritance](generator.md#inheritance) in the generator reference.
 
 Writing either side of that relationship by hand is possible but demanding. It needs a contract this page does not cover; see [Hand-written base classes and subclasses](generator.md#hand-written-base-classes-and-subclasses) in the generator reference.
 
