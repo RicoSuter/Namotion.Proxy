@@ -20,6 +20,12 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
     /// </summary>
     public List<(IInterceptorSubject Subject, long Revision)>? ConsumedAnchors { get; set; }
 
+    /// <summary>
+    /// The reconciler a resumed seed replays its captured properties through. Assigned by the
+    /// lifecycle right after construction, because the reconciler takes this traversal in turn.
+    /// </summary>
+    public StructuralReconciler Reconciler { get; set; } = null!;
+
     public void SeedChildrenIfNeeded(IInterceptorSubject subject)
     {
         if (!graph.AreBaselinesSeeded(subject))
@@ -74,7 +80,7 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
     }
 
     /// <summary>Resumes captured and unread properties of a retained subject whose seed failed.</summary>
-    public bool ResumeFailedSeed(IInterceptorSubject subject, StructuralReconciler reconciler)
+    public bool ResumeFailedSeed(IInterceptorSubject subject)
     {
         if (!graph.TryBeginSeedRecovery(subject, out var ownership)) return false;
         try
@@ -83,7 +89,7 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
             {
                 if (!OwnershipGraph.IsStructural(entry.Value)) continue;
                 var property = new PropertyReference(subject, entry.Key);
-                if (graph.HasBaseline(property)) reconciler.Reconcile(property, entry.Value, null, useCapturedBaseline: true);
+                if (graph.HasBaseline(property)) Reconciler.Reconcile(property, entry.Value, null, useCapturedBaseline: true);
                 if (!ReferenceEquals(graph.TryGetOwnership(subject), ownership)) return true;
             }
 
@@ -140,6 +146,11 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
         };
 
         Publish(subject, change, isContextAttach);
+
+        // The edge may have landed on a subject whose own seed failed earlier. Resuming here rather
+        // than at each call site covers every route that can reach one: the attach descent below,
+        // a reconcile of an attached parent, and an explicit attach.
+        ResumeFailedSeed(subject);
     }
 
     /// <summary>Publishes a subject entering the graph without an edge, as an anchored root.</summary>

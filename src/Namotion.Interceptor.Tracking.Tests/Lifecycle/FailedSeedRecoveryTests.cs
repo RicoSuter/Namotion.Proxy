@@ -126,6 +126,101 @@ public class FailedSeedRecoveryTests
         Assert.Null(trigger.TryGetContext());
     }
 
+    [Fact]
+    public void WhenAnIncompleteSeedGainsAnEdgeThroughAReconcile_ThenItIsResumed()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithRegistry();
+        var originalRoot = new CallbackSpikeNode(context);
+        var secondRoot = new CallbackSpikeNode(context);
+        var leaf = new CallbackSpikeNode();
+        var trigger = new CallbackSpikeSegmentWrapper { Children = new([leaf]) };
+        var failure = new InvalidOperationException("seed getter failed");
+        trigger.OnRead = () => { if (trigger.GetReferenceCount() > 0) throw failure; };
+
+        // Act
+        var first = Record.Exception(() => originalRoot.Payload = trigger);
+        trigger.OnRead = null;
+        secondRoot.Payload = trigger;
+
+        // Assert
+        Assert.Same(failure, first);
+        Assert.Equal(2, trigger.GetReferenceCount());
+        SupportContractAssertions.Settled(context, [originalRoot, secondRoot], originalRoot, secondRoot, trigger, leaf);
+    }
+
+    [Fact]
+    public void WhenAnIncompleteSeedGainsAnEdgeThroughTheAttachDescent_ThenItIsResumed()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithRegistry();
+        var originalRoot = new CallbackSpikeNode(context);
+        var leaf = new CallbackSpikeNode();
+        var trigger = new CallbackSpikeSegmentWrapper { Children = new([leaf]) };
+        var failure = new InvalidOperationException("seed getter failed");
+        trigger.OnRead = () => { if (trigger.GetReferenceCount() > 0) throw failure; };
+
+        // Act
+        var first = Record.Exception(() => originalRoot.Payload = trigger);
+        trigger.OnRead = null;
+
+        // The second parent is built while detached, so its edge to the half seeded subject arrives
+        // through the attach descent rather than through a reconcile of an attached parent.
+        var descendedRoot = new CallbackSpikeNode { Payload = trigger };
+        descendedRoot.AttachToContext(context);
+
+        // Assert
+        Assert.Same(failure, first);
+        Assert.Equal(2, trigger.GetReferenceCount());
+        SupportContractAssertions.Settled(context, [originalRoot, descendedRoot], originalRoot, descendedRoot, trigger, leaf);
+    }
+
+    [Fact]
+    public void WhenAnIncompleteSeedIsReleasedAndReattached_ThenItIsResumed()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithRegistry();
+        var root = new CallbackSpikeNode(context);
+        var leaf = new CallbackSpikeNode();
+        var trigger = new CallbackSpikeSegmentWrapper { Children = new([leaf]) };
+        var failure = new InvalidOperationException("seed getter failed");
+        trigger.OnRead = () => { if (trigger.GetReferenceCount() > 0) throw failure; };
+
+        // Act
+        var first = Record.Exception(() => root.Payload = trigger);
+        trigger.OnRead = null;
+        root.Payload = null;
+        root.Payload = trigger;
+
+        // Assert
+        Assert.Same(failure, first);
+        SupportContractAssertions.Settled(context, [root], root, trigger, leaf);
+    }
+
+    [Fact]
+    public void WhenAnIncompleteSeedIsExplicitlyAttached_ThenItIsResumed()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithRegistry();
+        var root = new CallbackSpikeNode(context);
+        var leaf = new CallbackSpikeNode();
+        var trigger = new CallbackSpikeSegmentWrapper { Children = new([leaf]) };
+        var failure = new InvalidOperationException("seed getter failed");
+        trigger.OnRead = () => { if (trigger.GetReferenceCount() > 0) throw failure; };
+
+        // Act
+        var first = Record.Exception(() => root.Payload = trigger);
+        trigger.OnRead = null;
+
+        // Anchoring the half seeded subject is the other route that reaches an owned subject
+        // without passing through a reconcile of one of its parents.
+        ((IInterceptorSubject)trigger).AttachToContext(context);
+
+        // Assert
+        Assert.Same(failure, first);
+        SupportContractAssertions.Settled(context, [root, trigger], root, trigger, leaf);
+    }
+
     [RunsBefore(typeof(LifecycleInterceptor))]
     private sealed class BeforeSeedProbe(IInterceptorSubject target, List<string> calls) : ILifecycleHandler
     {

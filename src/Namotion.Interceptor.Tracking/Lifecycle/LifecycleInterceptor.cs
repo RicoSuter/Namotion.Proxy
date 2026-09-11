@@ -122,6 +122,7 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
         _attach = new AttachTraversal(_notifier, _graph, _reachability);
         _release = new ReleaseTraversal(_notifier, _graph, _reachability);
         _reconciler = new StructuralReconciler(_notifier, _graph, _attach, _release);
+        _attach.Reconciler = _reconciler;
         _admission = new PropertyAdmission(_graph, _reconciler);
     }
 
@@ -572,6 +573,9 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
                 _graph.SetAnchor(subject, anchor);
                 if (!_graph.IsReleasing(subject))
                 {
+                    // Anchoring reaches an already owned subject without recording an edge, so this
+                    // is the one route that has to resume a failed seed itself.
+                    _attach.ResumeFailedSeed(subject);
                     return;
                 }
 
