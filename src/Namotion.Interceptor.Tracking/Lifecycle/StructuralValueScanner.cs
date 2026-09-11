@@ -47,22 +47,6 @@ internal static class StructuralValueScanner
 
                 return;
 
-            case ICollection collection when !HasKeyedEntries(declaredType, collection):
-            {
-                var index = 0;
-                foreach (var item in collection)
-                {
-                    if (item is IInterceptorSubject subjectItem)
-                    {
-                        occurrences.Add(new SubjectOccurrence(subjectItem, index));
-                    }
-
-                    index++;
-                }
-
-                return;
-            }
-
             case string:
                 return;
 
