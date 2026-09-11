@@ -66,6 +66,7 @@ public class OpcUaClientTests
 
         // Assert
         Assert.Equal(ServiceStatus.Stopped, client.Status);
+        Assert.Null(client.StatusMessage);
         Assert.False(client.IsEnabled);
         Assert.Empty(client.GetHostedServiceAttachments());
         Assert.Null(client.Root);
@@ -295,10 +296,57 @@ public class OpcUaClientTests
         await client.ApplyConfigurationAsync(CancellationToken.None);
 
         // Assert
-        // The stop returns early on a null attachment without touching the status, and the guarded start
-        // is then skipped, so a disabled client goes on reporting the error of a start it no longer wants.
+        // The guarded start is skipped now that the client is disabled, so this stop is the last thing
+        // that writes the status. Whatever it leaves behind is what the client reports from here on.
         Assert.Equal(ServiceStatus.Stopped, client.Status);
         Assert.Null(client.StatusMessage);
+    }
+
+    [Fact]
+    public async Task WhenAStartFaultedAfterPublishingItsTree_ThenDisablingTheClientDropsIt()
+    {
+        // Arrange
+        await using var testHost = await OpcUaTestHost.StartAsync();
+        var client = testHost.CreateClient();
+
+        // The factory publishes the tree before it builds the source that fills it, so a build that
+        // fails leaves a tree behind that nothing is filling. Failing the write once it has committed
+        // is the only seam into that window.
+        //
+        // Armed before the client enters the graph, and the start left to the run loop rather than
+        // invoked here: the Start operation enables the client, which is what the loop reads, so a
+        // second start could run against a seam that has already spent itself and succeed.
+        var failed = 0;
+        testHost.WriteSeam.ArmAfterWrite((property, value) =>
+        {
+            if (!ReferenceEquals(property.Subject, client) ||
+                property.Name != nameof(OpcUaClient.Root) ||
+                value is null ||
+                Interlocked.Exchange(ref failed, 1) == 1)
+            {
+                return;
+            }
+
+            testHost.WriteSeam.ArmAfterWrite(null);
+            throw new InvalidOperationException(FactoryFailureMessage);
+        });
+
+        testHost.Container.Client = client;
+        await OpcUaTestHost.WaitForStatusAsync(() => client.Status, ServiceStatus.Error);
+
+        // The awaited attach takes the attachment back out before it rethrows, so the wrapper holds
+        // nothing and the stop below takes the branch that has nothing to detach.
+        Assert.Empty(client.GetHostedServiceAttachments());
+        Assert.NotNull(client.Root);
+
+        // Act
+        client.IsEnabled = false;
+        await client.ApplyConfigurationAsync(CancellationToken.None);
+
+        // Assert
+        Assert.Equal(ServiceStatus.Stopped, client.Status);
+        Assert.Null(client.StatusMessage);
+        Assert.Null(client.Root);
     }
 
     [Fact]

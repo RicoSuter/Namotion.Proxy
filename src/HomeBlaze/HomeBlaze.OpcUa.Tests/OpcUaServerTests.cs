@@ -153,6 +153,9 @@ public class OpcUaServerTests
             () => server.Status == ServiceStatus.Stopped,
             message: "The server subject did not report its stop.");
 
+        // The wrapper arrives here from Error, and the message is the text behind that status alone.
+        Assert.Null(server.StatusMessage);
+
         // The diagnostics are deliberately not asserted here. This server never reaches Running, since
         // its path does not resolve, so they were never set and asserting them null passes with the
         // unwind's own reset deleted. Pinning that needs a server that binds a port.
