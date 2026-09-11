@@ -13,13 +13,6 @@ internal static class SubjectMetadataExtractor
     private const string InterceptedMethodPostfix = "WithoutInterceptor";
 
     /// <summary>
-    /// Returned for a subject with no subject ancestor, which is the overwhelming majority. Never add
-    /// to it: it is shared by every subject in every compilation the generator instance serves, and its
-    /// only consumer tests membership.
-    /// </summary>
-    private static readonly HashSet<string> NoDisplacedNames = new HashSet<string>();
-
-    /// <summary>
     /// Extracts metadata from a type declaration with the InterceptorSubject attribute.
     /// </summary>
     public static ExtractionResult Extract(
@@ -662,10 +655,6 @@ internal static class SubjectMetadataExtractor
                 var (isGetterAccessible, isSetterAccessible) = GetAccessorAccessibility(
                     compilation, accessibilityMember, typeSymbol, accessorInterface);
 
-                var fullyQualifiedTypeName = property.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-                var accessModifier = GetAccessModifierFromAccessibility(property.DeclaredAccessibility);
-                var interfaceTypeName = accessorInterface.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-
                 var hasGetter = property.GetMethod != null && isGetterAccessible;
                 var hasSetter = property.SetMethod is { IsInitOnly: false } && isSetterAccessible;
                 var hasInit = property.SetMethod?.IsInitOnly == true && isSetterAccessible;
@@ -694,6 +683,10 @@ internal static class SubjectMetadataExtractor
                 }
 
                 winnerByPropertyName[resolvedName] = $"{accessorInterface.ToDisplayString()}.{resolvedName}";
+
+                var fullyQualifiedTypeName = property.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                var accessModifier = GetAccessModifierFromAccessibility(property.DeclaredAccessibility);
+                var interfaceTypeName = accessorInterface.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 
                 // Interface default properties cannot be partial, virtual is implicit
                 interfaceProperties.Add(new PropertyMetadata(
@@ -729,7 +722,7 @@ internal static class SubjectMetadataExtractor
     /// Only ancestors carrying [InterceptorSubject] are scanned, so a declaration displacing a property
     /// of a hand-written base that satisfies the subject base contract is not reported.
     /// </remarks>
-    private static HashSet<string> ReportPropertiesDisplacingAnAncestorSubject(
+    private static HashSet<string>? ReportPropertiesDisplacingAnAncestorSubject(
         INamedTypeSymbol typeSymbol,
         IReadOnlyList<PropertyMetadata> classProperties,
         Location location,
@@ -748,10 +741,10 @@ internal static class SubjectMetadataExtractor
 
         if (subjectAncestors is null)
         {
-            return NoDisplacedNames;
+            return null;
         }
 
-        var reported = new HashSet<string>();
+        HashSet<string>? displacedNames = null;
 
         foreach (var property in classProperties)
         {
@@ -772,7 +765,7 @@ internal static class SubjectMetadataExtractor
                 .OfType<IPropertySymbol>()
                 .Any(candidate => !IsNeverASubjectProperty(candidate)));
 
-            if (isDisplacing && reported.Add(property.Name))
+            if (isDisplacing && (displacedNames ??= []).Add(property.Name))
             {
                 diagnostics.Add(Diagnostic.Create(
                     Diagnostics.DisplacesAncestorSubjectProperty, location,
@@ -780,7 +773,7 @@ internal static class SubjectMetadataExtractor
             }
         }
 
-        return reported;
+        return displacedNames;
     }
 
     /// <summary>
@@ -797,7 +790,7 @@ internal static class SubjectMetadataExtractor
     private static void ReportPropertiesShadowingABaseImplementation(
         INamedTypeSymbol typeSymbol,
         IReadOnlyList<PropertyMetadata> classProperties,
-        HashSet<string> displacedNames,
+        HashSet<string>? displacedNames,
         Location location,
         List<Diagnostic> diagnostics)
     {
@@ -815,7 +808,7 @@ internal static class SubjectMetadataExtractor
             // this rule's remedy, would leave the displacement in place.
             if (property.ExplicitInterfaceTypeName is not null ||
                 property.IsOverride ||
-                displacedNames.Contains(property.Name))
+                displacedNames?.Contains(property.Name) == true)
             {
                 continue;
             }

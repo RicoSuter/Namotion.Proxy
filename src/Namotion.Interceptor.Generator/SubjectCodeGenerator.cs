@@ -227,16 +227,13 @@ internal static class SubjectCodeGenerator
         // Partitioned on IsFromInterface alone. A class-declared explicit implementation is a
         // declaration in the subject's own class and belongs in the first tier, even though it is
         // emitted through an interface cast like an adopted default.
-        var ownProperties = metadata.Properties.Where(property => !property.IsFromInterface).ToList();
-        var interfaceDefaults = metadata.Properties.Where(property => property.IsFromInterface).ToList();
-
-        EmitPropertyDictionary(builder, metadata, ownProperties);
+        EmitPropertyDictionary(builder, metadata, metadata.Properties.Where(property => !property.IsFromInterface));
         builder.AppendLine($"            .Concat({metadata.BaseClass.TypeName}.DefaultProperties)");
 
-        if (interfaceDefaults.Count > 0)
+        if (metadata.Properties.Any(property => property.IsFromInterface))
         {
             builder.AppendLine("            .Concat(");
-            EmitPropertyDictionary(builder, metadata, interfaceDefaults, extraIndent: "    ");
+            EmitPropertyDictionary(builder, metadata, metadata.Properties.Where(property => property.IsFromInterface), extraIndent: "    ");
             builder.AppendLine("            )");
         }
 
@@ -250,7 +247,7 @@ internal static class SubjectCodeGenerator
     private static void EmitPropertyDictionary(
         StringBuilder builder,
         SubjectMetadata metadata,
-        IReadOnlyList<PropertyMetadata> properties,
+        IEnumerable<PropertyMetadata> properties,
         string extraIndent = "")
     {
         builder.AppendLine($"{extraIndent}            new Dictionary<string, SubjectPropertyMetadata>");
@@ -268,42 +265,36 @@ internal static class SubjectCodeGenerator
                 ? property.InterfaceTypeName
                 : property.ExplicitInterfaceTypeName;
 
-            if (accessorInterfaceTypeName is not null)
-            {
-                var getterLambda = property.HasGetter
-                    ? $"(o) => (({accessorInterfaceTypeName})o).{property.Name}"
-                    : "null";
-                var setterLambda = property.HasSetter
-                    ? $"(o, v) => (({accessorInterfaceTypeName})o).{property.Name} = ({property.FullTypeName})v"
-                    : "null";
+            var castTypeName = accessorInterfaceTypeName ?? metadata.ClassName;
 
-                builder.AppendLine($"{extraIndent}                    [\"{property.Name}\"] = new SubjectPropertyMetadata(");
-                builder.AppendLine($"{extraIndent}                        typeof({accessorInterfaceTypeName}).GetProperty(nameof({accessorInterfaceTypeName}.{property.Name}), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,");
-                builder.AppendLine($"{extraIndent}                        {getterLambda},");
-                builder.AppendLine($"{extraIndent}                        {setterLambda},");
-                builder.AppendLine($"{extraIndent}                        isIntercepted: false,");
-                builder.AppendLine($"{extraIndent}                        isDynamic: false),");
-            }
-            else
-            {
-                var getterLambda = property.HasGetter
-                    ? $"(o) => (({metadata.ClassName})o).{property.Name}"
-                    : "null";
-                // Note: init-only properties cannot have a setter lambda because they can only be set during construction
-                var setterLambda = property.HasSetter
-                    ? $"(o, v) => (({metadata.ClassName})o).{property.Name} = ({property.FullTypeName})v"
-                    : "null";
+            var nameofArgument = accessorInterfaceTypeName is not null
+                ? $"{accessorInterfaceTypeName}.{property.Name}"
+                : property.Name;
 
-                builder.AppendLine($"{extraIndent}                    [\"{property.Name}\"] = new SubjectPropertyMetadata(");
-                // DeclaredOnly because a 'new' property whose type differs from the one it hides makes
-                // the unfiltered lookup ambiguous, which throws at type init. Every property reaching
-                // this branch came from the subject's own declarations, so the filter drops nothing.
-                builder.AppendLine($"{extraIndent}                        typeof({metadata.ClassName}).GetProperty(nameof({property.Name}), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,");
-                builder.AppendLine($"{extraIndent}                        {getterLambda},");
-                builder.AppendLine($"{extraIndent}                        {setterLambda},");
-                builder.AppendLine($"{extraIndent}                        isIntercepted: {(property.IsPartial ? "true" : "false")},");
-                builder.AppendLine($"{extraIndent}                        isDynamic: false),");
-            }
+            // DeclaredOnly on the class lookup because a 'new' property whose type differs from the
+            // one it hides makes the unfiltered lookup ambiguous, which throws at type init. Every
+            // property looked up on the class came from the subject's own declarations, so the filter
+            // drops nothing.
+            var declaredOnlyFlag = accessorInterfaceTypeName is not null ? "" : " | BindingFlags.DeclaredOnly";
+
+            // A member reached through an interface cast is read directly rather than through the
+            // executor, whatever the declaration looks like.
+            var isIntercepted = accessorInterfaceTypeName is null && property.IsPartial;
+
+            var getterLambda = property.HasGetter
+                ? $"(o) => (({castTypeName})o).{property.Name}"
+                : "null";
+            // Note: init-only properties cannot have a setter lambda because they can only be set during construction
+            var setterLambda = property.HasSetter
+                ? $"(o, v) => (({castTypeName})o).{property.Name} = ({property.FullTypeName})v"
+                : "null";
+
+            builder.AppendLine($"{extraIndent}                    [\"{property.Name}\"] = new SubjectPropertyMetadata(");
+            builder.AppendLine($"{extraIndent}                        typeof({castTypeName}).GetProperty(nameof({nameofArgument}), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance{declaredOnlyFlag})!,");
+            builder.AppendLine($"{extraIndent}                        {getterLambda},");
+            builder.AppendLine($"{extraIndent}                        {setterLambda},");
+            builder.AppendLine($"{extraIndent}                        isIntercepted: {(isIntercepted ? "true" : "false")},");
+            builder.AppendLine($"{extraIndent}                        isDynamic: false),");
         }
 
         builder.AppendLine($"{extraIndent}            }}");

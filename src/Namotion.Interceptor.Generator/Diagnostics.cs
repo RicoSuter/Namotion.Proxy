@@ -4,6 +4,8 @@ namespace Namotion.Interceptor.Generator;
 
 /// <summary>
 /// Every rule must also be listed in AnalyzerReleases.Unshipped.md, or RS2008 fails the build.
+/// RS1032 fixes the punctuation of every message format below: a single sentence ends without a
+/// period, a message of two or more sentences ends with one.
 /// </summary>
 internal static class Diagnostics
 {
@@ -39,10 +41,10 @@ internal static class Diagnostics
     public static readonly DiagnosticDescriptor GeneratorFailed = new(
         id: "NI0004",
         title: "Interceptor subject generation failed",
-        // One sentence with no trailing period, because RS1032 rejects anything else, and the
-        // exception message interpolated at {2} usually ends in a period of its own. The generated
-        // source is only a file on disk when the consumer sets EmitCompilerGeneratedFiles, so the
-        // message must not send them looking for one that is not there.
+        // Kept to one sentence because the exception message interpolated at {2} usually ends in a
+        // period of its own. The generated source is only a file on disk when the consumer sets
+        // EmitCompilerGeneratedFiles, so the message must not send them looking for one that is not
+        // there.
         messageFormat: "Generating '{0}' failed with {1}: {2} (the full stack trace is in the generated source, which reaches disk only with EmitCompilerGeneratedFiles set)",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
@@ -52,7 +54,6 @@ internal static class Diagnostics
     public static readonly DiagnosticDescriptor ShadowsBaseImplementation = new(
         id: "NI0005",
         title: "Property re-declares a member already implemented by the base class",
-        // Two sentences, so RS1032 requires the trailing period.
         messageFormat: "'{0}' re-declares '{1}' without taking the interface slot, so the subject and the interface report different values forever. Re-list the interface in the subject's base list, or rename the property when its type differs from the interface member's.",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
@@ -127,7 +128,6 @@ internal static class Diagnostics
     public static readonly DiagnosticDescriptor BaseDoesNotSatisfyContract = new(
         id: "NI0011",
         title: "Base class does not satisfy the subject base contract",
-        // Two sentences, so RS1032 requires the trailing period the single-sentence rules omit.
         messageFormat: "Base class '{0}' cannot host a generated subject: it is missing {1}. Use [InterceptorSubject] on the base, or call AddProperties for runtime properties.",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
@@ -138,8 +138,7 @@ internal static class Diagnostics
         id: "NI0012",
         title: "Base class interception members cannot be shared",
         // The missing members are interpolated at {2}: five different base defects reach this rule,
-        // and naming none of them made every one of them produce the same text. Two sentences, so
-        // RS1032 requires the trailing period, exactly as in NI0011.
+        // and naming none of them made every one of them produce the same text.
         messageFormat: "Base class '{0}' is missing {2}, so '{1}' emits its own interception members and the base class's own properties stay unintercepted. Add the missing members to the base class, or rebuild the base assembly against the current package version if it predates the shared interception members.",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Warning,
@@ -167,7 +166,6 @@ internal static class Diagnostics
     public static readonly DiagnosticDescriptor DisplacesAncestorSubjectProperty = new(
         id: "NI0015",
         title: "Property displaces a property an ancestor subject already exposes",
-        // Two sentences, so RS1032 requires the trailing period.
         messageFormat: "'{0}' declares '{1}', which displaces the property an ancestor subject already exposes under that name, leaving two members and one key. Rename one of them, or, where the declaration can carry override, make the ancestor property virtual and override it instead.",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,

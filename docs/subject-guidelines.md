@@ -185,14 +185,13 @@ public partial class Animal
 [InterceptorSubject]
 public partial class Dog : Animal
 {
-    // Override to change accessor visibility
-    public override partial string Name { get; protected set; }
+    public override partial string Name { get; set; }
 }
 ```
 
 `new` and `sealed` are also supported on a partial property, and are repeated on the generated half automatically. `new` silences the CS0108 warning that accompanies NI0005, but does not resolve NI0005 by itself. When a subject re-declares a property that an ancestor already exposes through an interface, re-list that interface in the subject's own base list, which is what makes the new declaration take the interface slot; see [New and Sealed Properties](generator.md#new-and-sealed-properties) and NI0005 in [Diagnostics](generator.md#diagnostics) in the generator documentation.
 
-Hiding an **ancestor subject's** own property with `new` is not supported: two intercepted backing fields would then share one property name, which the generator rejects as NI0015. Use `virtual` on the ancestor and `override` here instead, as in the example above.
+Re-declaring an **ancestor subject's** property is not supported, with or without `new` and whether or not the new declaration is `partial`; the generator rejects it as NI0015. Use `virtual` on the ancestor and `override` here instead, as in the example above. See [New and Sealed Properties](generator.md#new-and-sealed-properties) for the mechanism.
 
 ### Interface Default Properties
 
