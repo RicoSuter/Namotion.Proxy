@@ -13,6 +13,13 @@ internal static class SubjectMetadataExtractor
     private const string InterceptedMethodPostfix = "WithoutInterceptor";
 
     /// <summary>
+    /// Returned for a subject with no subject ancestor, which is the overwhelming majority. Never add
+    /// to it: it is shared by every subject in every compilation the generator instance serves, and its
+    /// only consumer tests membership.
+    /// </summary>
+    private static readonly HashSet<string> NoDisplacedNames = new HashSet<string>();
+
+    /// <summary>
     /// Extracts metadata from a type declaration with the InterceptorSubject attribute.
     /// </summary>
     public static ExtractionResult Extract(
@@ -655,12 +662,6 @@ internal static class SubjectMetadataExtractor
                 var (isGetterAccessible, isSetterAccessible) = GetAccessorAccessibility(
                     compilation, accessibilityMember, typeSymbol, accessorInterface);
 
-                // Skipped in silence. An interface member that generated code cannot see is scoped
-                // by its own author as a helper rather than offered as a property, and the interface
-                // may well be third-party, leaving the subject author with no remedy to follow. The
-                // class-declared explicit implementation in CollectProperties is the opposite case,
-                // written by the subject's own author, and stays reported.
-
                 var fullyQualifiedTypeName = property.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
                 var accessModifier = GetAccessModifierFromAccessibility(property.DeclaredAccessibility);
                 var interfaceTypeName = accessorInterface.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
@@ -674,7 +675,10 @@ internal static class SubjectMetadataExtractor
                 // property whose only reachable accessor is init would produce an entry with two null
                 // accessors: a key that exists and does nothing. HasInit does not rescue it, being
                 // consulted only when emitting a partial property's own accessor, which an interface
-                // default never is.
+                // default never is. Skipped in silence, unlike the class-declared explicit
+                // implementation in CollectProperties: an interface member generated code cannot see
+                // was scoped as a helper by its own author rather than offered as a property, and the
+                // interface may well be third-party, leaving the subject author with no remedy.
                 if (!hasGetter && !hasSetter)
                 {
                     continue;
@@ -722,9 +726,8 @@ internal static class SubjectMetadataExtractor
     /// because omitting the keyword is only CS0108 and the displacement is identical either way.
     /// </summary>
     /// <remarks>
-    /// Restricted to ancestors carrying [InterceptorSubject]. A hand-written base satisfying the base
-    /// contract has a DefaultProperties whose contents no symbol query can reveal, so it is left alone
-    /// rather than guessed at, and a plain class contributes nothing at all.
+    /// Only ancestors carrying [InterceptorSubject] are scanned, so a declaration displacing a property
+    /// of a hand-written base that satisfies the subject base contract is not reported.
     /// </remarks>
     private static HashSet<string> ReportPropertiesDisplacingAnAncestorSubject(
         INamedTypeSymbol typeSymbol,
@@ -732,24 +735,30 @@ internal static class SubjectMetadataExtractor
         Location location,
         List<Diagnostic> diagnostics)
     {
-        var reported = new HashSet<string>();
-
-        var subjectAncestors = SymbolExtensions
-            .EnumerateChain(typeSymbol.BaseType)
-            .Where(SubjectAncestry.HasInterceptorSubjectAttribute)
-            .ToList();
-
-        if (subjectAncestors.Count == 0)
+        // Allocate nothing before the early return: every root subject reaches this and leaves through
+        // it, and the IDE re-runs the generator on each keystroke.
+        List<INamedTypeSymbol>? subjectAncestors = null;
+        foreach (var ancestor in SymbolExtensions.EnumerateChain(typeSymbol.BaseType))
         {
-            return reported;
+            if (SubjectAncestry.HasInterceptorSubjectAttribute(ancestor))
+            {
+                (subjectAncestors ??= new List<INamedTypeSymbol>()).Add(ancestor);
+            }
         }
+
+        if (subjectAncestors is null)
+        {
+            return NoDisplacedNames;
+        }
+
+        var reported = new HashSet<string>();
 
         foreach (var property in classProperties)
         {
-            // An override shares the slot and the backing field it already had, so it displaces
-            // nothing. An explicit implementation is deliberately NOT skipped here: it lands in the
-            // highest precedence tier and would flip an ancestor's intercepted property to a
-            // non-intercepted interface read.
+            // An override shares the slot it already had, so one accessor pair stays reachable, only
+            // one of the two backing fields is ever used, and it displaces nothing. An explicit
+            // implementation is deliberately NOT skipped here: it lands in the highest precedence tier
+            // and would flip an ancestor's intercepted property to a non-intercepted interface read.
             if (property.IsOverride)
             {
                 continue;

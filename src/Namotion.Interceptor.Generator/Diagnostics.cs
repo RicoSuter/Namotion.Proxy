@@ -53,7 +53,7 @@ internal static class Diagnostics
         id: "NI0005",
         title: "Property re-declares a member already implemented by the base class",
         // Two sentences, so RS1032 requires the trailing period.
-        messageFormat: "'{0}' re-declares '{1}' without taking the interface slot, so the subject and the interface report different values forever. Re-list the interface in the class's base list, or rename the property when its type differs from the interface member's.",
+        messageFormat: "'{0}' re-declares '{1}' without taking the interface slot, so the subject and the interface report different values forever. Re-list the interface in the subject's base list, or rename the property when its type differs from the interface member's.",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,
@@ -168,7 +168,7 @@ internal static class Diagnostics
         id: "NI0015",
         title: "Property displaces a property an ancestor subject already exposes",
         // Two sentences, so RS1032 requires the trailing period.
-        messageFormat: "'{0}' declares '{1}', which displaces the property an ancestor subject already exposes under that name, leaving two members and one key. Make the ancestor property virtual and override it, or rename one of them.",
+        messageFormat: "'{0}' declares '{1}', which displaces the property an ancestor subject already exposes under that name, leaving two members and one key. Rename one of them, or, where the declaration can carry override, make the ancestor property virtual and override it instead.",
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true,

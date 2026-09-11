@@ -215,9 +215,7 @@ internal static class SubjectCodeGenerator
 
         builder.AppendLine($"        public {newModifier}static IReadOnlyDictionary<string, SubjectPropertyMetadata> DefaultProperties {{ get; }} =");
 
-        // A root has nothing to lose a key to, so it stays a single dictionary: the extractor already
-        // drops an interface default whose name the class declares, and no Concat means no duplicate
-        // to resolve.
+        // A root has nothing to lose a key to, so it stays a single dictionary.
         if (metadata.BaseClass.TypeName is null)
         {
             EmitPropertyDictionary(builder, metadata, metadata.Properties);

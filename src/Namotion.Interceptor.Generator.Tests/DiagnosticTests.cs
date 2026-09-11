@@ -1070,7 +1070,8 @@ namespace Repro
     [Fact]
     public void WhenSubjectOverridesAnAncestorSubjectProperty_ThenNI0015IsNotReported()
     {
-        // Arrange: an override shares one slot and one backing field, so there is nothing to displace.
+        // Arrange: an override shares one slot, so only one accessor pair is reachable and only one of
+        // the two backing fields is ever used, leaving nothing to displace.
         const string source = @"
 using Namotion.Interceptor.Attributes;
 namespace Repro
