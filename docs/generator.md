@@ -154,15 +154,15 @@ A derived property establishes an ownership edge only when it is the store of re
 public Room? Current => Rooms.FirstOrDefault();  // fine: Rooms owns the room
 
 [Derived]
-public Room Current => _room ??= new Room();     // rejected: nothing owns the room
+public Room Current => _room ??= new Room();     // untracked: nothing owns the room
 
 [Derived]
 public partial Room? Current { get; set; }       // fine: the backing field is the store
 ```
 
-With `WithDerivedPropertyChangeDetection()` enabled, the lazily constructing shape throws `LifecycleContractViolationException` when the getter is evaluated. Without it nothing evaluates the getter, so the subject is silently untracked instead. Scalar derived properties are unaffected either way.
+The lazily constructing shape is not rejected, it is simply outside the graph: a computed projection acquires no ownership, so the room is never attached, registered or released. With `WithDerivedPropertyChangeDetection()` enabled the getter is evaluated during attach and constructs the room anyway; without it nothing evaluates the getter at all. Scalar derived properties are unaffected either way.
 
-The same lazily constructing shape without `[Derived]` is quieter still: a non-partial property is not intercepted at all, so nothing ever evaluates it and no rule can reject it. See [Structural Properties and Lazy Getters](tracking.md#structural-properties-and-lazy-getters) for where a lazy getter is supported and why it has to cache.
+The same lazily constructing shape without `[Derived]` is quieter still: a non-partial property is not intercepted at all, so nothing ever evaluates it. See [Structural Properties and Lazy Getters](tracking.md#structural-properties-and-lazy-getters) for where a lazy getter is supported and why it has to cache.
 
 ### Interface Default Properties
 
