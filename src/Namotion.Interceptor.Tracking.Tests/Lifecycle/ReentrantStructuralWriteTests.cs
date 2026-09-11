@@ -25,8 +25,8 @@ public class ReentrantStructuralWriteTests
     private static object? GetCommittedBaseline(IInterceptorSubjectContext context, EnumerableChildrenHolder holder)
     {
         var lifecycle = (LifecycleInterceptor)context.TryGetService<ILifecycleInterceptor>()!;
-        return lifecycle.Graph.GetBaseline(
-            new PropertyReference(holder, nameof(EnumerableChildrenHolder.Children)));
+        return lifecycle.Graph.GetBaselineSnapshot(
+            new PropertyReference(holder, nameof(EnumerableChildrenHolder.Children))).Value;
     }
 
     /// <summary>

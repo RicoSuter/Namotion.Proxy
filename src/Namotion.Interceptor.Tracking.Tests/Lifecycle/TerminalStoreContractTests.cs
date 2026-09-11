@@ -66,7 +66,7 @@ public class TerminalStoreContractTests
         // the rejection one that arrived before the reconcile rather than during it.
         var graph = GetGraph(context);
         var property = new PropertyReference(parent, nameof(SubstitutingDevice.Child));
-        Assert.True(graph.GetBaseline(property) is null,
+        Assert.True(graph.GetBaselineSnapshot(property).Value is null,
             "the rejected write committed the terminal's value as the property baseline");
         Assert.False(graph.IsOwned(foreign),
             "the rejected write recorded ownership for a subject owned by another context");

@@ -78,7 +78,7 @@ public class OwnershipChangeStreamTests
         IInterceptorSubjectContext context, IInterceptorSubject subject, string propertyName)
     {
         var lifecycle = (LifecycleInterceptor)context.TryGetService<ILifecycleInterceptor>()!;
-        return lifecycle.Graph.GetBaseline(new PropertyReference(subject, propertyName));
+        return lifecycle.Graph.GetBaselineSnapshot(new PropertyReference(subject, propertyName)).Value;
     }
 
     private static IInterceptorSubjectContext CreateContext(LifecycleChangeStreamRecorder recorder)

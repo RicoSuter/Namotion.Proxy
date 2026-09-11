@@ -596,7 +596,7 @@ public class AddPropertiesLifecycleTests
         // Act
         subject.AddProperties(batch);
 
-        // Assert: no baseline entry survives for the released subject. GetBaseline cannot
+        // Assert: no baseline entry survives for the released subject. A baseline read cannot
         // distinguish a committed null from no entry, so presence is asserted directly.
         Assert.Equal(2, trap.EnumerationCount);
         Assert.Null(subject.TryGetContext());

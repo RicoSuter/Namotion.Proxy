@@ -74,7 +74,7 @@ internal static class SupportContractAssertions
         var registry = context.GetService<ISubjectRegistry>();
         foreach (var entry in storedValues)
         {
-            if (!graph.HasBaseline(entry.Key) || !Equals(entry.Value, graph.GetBaseline(entry.Key)))
+            if (!graph.HasBaseline(entry.Key) || !Equals(entry.Value, graph.GetBaselineSnapshot(entry.Key).Value))
                 errors.Add($"{phase}: {Edge(entry.Key, null)} baseline differs from storage");
         }
         void EqualEdges(IEnumerable<string> expected, IEnumerable<string> actual, string label)

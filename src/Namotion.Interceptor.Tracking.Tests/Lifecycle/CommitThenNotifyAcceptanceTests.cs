@@ -170,7 +170,7 @@ public class CommitThenNotifyAcceptanceTests
         Assert.Same(failure, exception);
         Assert.Equal(1, callbackCount);
         Assert.True(((IInterceptorSubject)root).Properties.ContainsKey("Poison"));
-        Assert.Same(child, context.TryGetLifecycleInterceptor()!.Graph.GetBaseline(property));
+        Assert.Same(child, context.TryGetLifecycleInterceptor()!.Graph.GetBaselineSnapshot(property).Value);
         AssertAttached(context, root, 0);
         AssertAttached(context, child, 1);
         AssertEdge(context, child, property);

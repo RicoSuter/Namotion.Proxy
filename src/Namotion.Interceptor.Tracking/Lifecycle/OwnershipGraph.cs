@@ -143,12 +143,6 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 
     #region Property baselines, which are also the committed outgoing edges
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public object? GetBaseline(PropertyReference property)
-    {
-        return _baselines.GetValueOrDefault(property).Value;
-    }
-
     public PropertyBaseline GetBaselineSnapshot(PropertyReference property) => _baselines.GetValueOrDefault(property);
 
     public long SetBaseline(PropertyReference property, IInterceptorSubject? value)
@@ -246,7 +240,7 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 
     /// <summary>
     /// Whether a baseline entry exists at all: a committed null and a missing entry both read as
-    /// null through <see cref="GetBaseline"/>, and the released-subject regression tests must tell
+    /// null through <see cref="GetBaselineSnapshot"/>, and the released-subject regression tests must tell
     /// them apart.
     /// </summary>
     public bool HasBaseline(PropertyReference property)
