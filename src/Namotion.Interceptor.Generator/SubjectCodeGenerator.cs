@@ -41,7 +41,7 @@ internal static class SubjectCodeGenerator
 
     /// <summary>
     /// Emitted per member rather than across the block: a blanket 'new' is CS0109 wherever nothing is
-    /// hidden, and an NI0012 base that hides nothing is the common case. Names come from
+    /// hidden, and an NI0062 base that hides nothing is the common case. Names come from
     /// <see cref="MemberNames"/>, never from a literal here.
     /// </summary>
     private static string HidingModifier(SubjectMetadata metadata, string memberName)
@@ -288,7 +288,7 @@ internal static class SubjectCodeGenerator
 
         // Each entry is emitted as an indexer assignment (["Name"] = ...) rather than a
         // collection-initializer Add(...), so a duplicate key within one tier silently overwrites
-        // rather than throwing at type init. The extractor dedups names and reports NI0008, so this
+        // rather than throwing at type init. The extractor dedups names and reports NI0061, so this
         // should never trigger; across tiers the GroupBy below resolves duplicates instead.
         foreach (var property in properties)
         {
@@ -314,11 +314,11 @@ internal static class SubjectCodeGenerator
             // executor, whatever the declaration looks like.
             var isIntercepted = accessorInterfaceTypeName is null && property.IsPartial;
 
-            var getterLambda = property.HasGetter
+            var getterLambda = property.HasGetter || property.HasInheritedGetter
                 ? $"(o) => (({castTypeName})o).{property.Name}"
                 : "null";
             // Note: init-only properties cannot have a setter lambda because they can only be set during construction
-            var setterLambda = property.HasSetter
+            var setterLambda = property.HasSetter || property.HasInheritedSetter
                 ? $"(o, v) => (({castTypeName})o).{property.Name} = ({property.FullTypeName})v"
                 : "null";
 
@@ -386,7 +386,7 @@ internal static class SubjectCodeGenerator
 
         // Every modifier the declaring half carries has to be repeated here, or the two halves of
         // the partial property disagree and the compiler reports CS8800. 'new' matters beyond
-        // symmetry: it is the only way to silence the CS0108 that accompanies NI0005.
+        // symmetry: it is the only way to silence the CS0108 that accompanies NI0060.
         var additionalModifiers = "";
         if (property.IsNew)
         {

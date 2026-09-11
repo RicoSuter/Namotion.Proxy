@@ -166,9 +166,9 @@ internal static class GeneratorTestHost
             references: References,
             options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
-        // Opt in, not automatic. NI0012's stale-base fixture is a base built by an OLDER generator:
+        // Opt in, not automatic. NI0062's stale-base fixture is a base built by an OLDER generator:
         // running the current generator over it would emit protected helpers, satisfy the contract,
-        // and make NI0012 unreachable.
+        // and make NI0062 unreachable.
         if (runGeneratorOverLibrary)
         {
             GeneratorDriver libraryDriver = CSharpGeneratorDriver.Create(new InterceptorSubjectGenerator());

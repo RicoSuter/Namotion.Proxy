@@ -222,7 +222,7 @@ namespace Repro
         var generated = GeneratorTestHost.Run(source);
 
         // Assert
-        Assert.Single(generated.GeneratorDiagnostics, diagnostic => diagnostic.Id == "NI0006");
+        Assert.Single(generated.GeneratorDiagnostics, diagnostic => diagnostic.Id == "NI0040");
         var generatedSource = generated.Sources.Single().SourceText.ToString();
         Assert.Contains("\"Name\"", generatedSource);
         Assert.DoesNotContain("\"Probe\"", generatedSource);

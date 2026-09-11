@@ -118,7 +118,7 @@ internal static class SubjectMetadataExtractor
             location,
             diagnostics);
 
-        // NI0015 runs first and its names are handed to NI0005, which stands down on them. The two
+        // NI0065 runs first and its names are handed to NI0060, which stands down on them. The two
         // rules are not mutually exclusive and both can match one declaration.
         var displacedNames = ReportPropertiesDisplacingAnAncestorSubject(
             typeSymbol, classProperties, location, diagnostics);
@@ -211,7 +211,7 @@ internal static class SubjectMetadataExtractor
     /// already drifted apart once before, on accessibility.
     /// </summary>
     /// <remarks>
-    /// Neither shape is reported: NI0006 speaks to a member that could plausibly have become a
+    /// Neither shape is reported: NI0040 speaks to a member that could plausibly have become a
     /// subject property and did not, and neither an indexer nor a static member was ever a
     /// candidate. A class-declared indexer has always been ignored in silence (it parses as
     /// <c>IndexerDeclarationSyntax</c>, which the property filter excludes before this guard runs),
@@ -357,11 +357,32 @@ internal static class SubjectMetadataExtractor
                     getterAccessModifier,
                     setterAccessModifier,
                     InterfaceTypeName: null,
-                    ExplicitInterfaceTypeName: explicitInterfaceTypeName));
+                    ExplicitInterfaceTypeName: explicitInterfaceTypeName,
+                    HasInheritedGetter: isOverride && !hasGetter && HasAccessibleInheritedAccessor(
+                        declaredPropertySymbol?.OverriddenProperty, true, declarationModel.Compilation, typeSymbol),
+                    HasInheritedSetter: isOverride && !hasSetter && !hasInit && HasAccessibleInheritedAccessor(
+                        declaredPropertySymbol?.OverriddenProperty, false, declarationModel.Compilation, typeSymbol)));
             }
         }
 
         return properties;
+    }
+
+    private static bool HasAccessibleInheritedAccessor(
+        IPropertySymbol? property, bool isGetter, Compilation compilation, INamedTypeSymbol subjectType)
+    {
+        // Follow the overridden slot, including plain intermediate classes. A same-named property
+        // elsewhere in the base chain may belong to a different slot.
+        for (; property is not null; property = property.OverriddenProperty)
+        {
+            var accessor = isGetter ? property.GetMethod : property.SetMethod;
+            if (accessor is not null)
+            {
+                return !accessor.IsInitOnly && compilation.IsSymbolAccessibleWithin(accessor, subjectType, subjectType);
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -413,7 +434,7 @@ internal static class SubjectMetadataExtractor
         foreach (var winner in result)
         {
             // Two explicit implementations of one simple name (typically one generic interface at
-            // two instantiations) is the class-declared form of the NI0008 collision: whatever
+            // two instantiations) is the class-declared form of the NI0061 collision: whatever
             // claims the name, at least one interface member is dropped. A class property colliding
             // with a single explicit implementation is not: only one of the two comes from an
             // interface, and the class property is the documented winner.
@@ -527,7 +548,7 @@ internal static class SubjectMetadataExtractor
 
                 // The capture is silent: in derived mode the only compiler signal is a CS0108 that a
                 // consumer without TreatWarningsAsErrors never sees, and an AddProperties wrapper
-                // produces none at all. NI0013 scans declared members rather than emitted ones.
+                // produces none at all. NI0063 scans declared members rather than emitted ones.
                 if (GeneratedMemberTable.CollidesWithGeneratedMember(methodName))
                 {
                     diagnostics.Add(Diagnostic.Create(
@@ -585,6 +606,7 @@ internal static class SubjectMetadataExtractor
         // Keyed by simple name, valued by the member that took it, so a collision can name the
         // winner instead of leaving several identical warnings at one location.
         var winnerByPropertyName = new Dictionary<string, string>();
+        HashSet<ISymbol>? processedSlots = null;
 
         foreach (var interfaceType in typeSymbol.AllInterfaces)
         {
@@ -631,7 +653,14 @@ internal static class SubjectMetadataExtractor
                     continue;
                 }
 
-                // Skip properties already processed from another interface (diamond inheritance)
+                // Explicit interface overrides and their declarations share one dispatch slot.
+                // AllInterfaces visits derived interfaces first, so retain the most-derived entry.
+                if (!(processedSlots ??= new HashSet<ISymbol>(SymbolEqualityComparer.Default)).Add(explicitImplementation ?? property))
+                {
+                    continue;
+                }
+
+                // Distinct slots with the same simple name compete for one metadata entry.
                 if (winnerByPropertyName.TryGetValue(resolvedName, out var winnerDescription))
                 {
                     diagnostics.Add(Diagnostic.Create(
@@ -803,7 +832,7 @@ internal static class SubjectMetadataExtractor
         foreach (var property in classProperties)
         {
             // An explicit implementation is by definition the implementation, and an override
-            // shares the slot of the base member it overrides. A name NI0015 already reported keeps
+            // shares the slot of the base member it overrides. A name NI0065 already reported keeps
             // only that report: both rules can match one declaration, and re-listing the interface,
             // this rule's remedy, would leave the displacement in place.
             if (property.ExplicitInterfaceTypeName is not null ||

@@ -159,7 +159,7 @@ public partial class Dog : Animal
 }
 ```
 
-`virtual` and `override` are the only way to re-declare a property an ancestor subject already exposes. Hiding it with `new` is rejected as NI0015, whether or not the new declaration is `partial`, because one metadata key cannot reach two backing fields. `new` and `sealed` are supported where the hidden member is not an ancestor subject's property, such as a property on a plain base class. See [New and Sealed Properties](generator.md#new-and-sealed-properties) and [Fixing NI0005, NI0008 and NI0015](generator.md#fixing-ni0005-ni0008-and-ni0015) in the generator reference for the broken shapes next to the ones that build.
+`virtual` and `override` are the only way to re-declare a property an ancestor subject already exposes. Hiding it with `new` is rejected as NI0065, whether or not the new declaration is `partial`, because one metadata key cannot reach two backing fields. `new` and `sealed` are supported where the hidden member is not an ancestor subject's property, such as a property on a plain base class. See [New and Sealed Properties](generator.md#new-and-sealed-properties) and [Fixing NI0060, NI0061 and NI0065](generator.md#fixing-ni0060-ni0061-and-ni0065) in the generator reference for the broken shapes next to the ones that build.
 
 ### Interface Default Properties
 

@@ -192,7 +192,7 @@ What happens when nothing is callable depends on who owns the declaration:
 
 | The member is declared | Result |
 |---|---|
-| In your subject class, as an explicit implementation | Skipped and reported as NI0006, since you wrote it and can change it |
+| In your subject class, as an explicit implementation | Skipped and reported as NI0040, since you wrote it and can change it |
 | In the interface, as a default implementation | Skipped silently, since the interface may not be yours to change |
 
 Written in your own class, so you get told:
@@ -203,7 +203,7 @@ public interface IProbe { string Probe { protected get; init; } }
 [InterceptorSubject]
 public partial class Sensor : IProbe
 {
-    // NI0006: the protected getter is unreachable and init cannot be called from
+    // NI0040: the protected getter is unreachable and init cannot be called from
     // the generated accessors, so nothing callable is left.
     string IProbe.Probe { get => "x"; init { } }
 
@@ -228,7 +228,7 @@ public partial class Sensor : IProbe
 
 This applies to interface members. A plain `init`-only property declared in the subject class itself is a known gap: it still produces an entry, and reading or writing that entry through the metadata does nothing.
 
-Attributes such as `[Derived]` must be declared on the interface member rather than on the explicit implementation, because the property metadata reflects the interface member. Any attribute on the implementation reports NI0007 (see [Diagnostics](#diagnostics)), including an implementation-local one such as `[SuppressMessage]`, which keeps its usual meaning but is simply not part of the metadata.
+Attributes such as `[Derived]` must be declared on the interface member rather than on the explicit implementation, because the property metadata reflects the interface member. Any attribute on the implementation reports NI0020 (see [Diagnostics](#diagnostics)), including an implementation-local one such as `[SuppressMessage]`, which keeps its usual meaning but is simply not part of the metadata.
 
 ### Property Precedence Across a Hierarchy
 
@@ -294,7 +294,7 @@ public partial class Calculator
 
 The generated method routes through the interception pipeline, enabling cross-cutting concerns.
 
-Parameters are forwarded by value, so `in` and `ref readonly` parameters are supported, while a plain `ref` or an `out` parameter is not and makes the method skipped with NI0006. A by-reference return type is skipped the same way: no wrapper is generated, so a caller that relied on one fails to compile with CS1061 rather than silently losing the ref semantics.
+Parameters are forwarded by value, so `in` and `ref readonly` parameters are supported, while a plain `ref` or an `out` parameter is not and makes the method skipped with NI0040. A by-reference return type is skipped the same way: no wrapper is generated, so a caller that relied on one fails to compile with CS1061 rather than silently losing the ref semantics.
 
 ### Virtual and Override Properties
 
@@ -312,6 +312,8 @@ public partial class Dog : Animal
 }
 ```
 
+An override keeps the overriding declaration’s `PropertyInfo` and attributes. If it omits a getter or setter, the metadata retains that inherited accessor when it is callable from the subject’s generated code. This includes protected accessors, but excludes inaccessible ancestor accessors and init-only setters. A partial override still generates only the accessors written in its declaration.
+
 ### New and Sealed Properties
 
 `new` and `sealed` are supported on partial properties. Both modifiers are repeated on the generated half of the property automatically, so the hand-written declaration only needs to carry them once:
@@ -324,7 +326,7 @@ public class BaseSubject : IHuman { public string Origin => "base"; }
 public partial class DerivedSubject : BaseSubject, IHuman
 {
     // "new" hides BaseSubject.Origin and silences CS0108. Re-listing IHuman is what makes this
-    // property the interface implementation; without it the generator reports NI0005.
+    // property the interface implementation; without it the generator reports NI0060.
     public new partial string Origin { get; set; }
 }
 
@@ -335,7 +337,7 @@ public partial class SealedDog : Animal
 }
 ```
 
-`new` over a plain base class, as above, is supported. Re-declaring an **ancestor subject's** property is not, with or without `new` and whether or not the new declaration is `partial`: two members would then share one property key, so the metadata can reach only one of them while both stay writable through a differently typed reference. The generator rejects it as NI0015, shown with its fix under [Fixing NI0005, NI0008 and NI0015](#fixing-ni0005-ni0008-and-ni0015). Use `virtual` and `override` across a chain of subjects instead. Adding `new` is not an alternative to either remedy, because it only silences the CS0108 warning about hiding and neither moves the interface slot nor satisfies NI0005 or NI0015.
+`new` over a plain base class, as above, is supported. Re-declaring an **ancestor subject's** property is not, with or without `new` and whether or not the new declaration is `partial`: two members would then share one property key, so the metadata can reach only one of them while both stay writable through a differently typed reference. The generator rejects it as NI0065, shown with its fix under [Fixing NI0060, NI0061 and NI0065](#fixing-ni0060-ni0061-and-ni0065). Use `virtual` and `override` across a chain of subjects instead. Adding `new` is not an alternative to either remedy, because it only silences the CS0108 warning about hiding and neither moves the interface slot nor satisfies NI0060 or NI0065.
 
 ### Access Modifiers
 
@@ -474,17 +476,17 @@ internal partial class InternalSubject
 | Only partial properties are intercepted | Mark properties with `partial` keyword |
 | Records cannot be subjects | Use a class. See NI0003 in [Diagnostics](#diagnostics) |
 | Structs and interfaces cannot be subjects | Use a class. The compiler itself rejects a plain struct or interface as CS0592, because `InterceptorSubjectAttribute` only targets classes. A record struct is reported by NI0003 as well |
-| Generic subjects, or subjects nested in a generic containing type, are not supported | Use non-generic types. See NI0009 in [Diagnostics](#diagnostics) |
-| File-local subjects are not supported | Remove the `file` modifier. See NI0010 in [Diagnostics](#diagnostics) |
-| Attributes on an explicit interface implementation are not part of the property metadata | Declare an attribute the library reads on the interface member. See NI0007 in [Diagnostics](#diagnostics) |
+| Generic subjects, or subjects nested in a generic containing type, are not supported | Use non-generic types. See NI0005 in [Diagnostics](#diagnostics) |
+| File-local subjects are not supported | Remove the `file` modifier. See NI0006 in [Diagnostics](#diagnostics) |
+| Attributes on an explicit interface implementation are not part of the property metadata | Declare an attribute the library reads on the interface member. See NI0020 in [Diagnostics](#diagnostics) |
 | Abstract properties not supported | A partial member cannot carry `abstract` (CS0750), so declare the property `virtual` on the base subject and `override` it below |
 | Init-only properties cannot be set after construction | Design constraint of C# |
 | Partial properties cannot have field initializers | Initialize in constructor |
-| A `WithoutInterceptor` method whose stripped name collides with an existing method fails with CS0111 | Rename one of the two. No `NI` diagnostic is reported for this, unless the stripped name is one the generated half occupies, which is reported as NI0006 |
+| A `WithoutInterceptor` method whose stripped name collides with an existing method fails with CS0111 | Rename one of the two. No `NI` diagnostic is reported for this, unless the stripped name is one the generated half occupies, which is reported as NI0040 |
 
 ## Diagnostics
 
-The generator reports the following diagnostics, all in the `Namotion.Interceptor` category:
+The generator reports the following diagnostics, all in the `Namotion.Interceptor` category. IDs are grouped by the effect on generation: NI0001–NI0019 stop generation, NI0020–NI0039 are advisory, NI0040–NI0059 skip a member, and NI0060–NI0079 report semantic problems while generation continues. Unassigned IDs in each range are reserved for future rules:
 
 | ID | Severity | Cause | Fix |
 |----|----------|-------|-----|
@@ -492,30 +494,48 @@ The generator reports the following diagnostics, all in the `Namotion.Intercepto
 | NI0002 | Error | A containing type of the subject is not declared `partial` | Add `partial` to every containing type |
 | NI0003 | Error | `[InterceptorSubject]` is placed on a record or a record struct. A plain struct or interface never reaches this diagnostic; the compiler already rejects those with CS0592, because the attribute only targets classes | Use a class |
 | NI0004 | Error | The generator threw an unhandled exception while processing the subject | Report the issue. The full stack trace is embedded in the generated source, which only reaches disk if the project sets `EmitCompilerGeneratedFiles` |
-| NI0005 | Error | A derived subject re-declares a property whose interface implementation is already provided by a base class, so reading through the subject and reading through the interface return different values forever | Re-list the interface in the subject's base list so the property takes the slot; rename the property when its type differs from the interface member's |
-| NI0006 | Warning | A member the author plausibly offered as a subject property could not be supported. **A `*WithoutInterceptor` method** is skipped when it has no name before the suffix, is static or generic, takes a plain `ref` or an `out` parameter, has a by-reference return type, is itself an explicit interface implementation, or when its stripped name is one the generated half occupies (`GetPropertyValue`, `SetPropertyValue`, `InvokeMethod`, `GetInstanceProperties`, `PropertyChanged`, `RaisePropertyChanged`, `DefaultProperties`, `Context`, `Data`, `SyncRoot` or `AddProperties`), which is matched on the name alone at any arity. **An explicit interface implementation declared in the subject class** is skipped when the implemented member has no accessor reachable from generated code, or when the reachable accessors narrow to `init` alone, which leaves nothing the generated lambdas can call: an `init` accessor is reachable but can only be called from an object initializer, never from the emitted getter or setter. **Never reported:** a static member, an indexer (class-declared or an interface default), any other interface default member that is unreachable from generated code, and an explicit implementation declared in an interface are never candidates for a subject property and stay silent | Rename the `*WithoutInterceptor` method so the stripped name is free, remove it, adjust its signature, widen the implemented member's accessibility, give the implemented member a reachable `get` or `set` accessor, or drop the explicit implementation |
-| NI0007 | Warning | Any attribute, not only `[Derived]`, is placed on an explicit interface implementation. The emitted metadata reflects the interface member, so the attribute is not part of the subject's property metadata | Move an attribute the library reads, such as `[Derived]` or a validation attribute, to the interface member. An implementation-local attribute such as `[SuppressMessage]` or `[ExcludeFromCodeCoverage]` keeps its usual meaning where it is and can be suppressed |
-| NI0008 | Error | More than one member provides the same simple property name. A class-declared property always takes the name; between colliding interface members, the first one the generator reaches takes it. One error is reported per interface member that ends up unreachable when two or more interface members compete for one name, naming both the member that took the name and the member that was dropped. A class-declared property beating a single explicit implementation, or an interface default of the same name, is resolved silently. The interface scan re-runs at every level of a hierarchy that inherits the colliding interfaces, so one modelling mistake is reported once per subject in the chain, not once overall | Rename one of the colliding members, or suppress the rule to accept the resolution |
-| NI0009 | Error | The subject itself is generic, or the subject is nested inside a generic containing type | Remove the type parameters from the subject or its containing type |
-| NI0010 | Error | The subject is declared `file`-local | Remove the `file` modifier |
-| NI0011 | Error | The nearest base class that is a subject has no usable static `DefaultProperties` of type `IReadOnlyDictionary<string, SubjectPropertyMetadata>`, which leaves nothing for the subject's own property set to concatenate with. The message also lists whatever else is missing, such as `IInterceptorSubject` or the helper members, but a base missing only those still generates and gets NI0012 instead | Put `[InterceptorSubject]` on the base class, or make it satisfy the [subject base class contract](#hand-written-base-classes-and-subclasses). If the base class only exists to add properties at runtime, drop it and call `AddProperties` on the subject instead |
-| NI0012 | Warning | The base class is recognized as a subject but does not expose the shared interception members, either because it was built by an older version of the generator or because it is a hand-written class that provides only `DefaultProperties`. The message lists the members that are missing, which is what separates a stale base from one that lacks a single clause. The subject falls back to emitting its own interception members, so it compiles, and properties declared on that base class stay unintercepted | Rebuild the base assembly against the current package version, or make the base class satisfy the contract. Suppressing the rule accepts the fallback and the unintercepted base properties with it. Note that under `TreatWarningsAsErrors` this warning fails the build |
-| NI0013 | Error | The subject, or a class between the subject and its base subject, declares a member named `GetPropertyValue`, `SetPropertyValue`, `InvokeMethod` or `GetInstanceProperties`. The generated bodies call those by simple name, so the declared member can capture the call. The rule matches on the name alone, for any member kind and any signature, because a `new` annotated member of the same shape captures the call with no compiler warning at all | Rename the member. On a class between the two subjects, a `private` member of that name is not reported, because it neither hides nor binds |
-| NI0014 | Error | A class anywhere in the subject's base chain declares a public member that implements `IInterceptorSubject.Context`, `Data`, `SyncRoot` or `AddProperties`, or implements one of those explicitly. Every subject re-lists `IInterceptorSubject`, which recomputes the interface map, so that member takes the slot from the base class implementation. Below the subject's base subject the report is unconditional; at that class and above it, the member is only reported when a class further up already implements the same member, which is what keeps a hand-written subject root deriving from `object` quiet. A same-named member that does not match the interface member's type and signature is not reported, and neither is an `override`, which occupies the slot it already had | Rename the member, or remove the explicit implementation and let the inherited one stand. See [Hierarchy Hazards](#hierarchy-hazards) |
-| NI0015 | Error | A subject declares a property, or an explicit interface implementation, whose name an ancestor subject already exposes. Two members then share one key: the metadata can read only one, both stay writable through a differently typed reference, and both raise changes under that name. Not reported for an `override`, which shares one slot, nor when the hidden member is on a class that does not carry `[InterceptorSubject]`, including a hand-written base that satisfies the subject base contract and does contribute a property set. A declaration that also fails to take an interface slot reports NI0015 alone; NI0005 stands down on that property name, including when NI0015 is suppressed | Rename one of the two, or, where the declaration can carry `override`, make the ancestor property `virtual` and `override` it instead. Several shapes cannot, an explicit interface implementation among them, and renaming is then the only remedy |
+| NI0005 | Error | The subject itself is generic, or the subject is nested inside a generic containing type | Remove the type parameters from the subject or its containing type |
+| NI0006 | Error | The subject is declared `file`-local | Remove the `file` modifier |
+| NI0007 | Error | The nearest base class that is a subject has no usable static `DefaultProperties` of type `IReadOnlyDictionary<string, SubjectPropertyMetadata>`, which leaves nothing for the subject's own property set to concatenate with. The message also lists whatever else is missing, such as `IInterceptorSubject` or the helper members, but a base missing only those still generates and gets NI0062 instead | Put `[InterceptorSubject]` on the base class, or make it satisfy the [subject base class contract](#hand-written-base-classes-and-subclasses). If the base class only exists to add properties at runtime, drop it and call `AddProperties` on the subject instead |
+| NI0020 | Warning | Any attribute, not only `[Derived]`, is placed on an explicit interface implementation. The emitted metadata reflects the interface member, so the attribute is not part of the subject's property metadata | Move an attribute the library reads, such as `[Derived]` or a validation attribute, to the interface member. An implementation-local attribute such as `[SuppressMessage]` or `[ExcludeFromCodeCoverage]` keeps its usual meaning where it is and can be suppressed |
+| NI0040 | Warning | A member the author plausibly offered as a subject property could not be supported. **A `*WithoutInterceptor` method** is skipped when it has no name before the suffix, is static or generic, takes a plain `ref` or an `out` parameter, has a by-reference return type, is itself an explicit interface implementation, or when its stripped name is one the generated half occupies (`GetPropertyValue`, `SetPropertyValue`, `InvokeMethod`, `GetInstanceProperties`, `PropertyChanged`, `RaisePropertyChanged`, `DefaultProperties`, `Context`, `Data`, `SyncRoot` or `AddProperties`), which is matched on the name alone at any arity. **An explicit interface implementation declared in the subject class** is skipped when the implemented member has no accessor reachable from generated code, or when the reachable accessors narrow to `init` alone, which leaves nothing the generated lambdas can call: an `init` accessor is reachable but can only be called from an object initializer, never from the emitted getter or setter. **Never reported:** a static member, an indexer (class-declared or an interface default), any other interface default member that is unreachable from generated code, and an explicit implementation declared in an interface are never candidates for a subject property and stay silent | Rename the `*WithoutInterceptor` method so the stripped name is free, remove it, adjust its signature, widen the implemented member's accessibility, give the implemented member a reachable `get` or `set` accessor, or drop the explicit implementation |
+| NI0060 | Error | A derived subject re-declares a property whose interface implementation is already provided by a base class, so reading through the subject and reading through the interface return different values forever | Re-list the interface in the subject's base list so the property takes the slot; rename the property when its type differs from the interface member's |
+| NI0061 | Error | More than one member provides the same simple property name. A class-declared property always takes the name; between colliding interface members, the first one the generator reaches takes it. Explicit overrides of the same interface slot are one member for this purpose, so they do not collide. One error is reported per interface member that ends up unreachable when two or more interface members compete for one name, naming both the member that took the name and the member that was dropped. A class-declared property beating a single explicit implementation, or an interface default of the same name, is resolved silently. The interface scan re-runs at every level of a hierarchy that inherits the colliding interfaces, so one modelling mistake is reported once per subject in the chain, not once overall | Rename one of the colliding members, or suppress the rule to accept the resolution |
+| NI0062 | Warning | The base class is recognized as a subject but does not expose the shared interception members, either because it was built by an older version of the generator or because it is a hand-written class that provides only `DefaultProperties`. The message lists the members that are missing, which is what separates a stale base from one that lacks a single clause. The subject falls back to emitting its own interception members, so it compiles, and properties declared on that base class stay unintercepted | Rebuild the base assembly against the current package version, or make the base class satisfy the contract. Suppressing the rule accepts the fallback and the unintercepted base properties with it. Note that under `TreatWarningsAsErrors` this warning fails the build |
+| NI0063 | Error | The subject, or a class between the subject and its base subject, declares a member named `GetPropertyValue`, `SetPropertyValue`, `InvokeMethod` or `GetInstanceProperties`. The generated bodies call those by simple name, so the declared member can capture the call. The rule matches on the name alone, for any member kind and any signature, because a `new` annotated member of the same shape captures the call with no compiler warning at all | Rename the member. On a class between the two subjects, a `private` member of that name is not reported, because it neither hides nor binds |
+| NI0064 | Error | A class anywhere in the subject's base chain declares a public member that implements `IInterceptorSubject.Context`, `Data`, `SyncRoot` or `AddProperties`, or implements one of those explicitly. Every subject re-lists `IInterceptorSubject`, which recomputes the interface map, so that member takes the slot from the base class implementation. Below the subject's base subject the report is unconditional; at that class and above it, the member is only reported when a class further up already implements the same member, which is what keeps a hand-written subject root deriving from `object` quiet. A same-named member that does not match the interface member's type and signature is not reported, and neither is an `override`, which occupies the slot it already had | Rename the member, or remove the explicit implementation and let the inherited one stand. See [Hierarchy Hazards](#hierarchy-hazards) |
+| NI0065 | Error | A subject declares a property, or an explicit interface implementation, whose name an ancestor subject already exposes. Two members then share one key: the metadata can read only one, both stay writable through a differently typed reference, and both raise changes under that name. Not reported for an `override`, which shares one slot, nor when the hidden member is on a class that does not carry `[InterceptorSubject]`, including a hand-written base that satisfies the subject base contract and does contribute a property set. A declaration that also fails to take an interface slot reports NI0065 alone; NI0060 stands down on that property name, including when NI0065 is suppressed | Rename one of the two, or, where the declaration can carry `override`, make the ancestor property `virtual` and `override` it instead. Several shapes cannot, an explicit interface implementation among them, and renaming is then the only remedy |
 
-Suppress a rule at the point of use with `#pragma warning disable NI0005`, or project-wide with `<NoWarn>NI0005;NI0008;NI0015</NoWarn>` in the project file. Both suppress a generator diagnostic at `Error` severity exactly as they do at `Warning`, so they are the only escape hatch from NI0005, NI0008 and NI0015, and `<NoWarn>` is what a consumer needs to stage an upgrade across a solution that reports many of them at once. What suppression actually buys differs by group:
+Suppress a rule at the point of use with `#pragma warning disable NI0060`, or project-wide with `<NoWarn>NI0060;NI0061;NI0065</NoWarn>` in the project file. Both suppress a generator diagnostic at `Error` severity exactly as they do at `Warning`, so they are the only escape hatch from NI0060, NI0061 and NI0065, and `<NoWarn>` is what a consumer needs to stage an upgrade across a solution that reports many of them at once. What suppression actually buys differs by group:
 
-- **Generation stops: NI0001 through NI0004, NI0009, NI0010 and NI0011.** Suppressing one of these silences the message, but the class still never becomes an interceptor subject, leaving an inert type with none of the generated members and no further compiler feedback pointing at why. Fix the underlying shape instead.
-- **Generation succeeds and the member is emitted as declared: NI0007.** Suppression is a real fix here, because it only silences advice about a shape the author has chosen to accept and nothing about the generated code changes.
-- **Generation succeeds and the member the rule names is skipped: NI0006.** It is a warning, but no wrapper and no metadata entry is emitted for that member, so suppressing it does not accept a shape, it hides the fact that a `WithoutInterceptor` opt-in the author wrote is being ignored and no wrapper exists at all. Rename or reshape the member instead.
-- **Generation succeeds and the generated code carries a member that silently does not work as declared: NI0005, NI0008, NI0012, NI0013, NI0014 and NI0015.** All but NI0012 are errors, and none of them stops generation. Suppressing one leaves the member in place: unreachable where the declaration says it should exist (NI0005, NI0008, NI0015), capturing a generated call (NI0013), or hijacking an interface slot (NI0014). NI0012 is the warning of the group, and suppressing it accepts a hierarchy in which base-declared properties are not intercepted. Each of these then fails silently at runtime instead of loudly at build time, so they are worth fixing rather than silencing. One case of NI0008 is the exception, and there suppression is the intended end state rather than a deferral: when both colliding members are declared in interfaces the consumer does not own, no rename is available to them, so suppressing NI0008 to accept the name the generator resolved is the fix.
+- **Generation stops: NI0001 through NI0007.** Suppressing one of these silences the message, but the class still never becomes an interceptor subject, leaving an inert type with none of the generated members and no further compiler feedback pointing at why. Fix the underlying shape instead.
+- **Generation succeeds and the member is emitted as declared: NI0020.** Suppression is a real fix here, because it only silences advice about a shape the author has chosen to accept and nothing about the generated code changes.
+- **Generation succeeds and the member the rule names is skipped: NI0040.** It is a warning, but no wrapper and no metadata entry is emitted for that member, so suppressing it does not accept a shape, it hides the fact that a `WithoutInterceptor` opt-in the author wrote is being ignored and no wrapper exists at all. Rename or reshape the member instead.
+- **Generation succeeds and the generated code carries a member that silently does not work as declared: NI0060 through NI0065.** All but NI0062 are errors, and none of them stops generation. Suppressing one leaves the member in place: unreachable where the declaration says it should exist (NI0060, NI0061, NI0065), capturing a generated call (NI0063), or hijacking an interface slot (NI0064). NI0062 is the warning of the group, and suppressing it accepts a hierarchy in which base-declared properties are not intercepted. Each of these then fails silently at runtime instead of loudly at build time, so they are worth fixing rather than silencing. One case of NI0061 is the exception, and there suppression is the intended end state rather than a deferral: when both colliding members are declared in interfaces the consumer does not own, no rename is available to them, so suppressing NI0061 to accept the name the generator resolved is the fix.
 
-### Fixing NI0005, NI0008 and NI0015
+### Diagnostic ID migration
+
+The diagnostic IDs are regrouped before release. If you use an earlier build or revision of the generator, update diagnostic IDs in `NoWarn`, `#pragma warning`, `.editorconfig`, and diagnostic assertions using this table. NI0001 through NI0004 are unchanged. NI0005 through NI0007 now describe different rules, so retaining an old suppression can suppress an unrelated error.
+
+| Previous ID | Current ID | Rule |
+|---|---|---|
+| NI0005 | NI0060 | Property misses an inherited interface slot |
+| NI0006 | NI0040 | Unsupported member skipped |
+| NI0007 | NI0020 | Explicit implementation attributes ignored |
+| NI0008 | NI0061 | Distinct members collide on a property name |
+| NI0009 | NI0005 | Generic subject or containing type unsupported |
+| NI0010 | NI0006 | File-local subject unsupported |
+| NI0011 | NI0007 | Base class does not satisfy the subject contract |
+| NI0012 | NI0062 | Base interception members cannot be shared |
+| NI0013 | NI0063 | Member hides an inherited generated member |
+| NI0014 | NI0064 | Member hijacks an inherited interface implementation |
+| NI0015 | NI0065 | Property displaces an ancestor subject property |
+
+### Fixing NI0060, NI0061 and NI0065
 
 These three are errors, so each one is met at a broken build. Their remedies are in the table above; below is the smallest shape that triggers each one, with the version that builds.
 
-**NI0005** is reported when the subject's declaration does not take the interface slot, because the slot is bound at the class that lists the interface:
+**NI0060** is reported when the subject's declaration does not take the interface slot, because the slot is bound at the class that lists the interface:
 
 ```csharp
 public interface IHasOrigin { string Origin { get; } }
@@ -526,7 +546,7 @@ public class Hardware : IHasOrigin
 }
 
 [InterceptorSubject]
-public partial class Sensor : Hardware   // NI0005 on Origin
+public partial class Sensor : Hardware   // NI0060 on Origin
 {
     public new partial string Origin { get; set; }
 }
@@ -540,14 +560,14 @@ public partial class Sensor : Hardware, IHasOrigin   // builds: the slot moves t
 }
 ```
 
-**NI0008** is reported when two members reach the subject under one simple name. Here both interfaces carry a `Label`, and the one the generator reaches second is dropped:
+**NI0061** is reported when two members reach the subject under one simple name. Here both interfaces carry a `Label`, and the one the generator reaches second is dropped:
 
 ```csharp
 public interface IHasLabel { string Label => "unnamed"; }
 public interface IHasLegend { string Label => "none"; }
 
 [InterceptorSubject]
-public partial class Gauge : IHasLabel, IHasLegend   // NI0008: IHasLegend.Label is unreachable
+public partial class Gauge : IHasLabel, IHasLegend   // NI0061: IHasLegend.Label is unreachable
 {
     public partial double Value { get; set; }
 }
@@ -557,7 +577,7 @@ public partial class Gauge : IHasLabel, IHasLegend   // NI0008: IHasLegend.Label
 public interface IHasLegend { string Legend => "none"; }   // builds: each member has its own key
 ```
 
-**NI0015** is reported when a subject declares a name an ancestor subject already exposes, because one metadata key cannot reach both backing fields:
+**NI0065** is reported when a subject declares a name an ancestor subject already exposes, because one metadata key cannot reach both backing fields:
 
 ```csharp
 [InterceptorSubject]
@@ -567,7 +587,7 @@ public partial class Device
 }
 
 [InterceptorSubject]
-public partial class Pump : Device   // NI0015 on Name; the "new" below only silences CS0108
+public partial class Pump : Device   // NI0065 on Name; the "new" below only silences CS0108
 {
     public new partial string Name { get; set; }
 }
@@ -597,24 +617,24 @@ C# only allows an explicit interface implementation in a class that lists the in
 
 The explicit form counts too, and the check does not treat it as safer. Because CS0540 forces the class to list `IInterceptorSubject` itself, and listing it is exactly what makes that class the subject's base subject, an explicit `IInterceptorSubject.Context` on a hand-written class in the chain is the normal way this goes wrong rather than an exception to it.
 
-Taking `Context` is the severe case: the inherited helpers keep reading the root's field, which nothing populates any more, so interception stops without an error and the property values still look correct. NI0014 turns the whole shape into a build error, so this is caught at compile time.
+Taking `Context` is the severe case: the inherited helpers keep reading the root's field, which nothing populates any more, so interception stops without an error and the property values still look correct. NI0064 turns the whole shape into a build error, so this is caught at compile time.
 
-A derived subject declaring `public object SyncRoot { get; }` is therefore NI0014, even though the member it takes over is one it never declared.
+A derived subject declaring `public object SyncRoot { get; }` is therefore NI0064, even though the member it takes over is one it never declared.
 
 ### A base class can hijack a slot later, without the consuming assembly being rebuilt
 
-NI0014 runs where the derived subject is compiled, so a member added to the base class afterwards is not seen. For that to matter, all four of the following have to hold:
+NI0064 runs where the derived subject is compiled, so a member added to the base class afterwards is not seen. For that to matter, all four of the following have to hold:
 
 1. the referenced assembly's subject hierarchy is more than one level deep;
 2. a non-static, non-`override` member is added to a class in that hierarchy, either as a public member or as an explicit `IInterceptorSubject` implementation;
 3. that member matches an `IInterceptorSubject` member by name and signature exactly;
 4. the consuming assembly ships without being recompiled.
 
-Recompiling the consuming assembly against the new base turns it into an NI0014 build error, so the window is exactly "shipped, not rebuilt". It stays open by design, for the reason under [Why not a virtual hook](#why-not-a-virtual-hook).
+Recompiling the consuming assembly against the new base turns it into an NI0064 build error, so the window is exactly "shipped, not rebuilt". It stays open by design, for the reason under [Why not a virtual hook](#why-not-a-virtual-hook).
 
 ### Members added to IInterceptorSubject in future need the same review
 
-Because derived subjects keep re-listing `IInterceptorSubject`, any member added to that interface can be hijacked the same way and has to be added to NI0014's list at the same time. This is a note for whoever evolves the interface, not something a consumer can act on.
+Because derived subjects keep re-listing `IInterceptorSubject`, any member added to that interface can be hijacked the same way and has to be added to NI0064's list at the same time. This is a note for whoever evolves the interface, not something a consumer can act on.
 
 ### Writes before the context is published are not intercepted
 
@@ -650,7 +670,7 @@ The first two hazards would both disappear if `IInterceptorSubject.Properties` w
 
 That alternative was measured rather than assumed. `IInterceptorSubject.Properties` is read on every intercepted write through `PropertyReference.Metadata`, which is deliberately uncached, so the hook adds a virtual call to a hot path. At a monomorphic call site the cost is flat, because the JIT devirtualizes it. At a polymorphic call site, which is the representative one since `PropertyReference.Metadata` is a single shared call site that every subject type passes through, the hook costs 0.133 ns per `Properties` read, or roughly 2 to 4 percent of an intercepted write.
 
-The current design was kept with those numbers in hand. The cost would be paid by every subject forever, including the large majority that have no base class at all, while the hazard it removes is caught at compile time by NI0014 for every consumer that recompiles.
+The current design was kept with those numbers in hand. The cost would be paid by every subject forever, including the large majority that have no base class at all, while the hazard it removes is caught at compile time by NI0064 for every consumer that recompiles.
 
 ## Requirements
 
@@ -727,12 +747,12 @@ A class can host generated subclasses when it exposes all of the following. A ge
 Details that are easy to get wrong:
 
 - Members may be more accessible than listed, and a member the base class itself inherits from further up counts. A generic base class is checked with its type arguments substituted.
-- `InvokeMethod`'s last parameter must really be `params`. The generated call site passes arguments in expanded form, and the check tests for `params` explicitly, so the same parameter types without it fail the contract. The subject then falls back to emitting its own interception members and NI0012 is reported, which `TreatWarningsAsErrors` turns into a build error.
+- `InvokeMethod`'s last parameter must really be `params`. The generated call site passes arguments in expanded form, and the check tests for `params` explicitly, so the same parameter types without it fail the contract. The subject then falls back to emitting its own interception members and NI0062 is reported, which `TreatWarningsAsErrors` turns into a build error.
 - `DefaultProperties` may be a static property or a static field, but its type has to be `IReadOnlyDictionary<string, SubjectPropertyMetadata>` or something that implements it. A static of that name with any other type is reported rather than accepted.
 - `GetInstanceProperties` may likewise return something that implements the dictionary interface, such as `FrozenDictionary<string, SubjectPropertyMetadata>?`, but it has to be a reference type. The generated code combines the two as `GetInstanceProperties() ?? DefaultProperties`, and `??` rejects a value type on its left, so a struct implementing the interface fails the contract even though the same struct is accepted for `DefaultProperties`, which is only concatenated.
-- The `IRaisePropertyChanged` row is the only one that is not needed for the generated code to compile. A base class that satisfies everything else but not that one still produces code that compiles, with the subject declaring its own change notification members, but it fails the contract all the same: the subject re-emits the whole block and NI0012 is reported, which `TreatWarningsAsErrors` turns into a build error.
+- The `IRaisePropertyChanged` row is the only one that is not needed for the generated code to compile. A base class that satisfies everything else but not that one still produces code that compiles, with the subject declaring its own change notification members, but it fails the contract all the same: the subject re-emits the whole block and NI0062 is reported, which `TreatWarningsAsErrors` turns into a build error.
 
-What happens when a base class does not satisfy the contract depends on `DefaultProperties`. If it is present and usable, the subject falls back to emitting its own interception members and the generator reports NI0012: the code compiles, and properties declared on that base class are not intercepted. If `DefaultProperties` is missing or unusable as well, the generator reports NI0011 and generates nothing for the subject.
+What happens when a base class does not satisfy the contract depends on `DefaultProperties`. If it is present and usable, the subject falls back to emitting its own interception members and the generator reports NI0062: the code compiles, and properties declared on that base class are not intercepted. If `DefaultProperties` is missing or unusable as well, the generator reports NI0007 and generates nothing for the subject.
 
 Here is a base class that satisfies the whole contract:
 
@@ -859,6 +879,6 @@ public class CustomDevice : Device
 }
 ```
 
-One thing to avoid anywhere below a subject: do not declare a member named `GetPropertyValue`, `SetPropertyValue`, `InvokeMethod` or `GetInstanceProperties` for something else, and do not implement `IInterceptorSubject.Context`, `Data`, `SyncRoot` or `AddProperties` yourself. Either one takes over what the base class provides. Where a generated subject declares such a member, or sits below a class that does, the generator reports NI0013 or NI0014.
+One thing to avoid anywhere below a subject: do not declare a member named `GetPropertyValue`, `SetPropertyValue`, `InvokeMethod` or `GetInstanceProperties` for something else, and do not implement `IInterceptorSubject.Context`, `Data`, `SyncRoot` or `AddProperties` yourself. Either one takes over what the base class provides. Where a generated subject declares such a member, or sits below a class that does, the generator reports NI0063 or NI0064.
 
-A hand-written class with no subject below it is not scanned by the generator at all, so no NI0013 reaches it. The compiler covers that case instead. The four helpers are `protected`, so a member that genuinely hides one of them is CS0108, and `TreatWarningsAsErrors` turns that into a build error: a method with the same signature as one of the four, or a field, property or event named `InvokeMethod` or `GetInstanceProperties`, the two helpers that are not generic. Add `new` where the hiding is intended, or rename the member. An overload that differs in signature stays silent, and there it is also harmless, because the generated calls sit in the subject's own file above such a class. See [Hierarchy Hazards](generator.md#hierarchy-hazards) for why it matters.
+A hand-written class with no subject below it is not scanned by the generator at all, so no NI0063 reaches it. The compiler covers that case instead. The four helpers are `protected`, so a member that genuinely hides one of them is CS0108, and `TreatWarningsAsErrors` turns that into a build error: a method with the same signature as one of the four, or a field, property or event named `InvokeMethod` or `GetInstanceProperties`, the two helpers that are not generic. Add `new` where the hiding is intended, or rename the member. An overload that differs in signature stays silent, and there it is also harmless, because the generated calls sit in the subject's own file above such a class. See [Hierarchy Hazards](generator.md#hierarchy-hazards) for why it matters.

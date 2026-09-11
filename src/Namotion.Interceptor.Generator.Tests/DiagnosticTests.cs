@@ -97,7 +97,7 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenSubjectIsGeneric_ThenNI0009IsReported()
+    public void WhenSubjectIsGeneric_ThenNI0005IsReported()
     {
         // Arrange (case T)
         const string source = @"
@@ -115,13 +115,13 @@ namespace Repro
         var generated = GeneratorTestHost.Run(source);
 
         // Assert
-        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0009");
+        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0005");
         Assert.Equal("Interceptor subject 'Box' is generic, which is not supported", diagnostic.GetMessage());
         Assert.Empty(generated.Sources);
     }
 
     [Fact]
-    public void WhenSubjectIsNestedInGenericContainingType_ThenNI0009NamesContainingTypeNotSubject()
+    public void WhenSubjectIsNestedInGenericContainingType_ThenNI0005NamesContainingTypeNotSubject()
     {
         // Arrange: the subject itself ("Inner") is not generic, but its containing type is. Roslyn
         // reports IsGenericType = true for a non-generic type nested inside a generic one, so the
@@ -141,7 +141,7 @@ namespace Repro
         var generated = GeneratorTestHost.Run(source);
 
         // Assert
-        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0009");
+        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0005");
         Assert.Equal(
             "Interceptor subject 'Inner' is nested in generic containing type 'Outer', which is not supported",
             diagnostic.GetMessage());
@@ -149,7 +149,7 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenSubjectIsFileLocal_ThenNI0010IsReported()
+    public void WhenSubjectIsFileLocal_ThenNI0006IsReported()
     {
         // Arrange (case X)
         const string source = @"
@@ -167,14 +167,14 @@ namespace Repro
         var generated = GeneratorTestHost.Run(source);
 
         // Assert
-        Assert.Contains(generated.GeneratorDiagnostics, d => d.Id == "NI0010");
+        Assert.Contains(generated.GeneratorDiagnostics, d => d.Id == "NI0006");
         Assert.Empty(generated.Sources);
     }
 
     [Fact]
-    public void WhenSubjectIsNonPartialAndGeneric_ThenNI0009IsReportedInsteadOfNI0001()
+    public void WhenSubjectIsNonPartialAndGeneric_ThenNI0005IsReportedInsteadOfNI0001()
     {
-        // Arrange: a non-partial generic subject is fundamentally unsupported (NI0009) regardless
+        // Arrange: a non-partial generic subject is fundamentally unsupported (NI0005) regardless
         // of the fixable NI0001 (missing partial). Reporting NI0001 first sends the user on a
         // wasted round trip: add partial, rebuild, and only then learn generics are unsupported.
         const string source = @"
@@ -190,7 +190,7 @@ namespace Repro
 
         // Assert
         var diagnostic = Assert.Single(generated.GeneratorDiagnostics);
-        Assert.Equal("NI0009", diagnostic.Id);
+        Assert.Equal("NI0005", diagnostic.Id);
         Assert.Empty(generated.Sources);
     }
 
@@ -254,7 +254,7 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenInterfaceDefaultMemberIsAnIndexer_ThenNI0006IsNotReported()
+    public void WhenInterfaceDefaultMemberIsAnIndexer_ThenNI0040IsNotReported()
     {
         // Arrange (case E): an indexer is parameterised and has no usable name, so it was never a
         // candidate to become a subject property. A class-declared indexer has always been ignored
@@ -277,7 +277,7 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenClassDeclaresAnIndexer_ThenNI0006IsNotReported()
+    public void WhenClassDeclaresAnIndexer_ThenNI0040IsNotReported()
     {
         // Arrange: the class-declared sibling of the previous case, pinning that the two paths
         // agree rather than agreeing by accident of the syntax filter.
@@ -300,7 +300,7 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenInterfaceDefaultMemberIsStatic_ThenNI0006IsNotReported()
+    public void WhenInterfaceDefaultMemberIsStatic_ThenNI0040IsNotReported()
     {
         // Arrange (case V): a static member cannot be read from an instance, so it was never a
         // candidate, and no edit the user can make to a third-party interface would change that.
@@ -322,7 +322,7 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenInterfaceDefaultMemberIsInaccessible_ThenNI0006IsNotReported()
+    public void WhenInterfaceDefaultMemberIsInaccessible_ThenNI0040IsNotReported()
     {
         // Arrange (case W): a private interface default member is an intentional helper shared
         // between the interface's own default implementations, not a would-be subject property.
@@ -351,7 +351,7 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenInterfaceExplicitlyImplementsAnInaccessibleMember_ThenNI0006IsNotReported()
+    public void WhenInterfaceExplicitlyImplementsAnInaccessibleMember_ThenNI0040IsNotReported()
     {
         // Arrange: the explicit implementation lives in an interface, which may well be
         // third-party, so it is not the subject author's opt-in and carries no actionable remedy.
@@ -375,7 +375,7 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenClassExplicitImplementationIsInaccessible_ThenNI0006IsReported()
+    public void WhenClassExplicitImplementationIsInaccessible_ThenNI0040IsReported()
     {
         // Arrange: the class-declared sibling of the previous case. A protected interface member
         // is unreachable through the cast the emitter uses, so the implementation is dropped by
@@ -397,12 +397,12 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0006");
+        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0040");
         Assert.Contains("the member is not accessible from generated code", diagnostic.GetMessage());
     }
 
     [Fact]
-    public void WhenInterfaceMembersAreAbstract_ThenNI0006IsNotReported()
+    public void WhenInterfaceMembersAreAbstract_ThenNI0040IsNotReported()
     {
         // Arrange: the overwhelmingly common shape. An abstract interface member (indexer
         // included) is implemented by the class itself, so nothing is skipped and the advisory
@@ -434,7 +434,7 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenClassDeclaresAStaticProperty_ThenNI0006IsNotReported()
+    public void WhenClassDeclaresAStaticProperty_ThenNI0040IsNotReported()
     {
         // Arrange: a static property declared directly in the class body. It is still skipped (the
         // emitted accessor would cast an instance to the class and read the static member through
@@ -459,7 +459,7 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenClassExplicitlyImplementsAStaticInterfaceMember_ThenNI0006IsNotReported()
+    public void WhenClassExplicitlyImplementsAStaticInterfaceMember_ThenNI0040IsNotReported()
     {
         // Arrange: the class-declared, explicit-implementation sibling of the previous case. The
         // member is forced on the subject by a 'static abstract' interface member, so the static
@@ -486,7 +486,7 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenMethodIsNamedExactlyWithoutInterceptor_ThenNI0006IsReported()
+    public void WhenMethodIsNamedExactlyWithoutInterceptor_ThenNI0040IsReported()
     {
         // Arrange (case O)
         const string source = @"
@@ -504,12 +504,12 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0006");
+        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0040");
         Assert.Contains("the name has no prefix before 'WithoutInterceptor'", diagnostic.GetMessage());
     }
 
     [Fact]
-    public void WhenWithoutInterceptorMethodIsUnsupportedShape_ThenNI0006IsReportedPerMethod()
+    public void WhenWithoutInterceptorMethodIsUnsupportedShape_ThenNI0040IsReportedPerMethod()
     {
         // Arrange (case Y: static, generic, by-reference parameters, explicit implementation)
         const string source = @"
@@ -535,11 +535,11 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        Assert.Equal(4, generated.GeneratorDiagnostics.Count(d => d.Id == "NI0006"));
+        Assert.Equal(4, generated.GeneratorDiagnostics.Count(d => d.Id == "NI0040"));
     }
 
     [Fact]
-    public void WhenWithoutInterceptorMethodReturnsByRef_ThenNI0006IsReportedAndWrapperIsSkipped()
+    public void WhenWithoutInterceptorMethodReturnsByRef_ThenNI0040IsReportedAndWrapperIsSkipped()
     {
         // Arrange: GetFullTypeName returns null for a RefTypeSyntax return type, and the "?? void"
         // fallback used to swallow that silently: the wrapper compiled with a "void" return type,
@@ -562,14 +562,14 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0006");
+        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0040");
         Assert.Contains("the method shape is not supported", diagnostic.GetMessage());
         Assert.Contains("by-reference return type", diagnostic.GetMessage());
         Assert.DoesNotContain("GetRef", generated.SingleSource());
     }
 
     [Fact]
-    public void WhenAttributeIsOnExplicitImplementationInInterface_ThenNI0007IsReported()
+    public void WhenAttributeIsOnExplicitImplementationInInterface_ThenNI0020IsReported()
     {
         // Arrange (case AC)
         const string source = @"
@@ -587,12 +587,12 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0007");
+        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0020");
         Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
     }
 
     [Fact]
-    public void WhenAttributeIsOnExplicitImplementationInClass_ThenNI0007IsReported()
+    public void WhenAttributeIsOnExplicitImplementationInClass_ThenNI0020IsReported()
     {
         // Arrange: the class-declared sibling of the case AC shape. The emitter reflects the
         // interface member's PropertyInfo in both, so an attribute on the implementation is lost
@@ -615,12 +615,12 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0007");
+        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0020");
         Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
     }
 
     [Fact]
-    public void WhenExplicitImplementationHasNoAttributes_ThenNI0007IsNotReported()
+    public void WhenExplicitImplementationHasNoAttributes_ThenNI0020IsNotReported()
     {
         // Arrange: nothing is lost when there is no attribute to lose.
         const string source = @"
@@ -642,7 +642,7 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenTwoInterfaceDefaultMembersCollideOnName_ThenNI0008IsReported()
+    public void WhenTwoInterfaceDefaultMembersCollideOnName_ThenNI0061IsReported()
     {
         // Arrange (case AE)
         const string source = @"
@@ -659,7 +659,7 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0008");
+        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0061");
         Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
         Assert.Equal(
             "'Kind' is provided by more than one member; the subject exposes Repro.IFoo<int>.Kind and Repro.IFoo<string>.Kind is unreachable",
@@ -689,7 +689,7 @@ namespace Repro
 
         // Assert
         var messages = generated.GeneratorDiagnostics
-            .Where(diagnostic => diagnostic.Id == "NI0008")
+            .Where(diagnostic => diagnostic.Id == "NI0061")
             .Select(diagnostic => diagnostic.GetMessage())
             .ToList();
 
@@ -702,7 +702,7 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenTwoExplicitImplementationsInClassCollideOnName_ThenNI0008IsReported()
+    public void WhenTwoExplicitImplementationsInClassCollideOnName_ThenNI0061IsReported()
     {
         // Arrange (case AA): the collision is resolved by DeduplicateByName rather than by the
         // interface-default loop, but the user-visible consequence is identical.
@@ -724,7 +724,7 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0008");
+        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0061");
         Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
         Assert.Equal(
             "'Kind' is provided by more than one member; the subject exposes Repro.IFoo<int>.Kind and Repro.IFoo<string>.Kind is unreachable",
@@ -740,7 +740,7 @@ namespace Repro
         public partial string Kind { get; set; }
         int IFoo<int>.Kind => 1;
         string IFoo<string>.Kind => ""string"";")]
-    public void WhenTwoExplicitImplementationsCollideWithAClassProperty_ThenNI0008NamesTheClassPropertyAsWinnerRegardlessOfDeclarationOrder(string members)
+    public void WhenTwoExplicitImplementationsCollideWithAClassProperty_ThenNI0061NamesTheClassPropertyAsWinnerRegardlessOfDeclarationOrder(string members)
     {
         // Arrange: the class property wins either way, so the message must name it rather than
         // claim "the first declaration wins", and both dropped interface members are reported
@@ -762,7 +762,7 @@ namespace Repro
 
         // Assert
         var messages = generated.GeneratorDiagnostics
-            .Where(diagnostic => diagnostic.Id == "NI0008")
+            .Where(diagnostic => diagnostic.Id == "NI0061")
             .Select(diagnostic => diagnostic.GetMessage())
             .ToList();
 
@@ -775,10 +775,10 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenClassDeclaresAndExplicitlyImplementsSameProperty_ThenNI0008IsNotReported()
+    public void WhenClassDeclaresAndExplicitlyImplementsSameProperty_ThenNI0061IsNotReported()
     {
         // Arrange (case Z): only one of the two declarations comes from an interface, so this is
-        // not the "two interface members collide" shape NI0008 describes.
+        // not the "two interface members collide" shape NI0061 describes.
         const string source = @"
 using Namotion.Interceptor.Attributes;
 namespace Repro
@@ -798,11 +798,11 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0008");
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0061");
     }
 
     [Fact]
-    public void WhenDerivedRedeclaresBaseImplementedProperty_ThenNI0005IsReported()
+    public void WhenDerivedRedeclaresBaseImplementedProperty_ThenNI0060IsReported()
     {
         // Arrange (case AD): the base class fixed the interface mapping to the default
         // implementation, so the derived property is reachable only through the subject.
@@ -824,12 +824,12 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0005");
+        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0060");
         Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
     }
 
     [Fact]
-    public void WhenDerivedRedeclaresPropertyTheBaseClassItselfImplements_ThenNI0005IsReported()
+    public void WhenDerivedRedeclaresPropertyTheBaseClassItselfImplements_ThenNI0060IsReported()
     {
         // Arrange: the same divergence with a concrete base implementation instead of a default
         // interface member, so the rule is not tied to default implementations. The re-declaration
@@ -852,7 +852,7 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0005");
+        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0060");
     }
 
     [Theory]
@@ -881,21 +881,21 @@ namespace Repro
         public partial string Origin { get; set; }
     }
 }")]
-    public void WhenClassImplementsTheInterfaceMemberItself_ThenNI0005IsNotReported(string source)
+    public void WhenClassImplementsTheInterfaceMemberItself_ThenNI0060IsNotReported(string source)
     {
         // Arrange: the ordinary implicit-implementation shape, once without a base class and once
         // with one. The class property IS the implementation, so reading through the interface and
-        // through the subject agree. This is the shape NI0005 is most at risk of over-firing on.
+        // through the subject agree. This is the shape NI0060 is most at risk of over-firing on.
 
         // Act
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0005");
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0060");
     }
 
     [Fact]
-    public void WhenDerivedOverridesBaseInterfaceImplementation_ThenNI0005IsNotReported()
+    public void WhenDerivedOverridesBaseInterfaceImplementation_ThenNI0060IsNotReported()
     {
         // Arrange: an override shares the base member's interface slot, so reading through the
         // interface lands on the derived property and the two readings agree.
@@ -917,11 +917,11 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0005");
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0060");
     }
 
     [Fact]
-    public void WhenBaseClassIsUnrelatedToACollidingInterfaceDefault_ThenNI0005IsNotReported()
+    public void WhenBaseClassIsUnrelatedToACollidingInterfaceDefault_ThenNI0060IsNotReported()
     {
         // Arrange: Base does not implement IThing at all, so IThing is Sub's own interface to
         // implement. Sub's own "Name" does not actually bind to IThing.Name (the types differ), so
@@ -948,7 +948,7 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0005");
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0060");
     }
 
     [Fact]
@@ -957,8 +957,8 @@ namespace Repro
         // Arrange: the no-base-class mirror of the previous case. Sub declares "Name" directly
         // alongside IThing, "Name" does not bind to IThing.Name because the types differ, and the
         // interface's own default silently becomes the value read through IThing while Sub.Name
-        // reads something else. This is a real, verified divergence, but neither NI0005 (its
-        // message is specifically about a base class, and there is none here) nor NI0008 (there is
+        // reads something else. This is a real, verified divergence, but neither NI0060 (its
+        // message is specifically about a base class, and there is none here) nor NI0061 (there is
         // only one interface involved, not two colliding members) is the right vehicle for it, so
         // it is pinned here as a known, separately-scoped gap rather than silently left unverified.
         const string source = @"
@@ -982,7 +982,7 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenSubjectHidesAnAncestorSubjectProperty_ThenNI0015IsReported()
+    public void WhenSubjectHidesAnAncestorSubjectProperty_ThenNI0065IsReported()
     {
         // Arrange: two backing fields under one property name. Both are intercepted, writes through
         // either raise a change under the same key, and the metadata can only read one of them.
@@ -1007,12 +1007,12 @@ namespace Repro
         var generated = GeneratorTestHost.Run(source);
 
         // Assert
-        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+        var diagnostic = Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0065");
         Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
     }
 
     [Fact]
-    public void WhenSubjectExplicitlyImplementsAnAncestorSubjectPropertyName_ThenNI0015IsReported()
+    public void WhenSubjectExplicitlyImplementsAnAncestorSubjectPropertyName_ThenNI0065IsReported()
     {
         // Arrange: the explicit implementation lands in the highest precedence tier and would flip the
         // ancestor's intercepted property to a non-intercepted interface read.
@@ -1039,11 +1039,11 @@ namespace Repro
         var generated = GeneratorTestHost.Run(source);
 
         // Assert
-        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0065");
     }
 
     [Fact]
-    public void WhenSubjectHidesAPlainBaseClassProperty_ThenNI0015IsNotReported()
+    public void WhenSubjectHidesAPlainBaseClassProperty_ThenNI0065IsNotReported()
     {
         // Arrange: a plain base contributes nothing to any DefaultProperties, so exactly one subject
         // property exists and it is the derived one.
@@ -1064,11 +1064,11 @@ namespace Repro
         var generated = GeneratorTestHost.Run(source);
 
         // Assert
-        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0065");
     }
 
     [Fact]
-    public void WhenSubjectOverridesAnAncestorSubjectProperty_ThenNI0015IsNotReported()
+    public void WhenSubjectOverridesAnAncestorSubjectProperty_ThenNI0065IsNotReported()
     {
         // Arrange: an override shares one slot, so only one accessor pair is reachable and only one of
         // the two backing fields is ever used, leaving nothing to displace.
@@ -1093,11 +1093,11 @@ namespace Repro
         var generated = GeneratorTestHost.Run(source);
 
         // Assert
-        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0065");
     }
 
     [Fact]
-    public void WhenAPlainClassBetweenTwoSubjectsDeclaresTheName_ThenNI0005IsReportedAndNI0015IsNot()
+    public void WhenAPlainClassBetweenTwoSubjectsDeclaresTheName_ThenNI0060IsReportedAndNI0065IsNot()
     {
         // Arrange: the plain class contributes to no DefaultProperties, so the conflict belongs to the
         // ancestor subject's adopted interface default and the remedy is re-listing the interface.
@@ -1123,12 +1123,12 @@ namespace Repro
         var generated = GeneratorTestHost.Run(source);
 
         // Assert
-        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
-        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0005");
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0065");
+        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0060");
     }
 
     [Fact]
-    public void WhenSubjectHidesAnAbstractAncestorSubjectPropertyOverriddenByAPlainClass_ThenNI0015IsReported()
+    public void WhenSubjectHidesAnAbstractAncestorSubjectPropertyOverriddenByAPlainClass_ThenNI0065IsReported()
     {
         // Arrange: Middle is a plain class, so it contributes nothing, but its sealed override leaves
         // 'new' as the only declaration C# permits in Derived. This compiles with zero diagnostics
@@ -1159,15 +1159,15 @@ namespace Repro
         var generated = GeneratorTestHost.Run(source);
 
         // Assert
-        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0065");
     }
 
     [Fact]
-    public void WhenADisplacingDeclarationAlsoMissesAnInterfaceSlot_ThenOnlyNI0015IsReported()
+    public void WhenADisplacingDeclarationAlsoMissesAnInterfaceSlot_ThenOnlyNI0065IsReported()
     {
         // Arrange: both rules match this one declaration, since the ancestor subject both exposes the
-        // name and holds the IOrigin slot. Re-listing the interface, NI0005's remedy, would leave the
-        // displacement in place, so NI0015 stands alone.
+        // name and holds the IOrigin slot. Re-listing the interface, NI0060's remedy, would leave the
+        // displacement in place, so NI0065 stands alone.
         const string source = @"
 using Namotion.Interceptor.Attributes;
 namespace Repro
@@ -1191,12 +1191,12 @@ namespace Repro
         var generated = GeneratorTestHost.Run(source);
 
         // Assert
-        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
-        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0005");
+        Assert.Single(generated.GeneratorDiagnostics, d => d.Id == "NI0065");
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0060");
     }
 
     [Fact]
-    public void WhenSubjectDeclaresANameAnAncestorOnlyAdoptedFromAnInterface_ThenNI0015IsNotReported()
+    public void WhenSubjectDeclaresANameAnAncestorOnlyAdoptedFromAnInterface_ThenNI0065IsNotReported()
     {
         // Arrange: the ancestor merely adopts the interface default, so it declares no member of that
         // name and there is nothing to displace. This is the shape the precedence feature exists for.
@@ -1220,6 +1220,58 @@ namespace Repro
         var generated = GeneratorTestHost.Run(source);
 
         // Assert
-        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0015");
+        Assert.DoesNotContain(generated.GeneratorDiagnostics, d => d.Id == "NI0065");
+    }
+
+    [Theory]
+    [InlineData("int Value => 1;", "", "ILeaf", 2)]
+    [InlineData("int Value { get; }", "", "ILeaf", 2)]
+    [InlineData("int Value => 1;", "public interface ILast : ILeaf { int IRoot.Value => 3; }", "ILast", 3)]
+    public void WhenInterfaceOverridesTheSameSlot_ThenNoCollisionIsReported(
+        string rootMember, string additionalInterface, string subjectInterface, int expectedValue)
+    {
+        // Arrange
+        var source = $$"""
+            using Namotion.Interceptor.Attributes;
+            public interface IRoot { {{rootMember}} }
+            public interface ILeaf : IRoot { int IRoot.Value => 2; }
+            {{additionalInterface}}
+            [InterceptorSubject]
+            public partial class Subject : {{subjectInterface}} { }
+            """;
+
+        // Act
+        var generated = GeneratorTestHost.RunForExecution(source);
+
+        // Assert
+        Assert.Empty(generated.CompilationErrors);
+        Assert.Empty(generated.GeneratorDiagnostics);
+        var subject = (IInterceptorSubject)generated.CreateInstance("Subject");
+        Assert.Equal(expectedValue, subject.Properties["Value"].GetValue!(subject));
+    }
+
+    [Fact]
+    public void WhenAnOverriddenInterfaceSlotCollidesWithAnotherSlot_ThenOneCollisionIsReported()
+    {
+        // Arrange
+        const string source = """
+            using Namotion.Interceptor.Attributes;
+            public interface IRoot { int Value => 1; }
+            public interface ILeaf : IRoot { int IRoot.Value => 2; }
+            public interface IOther { int Value => 3; }
+            [InterceptorSubject]
+            public partial class Subject : ILeaf, IOther { }
+            """;
+
+        // Act
+        var generated = GeneratorTestHost.Run(source);
+
+        // Assert
+        Assert.Empty(generated.CompilationErrors);
+        var diagnostic = Assert.Single(generated.GeneratorDiagnostics);
+        Assert.Equal("NI0061", diagnostic.Id);
+        Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
+        Assert.Contains("IOther.Value", diagnostic.GetMessage());
+        Assert.Contains("IRoot.Value", diagnostic.GetMessage());
     }
 }

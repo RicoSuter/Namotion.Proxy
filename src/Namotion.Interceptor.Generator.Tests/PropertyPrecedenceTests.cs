@@ -66,15 +66,15 @@ public partial class PrecedenceKindBase
     public partial string Kind { get; set; }
 }
 
-// Suppressed because the shape is NI0015: the explicit implementation displaces the base subject's
+// Suppressed because the shape is NI0065: the explicit implementation displaces the base subject's
 // intercepted Kind. Kept as a model so the behaviour behind that error stays recorded.
-#pragma warning disable NI0015
+#pragma warning disable NI0065
 [InterceptorSubject]
 public partial class PrecedenceExplicitKind : PrecedenceKindBase, IPrecedenceKind
 {
     string IPrecedenceKind.Kind => "explicit";
 }
-#pragma warning restore NI0015
+#pragma warning restore NI0065
 
 public class PropertyPrecedenceTests
 {
@@ -158,7 +158,7 @@ public class PropertyPrecedenceTests
     [Fact]
     public void WhenAnExplicitImplementationDisplacesAnAncestorProperty_ThenTheInterfaceReadTakesTheKey()
     {
-        // Arrange: the shape NI0015 rejects. Recorded here because the error's justification is this
+        // Arrange: the shape NI0065 rejects. Recorded here because the error's justification is this
         // behaviour: the ancestor's intercepted property stays writable and becomes unreachable.
         var subject = new PrecedenceExplicitKind();
         subject.Kind = "intercepted";
@@ -171,5 +171,75 @@ public class PropertyPrecedenceTests
         Assert.Equal("explicit", metadata.GetValue?.Invoke(subject));
         Assert.Null(metadata.SetValue);
         Assert.Equal("intercepted", subject.Kind);
+    }
+
+    [Theory]
+    [InlineData("get => base.Value;", "")]
+    [InlineData("set => base.Value = value;", "")]
+    [InlineData("get => base.Value;", "public override int Value { get => base.Value; }")]
+    public void WhenOverrideOmitsAnAccessor_ThenMetadataPreservesTheInheritedAccessor(string accessors, string intermediateMembers)
+    {
+        // Arrange
+        var generated = GeneratorTestHost.RunForExecution($$"""
+            using Namotion.Interceptor.Attributes;
+            [InterceptorSubject]
+            public partial class Base
+            {
+                public virtual partial int Value { get; set; }
+            }
+            public class Intermediate : Base { {{intermediateMembers}} }
+            [InterceptorSubject]
+            public partial class Leaf : Intermediate
+            {
+                public override int Value { {{accessors}} }
+            }
+            """);
+        Assert.Empty(generated.CompilationErrors);
+        Assert.Empty(generated.GeneratorDiagnostics);
+        var subject = (IInterceptorSubject)generated.CreateInstance("Leaf");
+
+        // Act
+        var metadata = subject.Properties["Value"];
+
+        // Assert
+        Assert.Equal("Leaf", metadata.PropertyInfo?.DeclaringType?.Name);
+        Assert.NotNull(metadata.GetValue);
+        Assert.NotNull(metadata.SetValue);
+        metadata.SetValue(subject, 42);
+        Assert.Equal(42, metadata.GetValue(subject));
+    }
+
+    [Theory]
+    [InlineData("get; set;", "partial", true)]
+    [InlineData("get; protected set;", "", true)]
+    [InlineData("get; private set;", "", false)]
+    [InlineData("get; init;", "", false)]
+    public void WhenOverrideOmitsARestrictedSetter_ThenMetadataIncludesOnlyCallableSetters(
+        string baseAccessors, string overrideModifier, bool hasSetter)
+    {
+        // Arrange
+        var generated = GeneratorTestHost.RunForExecution($$"""
+            using Namotion.Interceptor.Attributes;
+            [InterceptorSubject]
+            public partial class Base
+            {
+                public virtual partial int Value { {{baseAccessors}} }
+            }
+            [InterceptorSubject]
+            public partial class Leaf : Base
+            {
+                public override {{overrideModifier}} int Value { {{(overrideModifier == "partial" ? "get;" : "get => base.Value;")}} }
+            }
+            """);
+
+        // Act
+        Assert.Empty(generated.CompilationErrors);
+        Assert.Empty(generated.GeneratorDiagnostics);
+        var subject = (IInterceptorSubject)generated.CreateInstance("Leaf");
+        var metadata = subject.Properties["Value"];
+
+        // Assert
+        Assert.NotNull(metadata.GetValue);
+        Assert.Equal(hasSetter, metadata.SetValue is not null);
     }
 }
