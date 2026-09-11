@@ -1,3 +1,4 @@
+using Namotion.Interceptor.Registry;
 using System.Collections;
 using System.Collections.Concurrent;
 using Namotion.Interceptor.Attributes;
@@ -380,12 +381,10 @@ public class AddPropertiesLifecycleTests
     }
 
     [Fact]
-    public void WhenAPropertyHandlerThrowsDuringAdmissionFanOut_ThenMetadataStaysPublishedAndClaimsAreReleased()
+    public void WhenAPropertyHandlerThrowsDuringAdmissionFanOut_ThenMetadataAndTheChildRemainCommitted()
     {
-        // Arrange: callbacks after the metadata swap are exception-free by contract; a violating
-        // handler propagates with no rollback, so the metadata stays published while the claims
-        // that never became ownership are handed back.
-        var context = CreateContext()
+        // Arrange
+        var context = CreateContext().WithRegistry()
             .WithService(() => new DelegatePropertyAttachHandler(change =>
             {
                 if (change.Property.Name == "Poison")
@@ -404,8 +403,11 @@ public class AddPropertiesLifecycleTests
         // Assert
         Assert.Equal("violating handler", exception.Message);
         Assert.True(subject.Properties.ContainsKey("Poison"));
-        Assert.Null(child.TryGetContext());
-        Assert.Equal(0, child.GetReferenceCount());
+        Assert.True(context.TryGetLifecycleInterceptor()!.Graph.HasBaseline(new PropertyReference(root, "Poison")));
+        SupportContractAssertions.Settled(context, [root], root, child);
+        root.AttachToContext(context);
+        root.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], root, child);
     }
 
     [Fact]

@@ -24,7 +24,7 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
     /// The terminal lock that serializes backing-field access of the subject, taken by the chain
     /// terminals in <see cref="ReadInterceptorFactory{TProperty}"/> and
     /// <see cref="WriteInterceptorFactory{TProperty}"/>. One executor is published per subject, so
-    /// this is a per-subject lock; without it a wide value type could be read while half written.
+    /// this per-subject lock serializes terminal writes and their commit bookkeeping with intercepted reads.
     /// The innermost lock of the structural write order (see the note on <see cref="_attachmentLock"/>).
     /// </summary>
     internal readonly object SyncRoot = new();
@@ -198,10 +198,11 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool SetPropertyValue<TProperty>(string propertyName, TProperty newValue, TProperty currentValue, Action<IInterceptorSubject, TProperty> writeValue)
     {
-        // The routing flag and the chain index are two fields of one per-type static class, read
-        // together and threaded down, so a write pays for the generic statics access exactly once.
         var propertyTypeIndex = InterceptorSubjectContext.PropertyTypeIndex<TProperty>.Value;
-        if (InterceptorSubjectContext.PropertyTypeIndex<TProperty>.CanContainSubjects)
+        var structural = _subject.Properties.TryGetValue(propertyName, out var metadata)
+            ? metadata.IsStructural<TProperty>()
+            : InterceptorSubjectContext.PropertyTypeIndex<TProperty>.CanContainSubjects;
+        if (structural)
         {
             return SetStructuralPropertyValue(propertyName, newValue, currentValue, writeValue, propertyTypeIndex);
         }
@@ -267,6 +268,7 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
             else
             {
                 lifecycle.EnterStructuralWriteGate();
+                Exception? writeFailure = null;
                 try
                 {
                     lock (_attachmentLock)
@@ -280,9 +282,21 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
                         }
                     }
                 }
+                catch (Exception exception)
+                {
+                    writeFailure = exception;
+                    throw;
+                }
                 finally
                 {
-                    lifecycle.ExitStructuralWriteGate();
+                    try
+                    {
+                        lifecycle.ExitStructuralWriteGate();
+                    }
+                    catch (Exception notificationFailure) when (writeFailure is not null)
+                    {
+                        throw new AggregateException(writeFailure, notificationFailure);
+                    }
                 }
             }
         }
@@ -381,6 +395,9 @@ public sealed class InterceptorExecutor : IInterceptorExecutor
             var lifecycle = attachedContext?.TryGetService<ILifecycleInterceptor>();
             if (lifecycle is null)
             {
+                // Enumeration may attach the subject, so it precedes the monitor and the
+                // attachment check that decides whether this call must route through lifecycle.
+                registration.GetProperties();
                 lock (_attachmentLock)
                 {
                     if (ReferenceEquals(_attachment.Context, attachedContext))

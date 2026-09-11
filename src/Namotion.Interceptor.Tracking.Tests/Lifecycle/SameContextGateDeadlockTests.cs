@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Namotion.Interceptor.Interceptors;
+using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Tracking.Lifecycle;
 using Namotion.Interceptor.Tracking.Tests.Models;
 
@@ -19,9 +20,9 @@ namespace Namotion.Interceptor.Tracking.Tests.Lifecycle;
 /// itself invokes. They pin the report rather than the hang, so a return to waiting forever fails on
 /// the bounded join instead of taking the suite with it.
 ///
-/// The last test is the one that decides whether watching the holder beats waiting on a clock: a
-/// whole-graph attach holds the gate for far longer than the deadlock window while doing nothing but
-/// work, and a contending write has to wait it out rather than convict it.
+/// The last test observes a contender waiting at the gate while its holder remains runnable, then
+/// releases the holder and verifies that the write completes afterwards. It covers overlap and
+/// serialization, without asserting a minimum runnable hold duration.
 /// </remarks>
 public class SameContextGateDeadlockTests
 {
@@ -181,70 +182,72 @@ public class SameContextGateDeadlockTests
 
     [Fact]
     [Trait("Category", "Concurrency")]
-    public void WhenTheGateHolderIsRunningALargeAttach_ThenAContendingWriteWaitsForItInsteadOfFailing()
+    public void WhenAnActiveGateHolderOverlapsAContendingWrite_ThenTheWriteCompletesAfterTheHolderLeaves()
     {
-        // Arrange: a whole-graph attach runs under the gate and holds it for seconds while doing
-        // nothing but work, which is the one legitimate hold long enough to be mistaken for a
-        // deadlock. A second thread writes into the same context while that attach is in flight.
-        var context = CreateContextConvictingQuickly();
-
-        var contendedTarget = new Person { FirstName = "contended" };
-        ((IInterceptorSubject)contendedTarget).AttachToContext(context);
-
-        var attachStarted = new ManualResetEventSlim();
-        var attachedCount = 0;
-        context.TryGetLifecycleInterceptor()!.SubjectAttached += _ =>
-        {
-            if (Interlocked.Increment(ref attachedCount) == AttachedSubjectsBeforeContending)
+        // Arrange
+        var context = CreateContextConvictingQuickly().WithRegistry();
+        var contendedTarget = new Person();
+        contendedTarget.AttachToContext(context);
+        var root = new Person();
+        var child = new Person();
+        using var holderEntered = new ManualResetEventSlim();
+        using var releaseHolder = new ManualResetEventSlim();
+        using var contenderStarted = new ManualResetEventSlim();
+        using var contenderCompleted = new ManualResetEventSlim();
+        var holderLeft = false;
+        var contenderObservedHolderLeft = false;
+        ((IInterceptorSubject)root).AddProperties(new SubjectPropertyMetadata(
+            "HoldGate", typeof(Person), [], _ =>
             {
-                attachStarted.Set();
-            }
-        };
-
-        var root = BuildBinaryTree(SlowAttachTreeDepth);
+                if (root.TryGetContext() is not null && !holderEntered.IsSet)
+                {
+                    holderEntered.Set();
+                    // A runnable holder is distinct from the blocked holders the deadlock detector rejects.
+                    while (!releaseHolder.IsSet) Thread.SpinWait(64);
+                    Volatile.Write(ref holderLeft, true);
+                }
+                return null;
+            }, null, isIntercepted: true, isDynamic: true));
         Exception? attachException = null;
-        var attacher = new Thread(() => attachException = Record.Exception(() => ((IInterceptorSubject)root).AttachToContext(context)))
+        Exception? contendedException = null;
+        var attacher = new Thread(() => attachException = Record.Exception(() => root.AttachToContext(context)))
+            { IsBackground = true };
+        var contender = new Thread(() =>
         {
-            IsBackground = true
-        };
+            contenderStarted.Set();
+            contendedException = Record.Exception(() => contendedTarget.Father = child);
+            contenderObservedHolderLeft = Volatile.Read(ref holderLeft);
+            contenderCompleted.Set();
+        }) { IsBackground = true };
 
         // Act
         attacher.Start();
-        Assert.True(attachStarted.Wait(JoinTimeout), "the attach never reached the graph, so nothing was contended");
-
-        var stopwatch = Stopwatch.StartNew();
-        var contendedException = Record.Exception(() => contendedTarget.Father = new Person { FirstName = "waited" });
-        stopwatch.Stop();
-
-        // Assert: the contending write waited out a hold many times the deadlock window and then
-        // went through, and the attach it waited for completed.
-        Assert.Null(contendedException);
-        Assert.Equal("waited", ((Person)contendedTarget.Father!).FirstName);
-        Assert.True(attacher.Join(JoinTimeout), "the attach never finished");
-        Assert.Null(attachException);
-        Assert.True(stopwatch.Elapsed > MinimumContendedWait,
-            $"the write only waited {stopwatch.Elapsed}, so it never overlapped the attach and proves nothing");
-    }
-
-    /// <summary>Large enough that the attach holds the gate for far longer than the deadlock window.</summary>
-    private const int SlowAttachTreeDepth = 17;
-
-    /// <summary>How many subjects the attach publishes before the second thread starts contending.</summary>
-    private const int AttachedSubjectsBeforeContending = 128;
-
-    /// <summary>Longer than the deadlock window, so a write that never overlapped fails the test.</summary>
-    private static readonly TimeSpan MinimumContendedWait = TimeSpan.FromMilliseconds(300);
-
-    private static Person BuildBinaryTree(int depth)
-    {
-        var person = new Person();
-        if (depth > 1)
+        try
         {
-            person.Father = BuildBinaryTree(depth - 1);
-            person.Mother = BuildBinaryTree(depth - 1);
+            Assert.True(holderEntered.Wait(JoinTimeout), "the attach never entered its structural getter");
+            contender.Start();
+            Assert.True(contenderStarted.Wait(JoinTimeout));
+            Assert.True(SpinWait.SpinUntil(
+                () => (contender.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0 || contenderCompleted.IsSet,
+                JoinTimeout), "the contender never reached the held gate");
+            Assert.False(contenderCompleted.IsSet, "the write completed while another thread still held the gate");
+        }
+        finally
+        {
+            releaseHolder.Set();
         }
 
-        return person;
+        // Assert
+        Assert.True(attacher.Join(JoinTimeout));
+        Assert.True(contender.Join(JoinTimeout));
+        Assert.Null(attachException);
+        Assert.Null(contendedException);
+        Assert.True(contenderObservedHolderLeft);
+        Assert.Same(child, contendedTarget.Father);
+        SupportContractAssertions.Settled(context, [root, contendedTarget], root, contendedTarget, child);
+        root.DetachFromContext(context);
+        contendedTarget.DetachFromContext(context);
+        SupportContractAssertions.Settled(context, [], root, contendedTarget, child);
     }
 
     /// <summary>Runs one structural write on a worker thread and returns what waiting for the gate cost it.</summary>

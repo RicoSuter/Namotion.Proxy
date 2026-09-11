@@ -294,8 +294,9 @@ internal static class SubjectCodeGenerator
             builder.AppendLine();
         }
 
-        // Generate constructor with context parameter if we have or will have a parameterless constructor
-        if (metadata.HasOrWillHaveParameterlessConstructor)
+        // A declared context-only signature wins, just like every other handwritten mirror.
+        if (metadata.HasOrWillHaveParameterlessConstructor && !metadata.Constructors.Any(constructor =>
+                constructor.Parameters.Count == 1 && constructor.Parameters[0].FullyQualifiedTypeName == ContextParameterTypeName))
         {
             EmitSetsRequiredMembersAttribute(builder, metadata);
             builder.AppendLine($"        public {metadata.ClassName}(IInterceptorSubjectContext context) : this()");

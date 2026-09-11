@@ -12,11 +12,11 @@ namespace Namotion.Interceptor.Tracking.Lifecycle;
 /// them back.
 /// </summary>
 /// <remarks>
-/// Committed outgoing edges are not stored separately. The property baselines are the outgoing
-/// truth: a subject commits an edge to a child exactly when the baseline of one of its structural
-/// properties still contains that child. One representation instead of two removes the whole class
-/// of bugs where the two disagree, and it is what makes the release descent and the reachability
-/// walk read the same relation.
+/// Property baselines describe the committed outgoing relation. While publication is incomplete,
+/// a property journal also records its installed incoming occurrences: a nested write or release
+/// must reconcile those occurrences rather than assuming every desired edge was already installed.
+/// Reachability validates incoming candidates against captured committed occurrences, so neither
+/// reachability nor release invokes the original value's enumerator.
 ///
 /// The claim primitives (claiming, releasing and re-anchoring executors) take the executor's
 /// attachment monitor through <c>TryUpdateAttachment</c>, so they require the topology gate to
@@ -31,13 +31,19 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
 {
     // Reference equality, explicitly: graph membership is identity, and a hand-written subject
     // may override Equals/GetHashCode, which under default equality could merge distinct nodes or
-    // strand a subject whose hash mutates while it is owned.
+    // strand a subject whose hash mutates while it is owned. Releasing records stay in this map
+    // as identity tokens until final notification cleanup; ownership queries filter those records.
     private readonly ConcurrentDictionary<IInterceptorSubject, SubjectOwnership> _owned = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<PropertyReference, object?> _baselines = new(PropertyReference.Comparer);
+    private readonly Dictionary<PropertyReference, PropertyBaseline> _baselines = new(PropertyReference.Comparer);
 
-    // Written only by the release descent, under the topology lock, and read only by the
-    // admission path; a set rather than a field because a release can nest inside a callback.
-    private readonly HashSet<IInterceptorSubject> _releasing = new(ReferenceEqualityComparer.Instance);
+    // A nested write can replace a value and restore the exact same instance before returning.
+    private long _nextBaselineRevision;
+    private PropertyEdgeJournal? _firstPropertyJournal;
+    private Dictionary<PropertyReference, PropertyEdgeJournal>? _additionalPropertyJournals;
+    // Failure-only state: ordinary retained children need no seeding flag or property reread.
+    private Dictionary<IInterceptorSubject, SubjectOwnership>? _incompleteSeeds;
+    private (PropertyReference Property, SubjectOwnership? Ownership) _activeSeedingGetter;
+    private Dictionary<(PropertyReference Property, SubjectOwnership? Ownership), int>? _suspendedSeedingGetters;
 
     public IInterceptorSubjectContext Context { get; } = context;
 
@@ -49,28 +55,27 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     /// A [Derived] property carries an edge where it is the store of record. The generator gives
     /// every intercepted property a backing field, so there IsIntercepted already means the
     /// property is the store; a dynamic property is intercepted unconditionally, so its setter
-    /// stands in instead, because a getter-only derived one can return nothing the properties it
-    /// reads do not already own. A subject reachable only through a property that carries no edge
-    /// is never tracked, and DerivedPropertyChangeHandler rejects it instead of letting it go
-    /// silently unowned. See docs/design/tracking-lifecycle.md.
+    /// stands in instead, because a getter-only derived value is a projection.
+    /// A subject reachable only through a property that carries no edge
+    /// is not owned through that projection. It may be detached or owned by another context.
+    /// See docs/design/tracking-lifecycle.md.
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool IsStructural(in SubjectPropertyMetadata metadata)
     {
-        return metadata is { IsIntercepted: true } and not { IsDerived: true, IsDynamic: true, SetValue: null } &&
-               metadata.Type.CanContainSubjects();
+        return metadata.IsStructural<object>();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public SubjectOwnership? TryGetOwnership(IInterceptorSubject subject)
     {
-        return _owned.TryGetValue(subject, out var ownership) ? ownership : null;
+        return _owned.TryGetValue(subject, out var ownership) && !ownership.IsReleasing ? ownership : null;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsOwned(IInterceptorSubject subject)
     {
-        return _owned.ContainsKey(subject);
+        return TryGetOwnership(subject) is not null;
     }
 
     public SubjectOwnership AddOwnership(IInterceptorSubject subject)
@@ -80,13 +85,8 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
         return ownership;
     }
 
-    public void RemoveOwnership(IInterceptorSubject subject)
-    {
-        _owned.TryRemove(subject, out _);
-    }
-
     /// <summary>
-    /// Whether the subject is between losing its ownership record and having its executor handed
+    /// Whether the subject is between losing graph ownership and having its executor handed
     /// back, which is the window its detach callbacks run in.
     /// </summary>
     /// <remarks>
@@ -96,19 +96,24 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     /// </remarks>
     public bool IsReleasing(IInterceptorSubject subject)
     {
-        return _releasing.Count > 0 && _releasing.Contains(subject);
+        return _owned.TryGetValue(subject, out var ownership) && ownership.IsReleasing;
+    }
+
+    /// <summary>Queries the release identity while the caller holds the topology gate.</summary>
+    public bool IsCurrentRelease(IInterceptorSubject subject, SubjectOwnership ownership)
+    {
+        return ownership.IsReleasing && _owned.TryGetValue(subject, out var current) && ReferenceEquals(current, ownership);
     }
 
     /// <inheritdoc cref="IsReleasing"/>
-    public void MarkReleasing(IInterceptorSubject subject)
+    public void ClearReleasing(IInterceptorSubject subject, SubjectOwnership ownership)
     {
-        _releasing.Add(subject);
-    }
-
-    /// <inheritdoc cref="IsReleasing"/>
-    public void ClearReleasing(IInterceptorSubject subject)
-    {
-        _releasing.Remove(subject);
+        // A failure before marking must leave the live record intact. Reattachment replaces this
+        // entry, so an older queued release must not remove a newer ownership lifetime.
+        if (IsCurrentRelease(subject, ownership))
+        {
+            _owned.TryRemove(subject, out _);
+        }
     }
 
     /// <summary>
@@ -141,13 +146,102 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public object? GetBaseline(PropertyReference property)
     {
-        return _baselines.GetValueOrDefault(property);
+        return _baselines.GetValueOrDefault(property).Value;
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void SetBaseline(PropertyReference property, object? value)
+    public PropertyBaseline GetBaselineSnapshot(PropertyReference property) => _baselines.GetValueOrDefault(property);
+
+    public long SetBaseline(PropertyReference property, IInterceptorSubject? value)
     {
-        _baselines[property] = value;
+        var revision = ++_nextBaselineRevision;
+        _baselines[property] = new PropertyBaseline(value, revision, null);
+        return revision;
+    }
+
+    public long SetBaseline(PropertyReference property, object? value, List<SubjectOccurrence> occurrences)
+    {
+        var revision = ++_nextBaselineRevision;
+        _baselines[property] = new PropertyBaseline(value, revision,
+            value is IInterceptorSubject || occurrences.Count == 0 ? null : occurrences.ToArray());
+        return revision;
+    }
+
+    public long GetBaselineRevision(PropertyReference property)
+    {
+        return _baselines.GetValueOrDefault(property).Revision;
+    }
+
+    public PropertyEdgeJournal? GetPropertyJournal(PropertyReference property, SubjectOwnership? ownership)
+    {
+        var first = _firstPropertyJournal;
+        if (first is not null && first.Property == property && ReferenceEquals(first.Ownership, ownership)) return first;
+        return _additionalPropertyJournals is { Count: > 0 } &&
+               _additionalPropertyJournals.TryGetValue(property, out var journal) &&
+               ReferenceEquals(journal.Ownership, ownership) ? journal : null;
+    }
+
+    public PropertyEdgeJournal BeginPropertyJournal(PropertyReference property, SubjectOwnership ownership, List<SubjectOccurrence>? installed = null)
+    {
+        var journal = GetPropertyJournal(property, ownership);
+        if (journal is not null)
+        {
+            journal.Users++;
+            return journal;
+        }
+
+        journal = LifecycleScratch.RentPropertyJournal();
+        journal.Initialize(property, ownership, installed);
+        if (_firstPropertyJournal is null) _firstPropertyJournal = journal;
+        else (_additionalPropertyJournals ??= new(PropertyReference.Comparer))[property] = journal;
+        return journal;
+    }
+
+    public void EndPropertyJournal(PropertyEdgeJournal journal)
+    {
+        if (--journal.Users > 0) return;
+        // A failed descent can leave desired edges unpublished. Keep its actual occurrences until
+        // a later write settles the property or releasing the owner drains what was installed.
+        if (!journal.IsComplete && ReferenceEquals(TryGetOwnership(journal.Property.Subject), journal.Ownership)) return;
+        if (ReferenceEquals(_firstPropertyJournal, journal)) _firstPropertyJournal = null;
+        else if (_additionalPropertyJournals is not null &&
+                 _additionalPropertyJournals.TryGetValue(journal.Property, out var current) && ReferenceEquals(current, journal))
+        {
+            _additionalPropertyJournals.Remove(journal.Property);
+        }
+
+        LifecycleScratch.Return(journal);
+    }
+
+    public void MarkSeedIncomplete(IInterceptorSubject subject, SubjectOwnership? ownership)
+    {
+        if (ownership is not null && ReferenceEquals(TryGetOwnership(subject), ownership))
+            (_incompleteSeeds ??= new(ReferenceEqualityComparer.Instance))[subject] = ownership;
+    }
+
+    public bool TryBeginSeedRecovery(IInterceptorSubject subject, out SubjectOwnership ownership)
+    {
+        if (_incompleteSeeds is { Count: > 0 } && _incompleteSeeds.TryGetValue(subject, out ownership!) &&
+            ReferenceEquals(TryGetOwnership(subject), ownership))
+        {
+            // Removing the marker while recovery runs also terminates back edges into this seed.
+            _incompleteSeeds.Remove(subject);
+            return true;
+        }
+
+        ownership = null!;
+        return false;
+    }
+
+    public void RecordIncomingAdded(PropertyReference property, IInterceptorSubject child, object? index)
+    {
+        if (_firstPropertyJournal is null && _additionalPropertyJournals is not { Count: > 0 }) return;
+        GetPropertyJournal(property, TryGetOwnership(property.Subject))?.Add(child, index);
+    }
+
+    public void RecordIncomingRemoved(PropertyReference property, IInterceptorSubject child)
+    {
+        if (_firstPropertyJournal is null && _additionalPropertyJournals is not { Count: > 0 }) return;
+        GetPropertyJournal(property, TryGetOwnership(property.Subject))?.RemoveLast(child);
     }
 
     /// <summary>
@@ -169,7 +263,7 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     public bool CommitsEdgeTo(PropertyReference property, IInterceptorSubject target)
     {
         return _baselines.TryGetValue(property, out var value) &&
-               StructuralValueScanner.Contains(property, value, target);
+               value.Contains(target);
     }
 
     /// <summary>
@@ -180,49 +274,104 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     /// </summary>
     public void CollectStructuralChildren(
         IInterceptorSubject subject,
-        List<(PropertyReference Property, SubjectOccurrence Occurrence)> children,
-        bool seed)
+        List<(PropertyReference Property, SubjectOccurrence Occurrence, long BaselineRevision)> children,
+        bool seed,
+        List<(PropertyEdgeJournal Journal, long Revision)>? seedingJournals = null)
     {
+        var ownership = TryGetOwnership(subject);
         var occurrences = LifecycleScratch.RentOccurrenceList();
         try
         {
             foreach (var entry in subject.Properties)
             {
                 var metadata = entry.Value;
-                if (!IsStructural(metadata))
-                {
-                    continue;
-                }
-
+                if (!IsStructural(metadata)) continue;
                 var property = new PropertyReference(subject, entry.Key);
-                object? value;
-                if (seed)
+                var hadBaseline = _baselines.TryGetValue(property, out var previousBaseline);
+                if (!seed)
                 {
-                    value = metadata.GetValue?.Invoke(subject);
-                    _baselines[property] = value;
-                }
-                else if (!_baselines.TryGetValue(property, out value))
-                {
+                    occurrences.Clear();
+                    if (GetPropertyJournal(property, ownership) is { } installedJournal) installedJournal.CopyTo(occurrences);
+                    else previousBaseline.CopyTo(occurrences);
+                    foreach (var occurrence in occurrences) children.Add((property, occurrence, previousBaseline.Revision));
                     continue;
                 }
 
-                if (value is null)
-                {
-                    continue;
-                }
+                // A nested write to another property already committed and published it.
+                if (hadBaseline) continue;
+                if (!IsSeedOwnerCurrent(subject, ownership)) return;
+                var value = ReadSeedingGetter(property, metadata, ownership);
+                if (!IsSeedOwnerCurrent(subject, ownership)) return;
+                if (previousBaseline.Revision != GetBaselineRevision(property)) continue;
 
                 occurrences.Clear();
                 StructuralValueScanner.CollectOccurrences(metadata.Type, value, occurrences);
-                foreach (var occurrence in occurrences)
+                // Getters and enumerators can release this owner or publish a newer property.
+                // Neither continuation may recreate their obsolete edges.
+                if (!IsSeedOwnerCurrent(subject, ownership)) return;
+                if (previousBaseline.Revision != GetBaselineRevision(property)) continue;
+
+                var journal = occurrences.Count > 0 ? BeginPropertyJournal(property, ownership!) : null;
+                var revision = SetBaseline(property, value, occurrences);
+                if (journal is not null)
                 {
-                    children.Add((property, occurrence));
+                    journal.IsComplete = false;
+                    seedingJournals!.Add((journal, revision));
                 }
+
+                foreach (var occurrence in occurrences) children.Add((property, occurrence, revision));
             }
         }
         finally
         {
             LifecycleScratch.Return(occurrences);
         }
+    }
+
+    public bool IsEvaluatingSeedingGetter(PropertyReference property)
+    {
+        if (_activeSeedingGetter.Property.Equals(property))
+        {
+            return ReferenceEquals(_activeSeedingGetter.Ownership, TryGetOwnership(property.Subject));
+        }
+
+        return _suspendedSeedingGetters is { Count: > 0 } &&
+               _suspendedSeedingGetters.ContainsKey((property, TryGetOwnership(property.Subject)));
+    }
+
+    private object? ReadSeedingGetter(PropertyReference property, SubjectPropertyMetadata metadata, SubjectOwnership? ownership)
+    {
+        var preceding = _activeSeedingGetter;
+        var isNested = preceding.Property.Subject is not null;
+        if (isNested)
+        {
+            // Only reentrant getter evaluation needs a lookup for older frames.
+            _suspendedSeedingGetters ??= new();
+            _suspendedSeedingGetters[preceding] = _suspendedSeedingGetters.GetValueOrDefault(preceding) + 1;
+        }
+
+        _activeSeedingGetter = (property, ownership);
+        try
+        {
+            return metadata.GetValue?.Invoke(property.Subject);
+        }
+        finally
+        {
+            _activeSeedingGetter = preceding;
+            if (isNested)
+            {
+                var remaining = _suspendedSeedingGetters![preceding] - 1;
+                if (remaining == 0) _suspendedSeedingGetters.Remove(preceding);
+                else _suspendedSeedingGetters[preceding] = remaining;
+            }
+        }
+    }
+
+    public bool IsSeedOwnerCurrent(IInterceptorSubject subject, SubjectOwnership? ownership)
+    {
+        return ownership is not null
+            ? ReferenceEquals(ownership, TryGetOwnership(subject))
+            : IsAnchored(subject) && !IsReleasing(subject);
     }
 
     /// <summary>
@@ -250,11 +399,25 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     /// <summary>Drops every structural baseline of the subject; called when it leaves the graph.</summary>
     public void RemoveBaselines(IInterceptorSubject subject)
     {
+        _incompleteSeeds?.Remove(subject);
         foreach (var entry in subject.Properties)
         {
             if (IsStructural(entry.Value))
             {
-                _baselines.Remove(new PropertyReference(subject, entry.Key));
+                var property = new PropertyReference(subject, entry.Key);
+                _baselines.Remove(property);
+                var first = _firstPropertyJournal;
+                if (first is not null && first.Property == property)
+                {
+                    _firstPropertyJournal = null;
+                    if (first.Users == 0) LifecycleScratch.Return(first);
+                }
+
+                if (_additionalPropertyJournals is not null &&
+                    _additionalPropertyJournals.Remove(property, out var journal) && journal.Users == 0)
+                {
+                    LifecycleScratch.Return(journal);
+                }
             }
         }
     }
@@ -496,7 +659,8 @@ internal sealed class OwnershipGraph(IInterceptorSubjectContext context)
     {
         foreach (var subject in claimed)
         {
-            if (!IsOwned(subject) && !IsAnchored(subject))
+            // A queued release keeps its claim through preceding lifecycle/property delivery.
+            if (!_owned.ContainsKey(subject) && !IsAnchored(subject))
             {
                 ReleaseClaim(subject);
             }
