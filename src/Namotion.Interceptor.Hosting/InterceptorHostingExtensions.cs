@@ -58,15 +58,15 @@ public static class InterceptorHostingExtensions
         // Resolved before the attachment is published, because the lookup throws when the subject is
         // reachable from two hosting contexts. After the add, that throw would leave the caller with no
         // attachment it knows about and the subject with a factory the next context attach starts.
+        // Nothing ahead of the add may read subject.Data: DataGatedSubject gates on the first read.
+        //
+        // Resolved again when the first lookup found none, because a lookup ahead of the add is the
+        // wrong way round against a context entering the graph: that path publishes the context and
+        // then reads the subject's attachments, so a publication landing between the two is missed by
+        // both sides and leaves the subject inside a hosting graph holding a factory nothing will ever
+        // invoke, with no fault and nothing logged.
         var handler = subject.Context.TryGetService<HostedServiceHandler>();
-
         var attachment = AddAttachment(subject, factory);
-
-        // Resolved again when the first lookup found none, because the read above and the add below it
-        // are the wrong way round against a context entering the graph: that path publishes the context
-        // and then reads the subject's attachments, so a publication landing between these two
-        // statements is missed by both sides and leaves the subject inside a hosting graph holding a
-        // factory nothing will ever invoke, with no fault and nothing logged.
         handler ??= TryResolveHandlerAfterPublish(subject);
 
         // Liveness before the take, because the take reads it: the attach path records only subjects
@@ -212,8 +212,7 @@ public static class InterceptorHostingExtensions
     }
 
     /// <summary>
-    /// Resolves the handler once more, after an attach has published its attachment, for a first lookup
-    /// that found none.
+    /// Resolves the handler once more for a first lookup that found none, after the add has published.
     /// </summary>
     /// <remarks>
     /// Counts the reachable handlers instead of going through TryGetService, whose throw on two of them
@@ -223,10 +222,10 @@ public static class InterceptorHostingExtensions
     /// </remarks>
     private static HostedServiceHandler? TryResolveHandlerAfterPublish(IInterceptorSubject subject)
     {
-        // The add and this read are a store followed by a load of what the publishing side writes and
-        // reads in the opposite order, so without a fence here both sides may miss each other however
-        // the two are ordered in time. The publishing side fences for free: it enters the lifecycle
-        // lock between its own publish and its read of the attachments.
+        // The add is a release store under a data bucket lock, and release does not order a store
+        // against this later load, so without the fence the two sides miss each other however they are
+        // ordered in time. The publishing side needs no fence of its own: its publish is an
+        // Interlocked.Exchange, see InterceptorSubjectContext.PublishState.
         Interlocked.MemoryBarrier();
 
         var handlers = subject.Context.GetServices<HostedServiceHandler>();
