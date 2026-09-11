@@ -513,24 +513,6 @@ Suppress a rule at the point of use with `#pragma warning disable NI0060`, or pr
 - **Generation succeeds and the member the rule names is skipped: NI0040.** It is a warning, but no wrapper and no metadata entry is emitted for that member, so suppressing it does not accept a shape, it hides the fact that a `WithoutInterceptor` opt-in the author wrote is being ignored and no wrapper exists at all. Rename or reshape the member instead.
 - **Generation succeeds and the generated code carries a member that silently does not work as declared: NI0060 through NI0065.** All but NI0062 are errors, and none of them stops generation. Suppressing one leaves the member in place: unreachable where the declaration says it should exist (NI0060, NI0061, NI0065), capturing a generated call (NI0063), or hijacking an interface slot (NI0064). NI0062 is the warning of the group, and suppressing it accepts a hierarchy in which base-declared properties are not intercepted. Each of these then fails silently at runtime instead of loudly at build time, so they are worth fixing rather than silencing. One case of NI0061 is the exception, and there suppression is the intended end state rather than a deferral: when both colliding members are declared in interfaces the consumer does not own, no rename is available to them, so suppressing NI0061 to accept the name the generator resolved is the fix.
 
-### Diagnostic ID migration
-
-The diagnostic IDs are regrouped before release. If you use an earlier build or revision of the generator, update diagnostic IDs in `NoWarn`, `#pragma warning`, `.editorconfig`, and diagnostic assertions using this table. NI0001 through NI0004 are unchanged. NI0005 through NI0007 now describe different rules, so retaining an old suppression can suppress an unrelated error.
-
-| Previous ID | Current ID | Rule |
-|---|---|---|
-| NI0005 | NI0060 | Property misses an inherited interface slot |
-| NI0006 | NI0040 | Unsupported member skipped |
-| NI0007 | NI0020 | Explicit implementation attributes ignored |
-| NI0008 | NI0061 | Distinct members collide on a property name |
-| NI0009 | NI0005 | Generic subject or containing type unsupported |
-| NI0010 | NI0006 | File-local subject unsupported |
-| NI0011 | NI0007 | Base class does not satisfy the subject contract |
-| NI0012 | NI0062 | Base interception members cannot be shared |
-| NI0013 | NI0063 | Member hides an inherited generated member |
-| NI0014 | NI0064 | Member hijacks an inherited interface implementation |
-| NI0015 | NI0065 | Property displaces an ancestor subject property |
-
 ### Fixing NI0060, NI0061 and NI0065
 
 These three are errors, so each one is met at a broken build. Their remedies are in the table above; below is the smallest shape that triggers each one, with the version that builds.
