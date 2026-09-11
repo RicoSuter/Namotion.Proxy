@@ -26,14 +26,6 @@ internal sealed class AttachTraversal(LifecycleNotifier notifier, OwnershipGraph
     /// </summary>
     public StructuralReconciler Reconciler { get; set; } = null!;
 
-    public void SeedChildrenIfNeeded(IInterceptorSubject subject)
-    {
-        if (!graph.AreBaselinesSeeded(subject))
-        {
-            SeedAndAttachChildren(subject);
-        }
-    }
-
     public void SeedAndAttachChildren(IInterceptorSubject subject)
     {
         var ownership = graph.TryGetOwnership(subject);

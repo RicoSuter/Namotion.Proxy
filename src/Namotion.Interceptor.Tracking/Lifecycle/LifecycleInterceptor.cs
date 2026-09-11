@@ -529,9 +529,9 @@ public sealed class LifecycleInterceptor : ILifecycleInterceptor, ILifecycleHand
     /// </summary>
     public void HandleLifecycleChange(SubjectLifecycleChange change)
     {
-        if (change.IsContextAttach)
+        if (change.IsContextAttach && !_graph.AreBaselinesSeeded(change.Subject))
         {
-            _attach.SeedChildrenIfNeeded(change.Subject);
+            _attach.SeedAndAttachChildren(change.Subject);
         }
     }
 
