@@ -115,7 +115,7 @@ internal sealed class HostedServiceHandler : IHostedService, ILifecycleHandler
         // Runs inside LifecycleInterceptor's lock, so everything here only appends, which never blocks
         // and never runs a body. Third party code does run under that lock through TakeStartupHolds,
         // an accepted hazard with a constraint on the implementer: see IStartupCompletionDeferrer and
-        // residual hazard 4 in docs/design/hosting-service-ownership.md.
+        // docs/design/hosting-service-ownership.md#4-a-deferrer-that-takes-a-lock-of-its-own.
         if (change.IsContextAttach)
         {
             AttachSubject(change.Subject);
@@ -676,8 +676,9 @@ internal sealed class HostedServiceHandler : IHostedService, ILifecycleHandler
     /// </para>
     /// <para>
     /// Every reachable interceptor is asked, because one not holding the subject says nothing about
-    /// another. A handler can therefore be marked live on the strength of a graph it does not serve;
-    /// see the multi context note in docs/design/hosting-service-ownership.md.
+    /// another. A handler can therefore be marked live on the strength of a graph it does not serve.
+    /// What makes that harmless is the one instance guard rather than liveness, which is argued in
+    /// docs/design/hosting-service-ownership.md#ownership-is-not-what-makes-two-contexts-over-one-subject-benign.
     /// </para>
     /// </remarks>
     internal void MarkLiveIfAttached(IInterceptorSubject subject)

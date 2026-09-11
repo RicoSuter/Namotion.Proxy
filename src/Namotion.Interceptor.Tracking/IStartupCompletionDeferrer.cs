@@ -27,7 +27,7 @@ namespace Namotion.Interceptor.Tracking;
 /// never be held across either. A lock that a thread inside the lifecycle lock can wait for is allowed
 /// under exactly that condition and forbidden without it, because without it the two can be acquired in
 /// either order and a cycle closes that nothing resolves. That cycle is set out in
-/// docs/design/hosting-service-ownership.md, section "A deferrer that takes a lock of its own", and its
+/// docs/design/hosting-service-ownership.md#4-a-deferrer-that-takes-a-lock-of-its-own, and its
 /// blast radius is every structural property write in the graph rather than only the caller, because the
 /// lifecycle lock is held throughout.
 /// </para>

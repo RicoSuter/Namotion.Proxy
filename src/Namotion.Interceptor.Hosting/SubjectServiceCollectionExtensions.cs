@@ -17,7 +17,7 @@ public static class SubjectServiceCollectionExtensions
     /// <remarks>
     /// One instance per type; a second call throws. The subject is constructed and configured inside a
     /// startup scope, so it is fully configured before anything can start it, whichever constructor
-    /// shape it has. The three shapes are compared in docs/hosting.md.
+    /// shape it has. The three shapes are compared in docs/hosting.md#addsubjectt.
     /// </remarks>
     /// <typeparam name="T">The subject type.</typeparam>
     /// <param name="services">The service collection.</param>
