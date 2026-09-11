@@ -30,7 +30,7 @@ public class DerivedPropertyChangeHandler : IReadInterceptor, IWriteInterceptor,
     // Safety limit for stabilization loops. Prevents infinite loops from getters
     // with side effects that mutate the tracked state (a user error but shouldn't hang).
     // In correct code, the loop runs 1-2 iterations max.
-    internal const int MaxStabilizationIterations = 100;
+    private const int MaxStabilizationIterations = 100;
 
     [ThreadStatic]
     private static DerivedPropertyRecorder? _recorder;
