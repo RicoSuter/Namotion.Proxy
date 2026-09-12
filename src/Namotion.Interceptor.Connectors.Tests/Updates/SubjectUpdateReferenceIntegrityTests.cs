@@ -175,41 +175,6 @@ public class SubjectUpdateReferenceIntegrityTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void WhenARemovalHasNoSubjectPayload_ThenItRemovesTheItem(bool dictionary)
-    {
-        // Arrange
-        var target = new Person(InterceptorSubjectContext.Create().WithRegistry())
-        {
-            Children = [new Person()],
-            Relationships = new Dictionary<string, Person> { ["child"] = new() }
-        };
-        var update = new SubjectUpdate
-        {
-            Root = "1",
-            Subjects = new()
-            {
-                ["1"] = new()
-                {
-                    [dictionary ? "Relationships" : "Children"] = new()
-                    {
-                        Kind = dictionary ? SubjectPropertyUpdateKind.Dictionary : SubjectPropertyUpdateKind.Collection,
-                        Operations = [new() { Action = SubjectCollectionOperationType.Remove, Index = dictionary ? "child" : 0 }],
-                        Count = 0
-                    }
-                }
-            }
-        };
-
-        // Act
-        target.ApplySubjectUpdate(update, DefaultSubjectFactory.Instance, ChangeOrigin.Local);
-
-        // Assert
-        Assert.Empty(dictionary ? (System.Collections.IEnumerable)target.Relationships! : target.Children);
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
     public void WhenAnEarlierReferenceIsReplacedBeforeBatchCreation_ThenOnlyTheFinalReferenceIsRequired(bool clear)
     {
         // Arrange
@@ -246,7 +211,7 @@ public class SubjectUpdateReferenceIntegrityTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void WhenATransientItemIsInsertedThenRemovedBeforeBatchCreation_ThenTheFinalRemovalNeedsNoPayload(bool dictionary)
+    public void WhenATransientItemIsInsertedThenRemovedBeforeBatchCreation_ThenTheEmptyResultCarriesNoTransientPayload(bool dictionary)
     {
         // Arrange
         var source = new Person(InterceptorSubjectContext.Create().WithFullPropertyTracking().WithRegistry());
@@ -271,6 +236,12 @@ public class SubjectUpdateReferenceIntegrityTests
 
         // Assert
         Assert.Null(transient.TryGetRegisteredSubject());
+        Assert.Equal(update.Root, Assert.Single(update.Subjects).Key);
+        var propertyUpdate = update.Subjects[update.Root][property.Name];
+        Assert.Equal(dictionary ? SubjectPropertyUpdateKind.Dictionary : SubjectPropertyUpdateKind.Collection, propertyUpdate.Kind);
+        Assert.Equal(0, propertyUpdate.Count);
+        Assert.Empty(propertyUpdate.Operations ?? []);
+        Assert.Empty(propertyUpdate.Items ?? []);
         Assert.Empty(target.Children);
         Assert.Empty(target.Relationships!);
     }

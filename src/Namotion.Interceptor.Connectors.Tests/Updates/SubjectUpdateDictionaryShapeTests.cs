@@ -56,25 +56,26 @@ public class SubjectUpdateDictionaryShapeTests
     }
 
     [Fact]
-    public void WhenADictionaryUsesADictionaryDeclaration_ThenItsKeysAndChildrenRoundtrip()
+    public void WhenALegacyDictionaryHasExistingChildren_ThenTheirPropertiesAreUpdated()
     {
         // Arrange
-        var source = new Person(InterceptorSubjectContext.Create().WithRegistry())
-        {
-            Relationships = new Dictionary<string, Person> { ["child"] = new() { FirstName = "Ada" } }
-        };
+        var source = new Person(InterceptorSubjectContext.Create().WithRegistry());
         var target = new Person(InterceptorSubjectContext.Create().WithRegistry());
+        var sourceChildren = new LegacyDictionary<string, Person> { ["child"] = new Person { FirstName = "Ada" } };
+        var targetChild = new Person { FirstName = "Old" };
+        var targetChildren = new LegacyDictionary<string, Person> { ["child"] = targetChild };
+        source.TryGetRegisteredSubject()!.AddProperty("RuntimeChildren", typeof(LegacyDictionary<string, Person>),
+            _ => sourceChildren, (_, _) => { });
+        target.TryGetRegisteredSubject()!.AddProperty("RuntimeChildren", typeof(LegacyDictionary<string, Person>),
+            _ => targetChildren, (_, _) => { });
 
         // Act
         var update = SubjectUpdate.CreateCompleteUpdate(source, []);
         target.ApplySubjectUpdate(update, DefaultSubjectFactory.Instance, ChangeOrigin.Local);
 
         // Assert
-        var propertyUpdate = update.Subjects[update.Root!][nameof(source.Relationships)];
-        Assert.Equal(SubjectPropertyUpdateKind.Dictionary, propertyUpdate.Kind);
-        Assert.Equal("child", Assert.Single(propertyUpdate.Items!).Index);
-        Assert.Equal("Ada", Assert.Single(target.Relationships!).Value.FirstName);
-        Assert.Equal("child", Assert.Single(target.TryGetRegisteredProperty(nameof(target.Relationships))!.Children).Index);
+        Assert.Same(targetChild, targetChildren["child"]);
+        Assert.Equal("Ada", targetChild.FirstName);
     }
 
     [Theory]
@@ -101,6 +102,9 @@ public class SubjectUpdateDictionaryShapeTests
         target.ApplySubjectUpdate(update, factory, ChangeOrigin.Local);
 
         // Assert
+        var propertyUpdate = update.Subjects[update.Root!]["RuntimeChildren"];
+        Assert.Equal(SubjectPropertyUpdateKind.Dictionary, propertyUpdate.Kind);
+        Assert.Equal("child", Assert.Single(propertyUpdate.Items!).Index);
         Assert.True(declaredType.IsInstanceOfType(targetChildren));
         Assert.Equal("Ada", Assert.IsType<Person>(targetChildren!["child"]).FirstName);
         Assert.Equal("child", Assert.Single(target.TryGetRegisteredProperty("RuntimeChildren")!.Children).Index);
@@ -121,6 +125,7 @@ public class SubjectUpdateDictionaryShapeTests
     }
 
     private sealed class PersonDictionary : Dictionary<string, Person>;
+    private sealed class LegacyDictionary<TKey, TValue> : Hashtable;
     private sealed class TaggedDictionary<TTag, TKey, TValue> : Dictionary<TKey, TValue> where TKey : notnull;
 
     private sealed class DictionaryShapeFactory : ISubjectFactory

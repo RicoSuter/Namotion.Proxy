@@ -126,17 +126,7 @@ internal sealed class SubjectUpdateBuilder
     }
 
     /// <summary>
-    /// Drops every property whose reference points at a subject the update carries no payload for, and
-    /// reports what was dropped. A subject without Registry metadata contributes no payload, so keeping
-    /// its id would put a reference on the wire that the receiver rejects, and clearing the reference
-    /// instead would tell the receiver to null a property the source never cleared. Dropping the
-    /// property leaves the receiver's own value alone, which is the only honest reading of a reference
-    /// the wire cannot carry.
-    /// <para>
-    /// Deliberately not an exception: a complete update is also the snapshot a connector sends on every
-    /// handshake, and a model is allowed to project detached subjects from derived properties, so
-    /// throwing here would drop every client of such a model at connect time.
-    /// </para>
+    /// Omits properties with missing subject payloads and logs a warning, preserving the receiver's values.
     /// </summary>
     private static void OmitDanglingReferences(IInterceptorSubject rootSubject, SubjectUpdate update)
     {

@@ -50,6 +50,23 @@ internal static class SubjectUpdateFactory
             builder.Initialize(rootSubject, processors);
             propertyChanges = builder.MergeChanges(propertyChanges);
 
+            // Merging can place a child's change before its parent assignment. Prepare complete
+            // payloads first so sparse changes retain their captured values, timestamps and attributes.
+            for (var i = 0; i < propertyChanges.Length; i++)
+            {
+                var property = propertyChanges[i].Property.TryGetRegisteredProperty();
+                if (property?.IsSubjectReference == true && IsPropertyIncluded(property, processors) &&
+                    propertyChanges[i].GetNewValue<IInterceptorSubject?>() is { } item)
+                {
+                    // Reserve the owner before traversal so a child's backreference stays sparse.
+                    builder.GetOrCreateId(property.Parent.Subject);
+                    if (!ReferenceEquals(item, rootSubject) && !ReferenceEquals(item, property.Parent.Subject))
+                    {
+                        ProcessSubjectComplete(item, builder);
+                    }
+                }
+            }
+
             for (var i = 0; i < propertyChanges.Length; i++)
             {
                 ProcessPropertyChange(propertyChanges[i], rootSubject, builder);

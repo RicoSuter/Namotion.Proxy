@@ -8,6 +8,58 @@ namespace Namotion.Interceptor.Connectors.Tests.Updates;
 public class SubjectUpdateBatchTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void WhenAChildChangePrecedesAMergedObjectAssignment_ThenTheCompleteChildAndChangeTimestampArrive(bool attributeOnly)
+    {
+        // Arrange
+        var source = new Person(InterceptorSubjectContext.Create().WithRegistry());
+        var parent = new Person { LastName = "Ancestor" };
+        source.Mother = parent;
+        var child = new Person { FirstName = "Initial", LastName = "Retained", Mother = parent, Father = source };
+        parent.Father = child;
+        child.FirstName = attributeOnly ? "Initial" : "Final";
+        child.FirstName_MaxLength = 456;
+        parent.Father = null;
+        parent.Father = child;
+        var reference = new PropertyReference(parent, nameof(Person.Father));
+        var timestamp = DateTimeOffset.UtcNow;
+        SubjectPropertyChange[] changes =
+        [
+            SubjectPropertyChange.Create<Person?>(reference, ChangeOrigin.Local, timestamp.AddSeconds(-2), null, null, child),
+            attributeOnly
+                ? SubjectPropertyChange.Create(new PropertyReference(child, nameof(Person.FirstName_MaxLength)),
+                    ChangeOrigin.Local, timestamp.AddSeconds(-1), null, 123, 456)
+                : SubjectPropertyChange.Create<string?>(new PropertyReference(child, nameof(Person.FirstName)),
+                    ChangeOrigin.Local, timestamp.AddSeconds(-1), null, "Initial", "Final"),
+            SubjectPropertyChange.Create<Person?>(reference, ChangeOrigin.Local, timestamp, null, child, null),
+            SubjectPropertyChange.Create<Person?>(reference, ChangeOrigin.Local, timestamp, null, null, child)
+        ];
+        var target = new Person(InterceptorSubjectContext.Create().WithRegistry());
+
+        // Act
+        var update = SubjectUpdate.CreatePartialUpdateFromChanges(source, changes, []);
+        target.ApplySubjectUpdate(update, DefaultSubjectFactory.Instance, ChangeOrigin.Local);
+
+        // Assert
+        var receivedChild = target.Mother!.Father!;
+        Assert.Equal(attributeOnly ? "Initial" : "Final", receivedChild.FirstName);
+        Assert.Equal("Retained", receivedChild.LastName);
+        Assert.Equal(456, receivedChild.FirstName_MaxLength);
+        Assert.Equal("Count", receivedChild.FirstName_MaxLength_Unit);
+        var parentUpdate = Assert.Single(update.Subjects[update.Root]).Value;
+        var referenceUpdate = Assert.Single(update.Subjects[parentUpdate.Id!]).Value;
+        Assert.Equal(timestamp, referenceUpdate.Timestamp);
+        var childProperties = update.Subjects[referenceUpdate.Id!];
+        Assert.Equal(update.Root, childProperties[nameof(Person.Father)].Id);
+        Assert.Equal(parentUpdate.Id, childProperties[nameof(Person.Mother)].Id);
+        var changedProperty = childProperties[nameof(Person.FirstName)];
+        Assert.Equal(timestamp.AddSeconds(-1), attributeOnly
+            ? changedProperty.Attributes!["MaxLength"].Timestamp
+            : changedProperty.Timestamp);
+    }
+
+    [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
     [InlineData(true, false)]

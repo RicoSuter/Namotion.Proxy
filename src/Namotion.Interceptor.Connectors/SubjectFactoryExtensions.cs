@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Concurrent;
 using Namotion.Interceptor.Registry.Abstractions;
 using Namotion.Interceptor.Tracking;
@@ -57,6 +58,13 @@ public static class SubjectFactoryExtensions
                     Element: type.GenericTypeArguments[shape.Dictionary ? 1 : 0]))
                 .Distinct()
                 .ToArray();
+
+            // Legacy IDictionary wrappers used their two generic arguments as key/value types.
+            if (shape.Dictionary && itemTypes.Length == 0 && typeof(IDictionary).IsAssignableFrom(shape.Type) &&
+                shape.Type.GenericTypeArguments is { Length: 2 } genericArguments)
+            {
+                return (genericArguments[0], genericArguments[1]);
+            }
 
             return itemTypes.Length == 1
                 ? itemTypes[0]
