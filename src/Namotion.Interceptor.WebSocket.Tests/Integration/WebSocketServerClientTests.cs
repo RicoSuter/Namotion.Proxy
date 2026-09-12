@@ -1,5 +1,8 @@
 using System;
 using System.Threading.Tasks;
+using Namotion.Interceptor.Connectors.Monitoring;
+using Namotion.Interceptor.Registry;
+using Namotion.Interceptor.Registry.Abstractions;
 using Namotion.Interceptor.Testing;
 using Xunit;
 using Xunit.Abstractions;
@@ -232,6 +235,47 @@ public class WebSocketServerClientTests
             message: "Client should receive update after instant restart");
 
         _output.WriteLine($"Client received: {client.Root!.Name}");
+    }
+
+    [Fact]
+    public async Task WhenAWriteIsParkedWhileTheServerIsDown_ThenTheReconnectDeliversIt()
+    {
+        // Arrange
+        using var portLease = await WebSocketTestPortPool.AcquireAsync();
+        await using var server = new WebSocketTestServer<TestRoot>(_output);
+        await using var client = new WebSocketTestClient<TestRoot>(_output);
+
+        await server.StartAsync(
+            context => new TestRoot(context),
+            (_, root) => root.Name = "Initial",
+            port: portLease.Port);
+        await client.StartAsync(context => new TestRoot(context), port: portLease.Port);
+
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => client.Root!.Name == "Initial",
+            message: "Initial sync should complete");
+
+        // Act: the client writes while the server is down, so the write parks. The server does not write,
+        // so its value has not moved on and there is exactly one writer for this property. Waits for the
+        // client to notice the drop first: otherwise the socket can still read as open, the write can
+        // succeed into a closing connection, and nothing parks.
+        await server.StopAsync();
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => client.Source!.State != SourceState.Synchronized,
+            message: "Client should notice the server is down before the write below.");
+        client.Root!.Name = "WrittenWhileDown";
+        await server.RestartAsync();
+
+        // Assert: the reconcile restores the parked write over the value the load delivered and the
+        // connected phase sends it, so the write survives on both sides. The client half matters even
+        // though the server broadcasts every update back to its own originator: the local model must not
+        // depend on that echo landing, because neither the server's apply of the client's write nor the
+        // client's apply of its own echo is acknowledged, so either can fail with nothing to notice it.
+        // Without the local restore, that would leave the client sitting on the loaded value forever.
+        await AsyncTestHelpers.WaitUntilAsync(
+            () => client.Root!.Name == "WrittenWhileDown" && server.Root!.Name == "WrittenWhileDown",
+            timeout: TimeSpan.FromSeconds(30),
+            message: "The write parked during the outage should survive the reconnect on both sides");
     }
 
     [Fact]

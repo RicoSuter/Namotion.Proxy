@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -7,6 +8,7 @@ using Namotion.Interceptor.Hosting;
 using Namotion.Interceptor.Registry;
 using Namotion.Interceptor.Testing;
 using Namotion.Interceptor.Tracking;
+using Namotion.Interceptor.WebSocket.Client;
 using Xunit.Abstractions;
 
 namespace Namotion.Interceptor.WebSocket.Tests.Integration;
@@ -20,6 +22,10 @@ public class WebSocketTestClient<TRoot> : IAsyncDisposable
     public TRoot? Root { get; private set; }
 
     public IInterceptorSubjectContext? Context { get; private set; }
+
+    /// <summary>The client source under test, resolved from the host's hosted services.</summary>
+    public WebSocketSubjectClientSource? Source =>
+        _host?.Services.GetServices<IHostedService>().OfType<WebSocketSubjectClientSource>().FirstOrDefault();
 
     public WebSocketTestClient(ITestOutputHelper output)
     {

@@ -221,6 +221,16 @@ internal sealed class WriteRetryQueue : IDisposable
         var totalFlushed = 0;
         while (true)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                // Checked per batch, not only on entry: this loop drains until the queue is empty, and an
+                // abandoned drain would otherwise keep sending onto a connection the source has already
+                // replaced. Retire covers the same ground only while the source is stopping. Whatever is
+                // still queued stays queued, and reporting failure keeps the caller from sending its own
+                // batch ahead of it.
+                return false;
+            }
+
             int count;
             lock (_lock)
             {
@@ -291,15 +301,37 @@ internal sealed class WriteRetryQueue : IDisposable
     /// Used on reconnection: instead of flushing stale changes to the server, the caller compares
     /// each change's old value with the current (post-reconnection) value and re-applies locally if non-conflicting.
     /// </summary>
-    public SubjectPropertyChange[] DrainForLocalReapply()
+    /// <remarks>
+    /// Takes the same flush gate as <see cref="FlushAsync"/> so the two cannot interleave: without it,
+    /// this drain can run while a flush is holding a batch in its scratch buffer, and if that flush then
+    /// fails, its requeue puts those stale values back at the front of the queue after the reconcile has
+    /// already judged them, moving a property backwards. That is also why it does not skip an empty
+    /// queue: empty here does not mean nothing is in flight.
+    /// </remarks>
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    public async ValueTask<SubjectPropertyChange[]> DrainForLocalReapplyAsync(CancellationToken cancellationToken)
     {
-        lock (_lock)
+        // Cancellation and disposal both leave nothing to reapply, which is the empty result the caller
+        // already handles.
+        if (!await TryEnterFlushAsync(cancellationToken).ConfigureAwait(false))
         {
-            var changes = _pendingWrites.ToArray();
-            _pendingWrites.Clear();
-            _ownedWriteCount -= changes.Length;
-            Volatile.Write(ref _count, 0);
-            return changes;
+            return [];
+        }
+
+        try
+        {
+            lock (_lock)
+            {
+                var changes = _pendingWrites.ToArray();
+                _pendingWrites.Clear();
+                _ownedWriteCount -= changes.Length;
+                Volatile.Write(ref _count, 0);
+                return changes;
+            }
+        }
+        finally
+        {
+            _flushSemaphore.Release();
         }
     }
 

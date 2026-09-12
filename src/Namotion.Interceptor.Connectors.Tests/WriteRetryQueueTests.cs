@@ -561,7 +561,7 @@ public class WriteRetryQueueTests
         Assert.Equal(2, queue.PendingWriteCount);
         completeWrite.SetResult();
         var result = await flush;
-        var retained = queue.DrainForLocalReapply();
+        var retained = await queue.DrainForLocalReapplyAsync(CancellationToken.None);
 
         // Assert
         Assert.False(result);
@@ -767,7 +767,7 @@ public class WriteRetryQueueTests
     }
     
     [Fact]
-    public void WhenDrainForLocalReapply_ThenReturnsAllItemsAndClearsQueue()
+    public async Task WhenDrainForLocalReapply_ThenReturnsAllItemsAndClearsQueue()
     {
         // Arrange
         var queue = new WriteRetryQueue(100, NullLogger.Instance, new QueueMetrics(nameof(SourceMetrics.OutboundRetries)));
@@ -775,7 +775,7 @@ public class WriteRetryQueueTests
         Assert.Equal(5, queue.PendingWriteCount);
 
         // Act
-        var drained = queue.DrainForLocalReapply();
+        var drained = await queue.DrainForLocalReapplyAsync(CancellationToken.None);
 
         // Assert
         Assert.Equal(5, drained.Length);
@@ -784,17 +784,97 @@ public class WriteRetryQueueTests
     }
 
     [Fact]
-    public void WhenDrainForLocalReapplyOnEmptyQueue_ThenReturnsEmptyArray()
+    public async Task WhenDrainForLocalReapplyOnEmptyQueue_ThenReturnsEmptyArray()
     {
         // Arrange
         var queue = new WriteRetryQueue(100, NullLogger.Instance, new QueueMetrics(nameof(SourceMetrics.OutboundRetries)));
 
         // Act
-        var drained = queue.DrainForLocalReapply();
+        var drained = await queue.DrainForLocalReapplyAsync(CancellationToken.None);
 
         // Assert
         Assert.Empty(drained);
         Assert.True(queue.IsEmpty);
+    }
+
+    [Fact]
+    public async Task WhenDrainForLocalReapplyRunsWhileAFlushIsInFlight_ThenTheDrainWaitsForTheFlush()
+    {
+        // Arrange: a flush that blocks mid-write, so the drain started while it is still holding the
+        // flush semaphore must wait rather than run concurrently with it.
+        var queue = new WriteRetryQueue(100, NullLogger.Instance, new QueueMetrics(nameof(SourceMetrics.OutboundRetries)));
+        var sourceMock = new Mock<ISubjectSource>();
+        var writeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completeWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        sourceMock
+            .Setup(source => source.WriteChangesAsync(
+                It.IsAny<ReadOnlyMemory<SubjectPropertyChange>>(), It.IsAny<CancellationToken>()))
+            .Returns(async (ReadOnlyMemory<SubjectPropertyChange> _, CancellationToken _) =>
+            {
+                writeStarted.SetResult();
+                await completeWrite.Task;
+                return WriteResult.Success;
+            });
+
+        queue.Enqueue(CreateChanges(1));
+
+        // Act
+        var flush = queue.FlushAsync(sourceMock.Object, CancellationToken.None);
+        await writeStarted.Task;
+
+        // The flush is blocked inside the write handler, still holding the flush semaphore, so a
+        // WaitAsync against it cannot complete until that semaphore is released, whatever the scheduler
+        // does next: no delay is needed to observe this.
+        var drainTask = queue.DrainForLocalReapplyAsync(CancellationToken.None);
+        Assert.False(drainTask.IsCompleted, "The drain must wait for the in-flight flush to release the semaphore.");
+
+        completeWrite.SetResult();
+        await flush;
+        var drained = await drainTask;
+
+        // Assert - the flush already took the only item, so the drain that waited for it finds nothing left
+        Assert.Empty(drained);
+    }
+
+    [Fact]
+    public async Task WhenAFlushThatWillSendItsOwnBatchRunsWhileAFlushIsInFlight_ThenItWaitsForTheFlush()
+    {
+        // Arrange: the queue reads empty from the moment a flush moves its batch into the scratch
+        // buffer, well before that batch reaches the peer. A caller that goes on to send a newer batch
+        // must not take that as "nothing is in flight", or the two batches race to the peer and the
+        // older parked value can land after the newer one that supersedes it.
+        var queue = new WriteRetryQueue(100, NullLogger.Instance, new QueueMetrics(nameof(SourceMetrics.OutboundRetries)));
+        var sourceMock = new Mock<ISubjectSource>();
+        var writeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completeWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        sourceMock
+            .Setup(source => source.WriteChangesAsync(
+                It.IsAny<ReadOnlyMemory<SubjectPropertyChange>>(), It.IsAny<CancellationToken>()))
+            .Returns(async (ReadOnlyMemory<SubjectPropertyChange> _, CancellationToken _) =>
+            {
+                writeStarted.SetResult();
+                await completeWrite.Task;
+                return WriteResult.Success;
+            });
+
+        queue.Enqueue(CreateChanges(1));
+
+        // Act - the idle drain takes the parked write and blocks inside the send, holding the gate
+        var idleDrain = queue.FlushAsync(sourceMock.Object, CancellationToken.None);
+        await writeStarted.Task;
+
+        var handlerFlush = queue.FlushAsync(sourceMock.Object, CancellationToken.None);
+
+        // Assert - the queue reads empty here, so only the gate can hold this back
+        Assert.True(queue.IsEmpty);
+        Assert.False(handlerFlush.IsCompleted,
+            "A flush that will send its own batch must wait for the in-flight flush to land.");
+
+        completeWrite.SetResult();
+        Assert.True(await idleDrain);
+        Assert.True(await handlerFlush);
     }
 
     private static SubjectPropertyChange CreateChange(int id)

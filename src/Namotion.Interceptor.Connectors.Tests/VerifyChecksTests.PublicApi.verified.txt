@@ -145,12 +145,15 @@ namespace Namotion.Interceptor.Connectors
         public System.DateTimeOffset StateChangeTime { get; }
         public virtual int WriteBatchSize { get; }
         public event System.EventHandler<Namotion.Interceptor.Connectors.Monitoring.SourceEvent>? StateChanged;
+        protected int BeginResume() { }
+        protected System.Threading.Tasks.Task CompleteResumeAsync(int resumeEpoch, System.Threading.CancellationToken cancellationToken) { }
         public override void Dispose() { }
         public abstract System.Threading.Tasks.Task<System.Action?> LoadInitialStateAsync(System.Threading.CancellationToken cancellationToken);
         protected void ReportConnectionLost() { }
         protected override sealed System.Threading.Tasks.Task RunAsync(System.Threading.CancellationToken stoppingToken) { }
         public override System.Threading.Tasks.Task StartAsync(System.Threading.CancellationToken cancellationToken) { }
         protected abstract System.Threading.Tasks.Task<System.IAsyncDisposable?> StartListeningAsync(Namotion.Interceptor.Connectors.SubjectPropertyWriter propertyWriter, System.Threading.CancellationToken cancellationToken);
+        protected bool TryEndResume(int resumeEpoch) { }
         public abstract System.Threading.Tasks.ValueTask<Namotion.Interceptor.Connectors.WriteResult> WriteChangesAsync(System.ReadOnlyMemory<Namotion.Interceptor.Tracking.Change.SubjectPropertyChange> changes, System.Threading.CancellationToken cancellationToken);
     }
     public static class SubjectSourceExtensions
