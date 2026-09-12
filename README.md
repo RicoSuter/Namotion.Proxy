@@ -8,7 +8,7 @@ Namotion.Interceptor is a .NET library for building reactive applications with a
 
 Mark your classes with `[InterceptorSubject]` and declare properties as `partial`. The source generator handles the rest: creating interception logic, change detection, derived property updates, and lifecycle management. Your domain models remain clean POCOs while gaining reactive capabilities.
 
-The library supports **bidirectional synchronization** with external systems. When a property changes locally, connectors propagate the change outward. When external data arrives, your object model updates and triggers change notifications. Built-in integrations include MQTT, OPC UA, ASP.NET Core, Blazor, and GraphQL. Typical use cases are IoT dashboards, industrial HMIs, real-time web apps, and data synchronization services.
+The library supports **bidirectional synchronization** with external systems. When a property changes locally, connectors propagate the change outward. When external data arrives, your object model updates and triggers change notifications. Built-in integrations include MQTT, OPC UA, TwinCAT ADS, ASP.NET Core, Blazor, and GraphQL. Typical use cases are IoT dashboards, industrial HMIs, real-time web apps, and data synchronization services.
 
 ![](features.png)
 
@@ -356,7 +356,7 @@ sensor.Temperature = 25.5m;
 // Inbound MQTT messages update the property and trigger change notifications
 ```
 
-The same pattern applies to [OPC UA](docs/connectors-opcua.md) (industrial automation, dynamic property discovery, companion specifications) and [WebSocket](docs/connectors-websocket.md) (digital twin synchronization with sequence numbers and heartbeats). Implementation details for sources, servers, ownership, and write retry are in [Connectors](docs/connectors.md). The wire format used for partial state synchronization is documented in [Subject Updates](docs/connectors-subject-updates.md).
+The same pattern applies to [OPC UA](docs/connectors-opcua.md) (industrial automation, dynamic property discovery, companion specifications), [TwinCAT ADS](docs/ads.md) (Beckhoff PLC integration with notification-to-polling demotion and write retry queues), and [WebSocket](docs/connectors-websocket.md) (digital twin synchronization with sequence numbers and heartbeats). Implementation details for sources, servers, ownership, and write retry are in [Connectors](docs/connectors.md). The wire format used for partial state synchronization is documented in [Subject Updates](docs/connectors-subject-updates.md).
 
 ## Integrations
 
@@ -403,6 +403,7 @@ Integrations expose subjects through .NET host frameworks. They reuse the tracki
 | **Namotion.Interceptor.Connectors** | Base infrastructure for external system integration | [Connectors](docs/connectors.md) |
 | **Namotion.Interceptor.Mqtt** | Bidirectional MQTT synchronization | [MQTT](docs/connectors-mqtt.md) |
 | **Namotion.Interceptor.OpcUa** | OPC UA client and server integration | [OPC UA](docs/connectors-opcua.md) |
+| **Namotion.Interceptor.Ads** | ADS client integration for Beckhoff TwinCAT PLCs | [ADS](docs/ads.md) |
 | **Namotion.Interceptor.WebSocket** | Real-time WebSocket synchronization | [WebSocket](docs/connectors-websocket.md) |
 | **Connector Tester** | Chaos and load testing for connector verification | [Connector Tester](docs/connector-tester.md) |
 

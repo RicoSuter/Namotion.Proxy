@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <IsPackable>false</IsPackable>
+        <IsTestProject>true</IsTestProject>
+        <LangVersion>preview</LangVersion>
+        <NoWarn>$(NoWarn);xUnit1041</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.10" />
+        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.0" />
+        <PackageReference Include="Moq" Version="4.20.72"/>
+        <PackageReference Include="xunit" Version="2.9.3" />
+        <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+            <PrivateAssets>all</PrivateAssets>
+        </PackageReference>
+        <PackageReference Include="coverlet.collector" Version="6.0.4">
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+            <PrivateAssets>all</PrivateAssets>
+        </PackageReference>
+        <PackageReference Include="Beckhoff.TwinCAT.Ads.SymbolicServer" Version="7.0.123" />
+        <PackageReference Include="Beckhoff.TwinCAT.Ads.TcpRouter" Version="7.0.317" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Namotion.Interceptor.Ads\Namotion.Interceptor.Ads.csproj"/>
+        <ProjectReference Include="..\Namotion.Interceptor.Generator\Namotion.Interceptor.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false"/>
+        <ProjectReference Include="..\Namotion.Interceptor.Testing\Namotion.Interceptor.Testing.csproj"/>
+    </ItemGroup>
+
+</Project>
