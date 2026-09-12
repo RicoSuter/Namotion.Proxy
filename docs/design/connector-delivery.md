@@ -4,11 +4,21 @@ Maintainer notes for the outbound delivery path. Consumer-facing behaviour is in
 [connectors.md](../connectors.md); this covers the reasoning behind it, which is not recoverable from
 the code and has been rediscovered more than once.
 
-## The invariant
+## Processing, accounting, and shutdown
 
-> A change may be dropped only if a later commit will carry the settled value in its place.
+- `ChangeQueueProcessor` dequeues, filters, and batches changes, then calls the write handler.
+- `ChangeQueueDeliveryState` tracks buffered changes, the active delivery, and drops. Its private lock keeps cancellation, failure, and closure from counting the same batch twice.
+- `ChangeQueueProcessorExecution` coordinates one whole `ProcessAsync` call, including all flushes and bounded shutdown. It is not one flush or retry attempt.
 
-Everything else follows from that sentence, including the parts that look arbitrary.
+The processor owns the scratch batch between draining and beginning delivery; a merge failure in that window is outside delivery-state accounting. When the write handler owns delivery, handed-off changes belong to that handler instead.
+
+A stop signal or finalization report starts the shutdown timeout. At the limit, the processor closes delivery ownership while unfinished work is observed in the background. Late completion cannot reopen that state. A terminal drop means delivery is locally unconfirmed, not that the remote write did not happen. See [Flushing On Stop](../connectors.md#flushing-on-stop) for the consumer-facing behavior.
+
+## The supersession invariant
+
+> Supersession filtering may drop a change only if a later commit will carry the settled value in its place.
+
+This governs the filtering rules below, not losses from queue overflow, write failure, or shutdown.
 
 ## Why commit order and not value comparison
 
@@ -129,7 +139,7 @@ an error.
 
 ## What actually guarantees convergence
 
-Not the conflict rule. Two properties of the delivery path:
+With successful delivery and no overflow or shutdown losses, convergence rests on two properties rather than the conflict rule:
 
 - The newest local commit is never dropped, since nothing supersedes it, so the source always receives
   the model's settled value.

@@ -113,7 +113,7 @@ namespace Repro
             .Single(generated.Sources, generatedSource => generatedSource.HintName.Contains("DerivedSubject"))
             .SourceText.ToString();
 
-        Assert.Contains("public partial class DerivedSubject : IInterceptorSubject\n", derivedSource);
+        Assert.Contains("public partial class DerivedSubject : IInterceptorSubject\n", derivedSource.ReplaceLineEndings("\n"));
         Assert.Contains("public new static IReadOnlyDictionary<string, SubjectPropertyMetadata> DefaultProperties", derivedSource);
         Assert.Contains(".Concat(global::Repro.BaseSubject.DefaultProperties)", derivedSource);
         Assert.DoesNotContain("public event PropertyChangedEventHandler? PropertyChanged;", derivedSource);
@@ -728,7 +728,7 @@ namespace Repro
         Assert.DoesNotContain("public void Push(", generatedSource);
         Assert.DoesNotContain("public void Pull(", generatedSource);
 
-        var skipped = generated.GeneratorDiagnostics.Where(diagnostic => diagnostic.Id == "NI0006").ToList();
+        var skipped = generated.GeneratorDiagnostics.Where(diagnostic => diagnostic.Id == "NI0040").ToList();
         Assert.Equal(2, skipped.Count);
         Assert.All(skipped, diagnostic => Assert.DoesNotContain("SendWithoutInterceptor", diagnostic.GetMessage()));
         Assert.Contains(skipped, diagnostic => diagnostic.GetMessage().Contains("PushWithoutInterceptor"));
@@ -770,7 +770,7 @@ namespace Repro
         Assert.DoesNotContain("public void Pull(", generatedSource);
         Assert.DoesNotContain("public void Mix(", generatedSource);
 
-        var skipped = generated.GeneratorDiagnostics.Where(diagnostic => diagnostic.Id == "NI0006").ToList();
+        var skipped = generated.GeneratorDiagnostics.Where(diagnostic => diagnostic.Id == "NI0040").ToList();
         Assert.Equal(3, skipped.Count);
         Assert.All(skipped, diagnostic => Assert.DoesNotContain("SendWithoutInterceptor", diagnostic.GetMessage()));
         Assert.Contains(skipped, diagnostic => diagnostic.GetMessage().Contains("PushWithoutInterceptor"));

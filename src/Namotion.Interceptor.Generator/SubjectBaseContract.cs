@@ -13,8 +13,8 @@ namespace Namotion.Interceptor.Generator;
 internal static class SubjectBaseContract
 {
     /// <summary>
-    /// Resolves everything the emitter needs to know about the base class, and reports NI0011 to
-    /// NI0014. A null result means generation is suppressed and the caller must emit nothing.
+    /// Resolves everything the emitter needs to know about the base class, and reports NI0007 and
+    /// NI0062 through NI0064. A null result means generation is suppressed and the caller must emit nothing.
     /// </summary>
     public static SubjectBaseClass? Resolve(
         INamedTypeSymbol typeSymbol,
@@ -88,7 +88,7 @@ internal static class SubjectBaseContract
             }
         }
 
-        // Asked of every root-mode subject with a base class, not only the NI0012 one: an MVVM base
+        // Asked of every root-mode subject with a base class, not only the NI0062 one: an MVVM base
         // carrying PropertyChanged and RaisePropertyChanged collides just as well. The walk starts at
         // the immediate base because hiding is decided against the nearest declaration of the name
         // anywhere above; a generated ancestor has no symbol yet, hence the table lookup.

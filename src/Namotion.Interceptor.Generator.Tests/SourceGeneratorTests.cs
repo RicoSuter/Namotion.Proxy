@@ -219,4 +219,65 @@ public partial class DimmableLight : Light
         // Assert
         return Verify(generated.AllSources()).UseDirectory("Snapshots");
     }
+
+    [Fact]
+    public Task WhenDerivedSubjectAdoptsAnInterfaceDefaultItDoesNotDeclare_ThenTheDefaultIsEmittedAsTheLowestTier()
+    {
+        // Arrange
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+
+public interface IHasStatus
+{
+    string Status => ""Unknown"";
+}
+
+[InterceptorSubject]
+public partial class StatusMachine : IHasStatus
+{
+    public partial string Name { get; set; }
+}
+
+[InterceptorSubject]
+public partial class StatusPump : StatusMachine, IHasStatus
+{
+}";
+
+        // Act
+        var generated = GeneratorTestHost.RunExpectingNoWarnings(source);
+
+        // Assert
+        return Verify(generated.AllSources()).UseDirectory("Snapshots");
+    }
+
+    [Fact]
+    public Task WhenDerivedSubjectDeclaresTheAdoptedInterfaceName_ThenNoInterfaceDefaultTierIsEmitted()
+    {
+        // Arrange
+        const string source = @"
+using Namotion.Interceptor.Attributes;
+
+public interface IHasStatus
+{
+    string Status => ""Unknown"";
+}
+
+[InterceptorSubject]
+public partial class StatusMachine : IHasStatus
+{
+    public partial string Name { get; set; }
+}
+
+[InterceptorSubject]
+public partial class StatusPump : StatusMachine, IHasStatus
+{
+    public partial string Status { get; set; }
+}";
+
+        // Act
+        var generated = GeneratorTestHost.RunExpectingNoWarnings(source);
+
+        // Assert
+        return Verify(generated.AllSources()).UseDirectory("Snapshots");
+    }
 }

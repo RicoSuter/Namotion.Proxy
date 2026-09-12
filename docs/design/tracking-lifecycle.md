@@ -47,8 +47,8 @@ After `next()` writes value X to the backing store and before the lock is acquir
 
 `_lastProcessedValues` records what the lifecycle **last processed** for each structural property. It is only updated inside the lock, so it always reflects the lifecycle's actual state. `WriteProperty` uses it as the diff baseline:
 
-- **Old value** = `_lastProcessedValues[property]` (what we last processed — stable, under our control)
-- **New value** = re-read from backing store (what is actually there now — may reflect another thread's write)
+- **Old value** = `_lastProcessedValues[property]` (what we last processed, stable and under our control)
+- **New value** = re-read from backing store (what is actually there now, which may reflect another thread's write)
 
 This asymmetry is the key insight: the old value comes from our private ledger, the new value comes from the shared backing store.
 
@@ -63,7 +63,7 @@ _lastProcessedValues[(subject, "Collection")] = current collection reference
 _lastProcessedValues[(subject, "ObjectRef")]   = current child subject
 ```
 
-This establishes the initial baseline. Without seeding, the first `WriteProperty` would fall back to `null` (meaning "nothing was ever processed"), which triggers a full diff against the backing store — correct but slightly more work than diffing against a known baseline.
+This establishes the initial baseline. Without seeding, the first `WriteProperty` would fall back to `null` (meaning "nothing was ever processed"), which triggers a full diff against the backing store. That is correct but slightly more work than diffing against a known baseline.
 
 ### 2. Updated on every structural write
 
@@ -98,7 +98,7 @@ if (_lastProcessedValues.TryGetValue(subjectProperty, out var lastProcessed) && 
 }
 ```
 
-This is critical because a concurrent `next()` may have written an unattached child to the backing store. `_lastProcessedValues` tells us what was *actually attached* — which is exactly what we need to *detach*.
+This is critical because a concurrent `next()` may have written an unattached child to the backing store. `_lastProcessedValues` tells us what was *actually attached*, which is exactly what we need to *detach*.
 
 ### 5. Removed on detach
 
@@ -106,9 +106,9 @@ Entries are cleaned up in three places:
 
 | Location | When |
 |----------|------|
-| `DetachFromProperty` (isLastDetach) | Last reference to subject removed — all structural property entries cleaned |
-| `DetachFromContext` | Root subject removed — all structural property entries cleaned |
-| Parent-dead check in `WriteProperty` | Undo after attaching to a dead parent — single entry cleaned |
+| `DetachFromProperty` (isLastDetach) | Last reference to subject removed: all structural property entries cleaned |
+| `DetachFromContext` | Root subject removed: all structural property entries cleaned |
+| Parent-dead check in `WriteProperty` | Undo after attaching to a dead parent: single entry cleaned |
 
 ## The Parent-Dead Check
 
@@ -128,9 +128,9 @@ This catches the following race:
 2. Thread B: `next()` already wrote a new child to backing store (before Thread A's lock)
 3. Thread A: reads `_lastProcessedValues` (the old child), detaches it, releases lock
 4. Thread B: acquires lock, diffs, attaches new child, writes `_lastProcessedValues`
-5. Thread B: **parent-dead check** — parent not in `_attachedSubjects` → undo
+5. Thread B: **parent-dead check** finds the parent is not in `_attachedSubjects` → undo
 
-Without this check, the child would be attached to a dead parent and never cleaned up — a memory leak.
+Without this check, the child would be attached to a dead parent and never cleaned up, which is a memory leak.
 
 ## Concurrency Scenarios
 
@@ -174,7 +174,7 @@ Two locks exist in the lifecycle/registry system:
 
 Acquisition order is always: `_attachedSubjects` → `_knownSubjects`. The `SubjectRegistry` never calls back into `LifecycleInterceptor` while holding `_knownSubjects`. No deadlock is possible.
 
-The `_attachedSubjects` lock is re-entrant (C# `Monitor`). `WriteProperty` may trigger lifecycle handlers that write to *other* properties, re-entering the lock. Each property has its own `_lastProcessedValues` entry, so there is no interference. Handlers must NOT write to the *same* property being reconciled — this is a documented contract requirement.
+The `_attachedSubjects` lock is re-entrant (C# `Monitor`). `WriteProperty` may trigger lifecycle handlers that write to *other* properties, re-entering the lock. Each property has its own `_lastProcessedValues` entry, so there is no interference. Handlers must NOT write to the *same* property being reconciled. This is a documented contract requirement.
 
 ## Handler Order Around the Descent
 

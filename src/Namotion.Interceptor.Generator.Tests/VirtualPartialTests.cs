@@ -141,10 +141,10 @@ namespace Repro
     }
 
     [Fact]
-    public void WhenPartialPropertyShadowsBaseMemberWithoutNew_ThenNI0005AndCS0108AreBothReported()
+    public void WhenPartialPropertyShadowsBaseMemberWithoutNew_ThenNI0060AndCS0108AreBothReported()
     {
-        // Arrange: the shape NI0005 exists for. It co-fires with CS0108, whose only remedy is the
-        // 'new' modifier, so NI0005 is only actionable if a 'new' partial property is emittable.
+        // Arrange: the shape NI0060 exists for. It co-fires with CS0108, whose only remedy is the
+        // 'new' modifier, so NI0060 is only actionable if a 'new' partial property is emittable.
         const string source = @"
 using Namotion.Interceptor.Attributes;
 namespace Repro
@@ -163,14 +163,14 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        Assert.Single(generated.GeneratorDiagnostics, diagnostic => diagnostic.Id == "NI0005");
+        Assert.Single(generated.GeneratorDiagnostics, diagnostic => diagnostic.Id == "NI0060");
         Assert.Contains(generated.CompilationDiagnostics, diagnostic => diagnostic.Id == "CS0108");
     }
 
     [Fact]
-    public void WhenTheNI0005RemedyIsApplied_ThenTheSubjectStillCompilesAndCS0108IsGone()
+    public void WhenTheNI0060RemedyIsApplied_ThenTheSubjectStillCompilesAndCS0108IsGone()
     {
-        // Arrange: the previous case with 'new' added, which is what NI0005 and CS0108 together
+        // Arrange: the previous case with 'new' added, which is what NI0060 and CS0108 together
         // ask the user to write.
         const string source = @"
 using Namotion.Interceptor.Attributes;
@@ -190,7 +190,7 @@ namespace Repro
         var generated = GeneratorTestHost.RunExpectingCleanCompilation(source);
 
         // Assert
-        Assert.Single(generated.GeneratorDiagnostics, diagnostic => diagnostic.Id == "NI0005");
+        Assert.Single(generated.GeneratorDiagnostics, diagnostic => diagnostic.Id == "NI0060");
         Assert.DoesNotContain(generated.CompilationDiagnostics, diagnostic => diagnostic.Id == "CS0108");
         Assert.Contains("public new partial string Origin", generated.SingleSource());
     }

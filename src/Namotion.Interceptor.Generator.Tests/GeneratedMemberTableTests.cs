@@ -28,7 +28,7 @@ public class GeneratedMemberTableTests
     [Fact]
     public void WhenAnIInterceptorSubjectMemberNameIsTested_ThenTheNameSetClaimsIt()
     {
-        // Arrange: the four members NI0014 protects. The array holding them is private, so this reads
+        // Arrange: the four members NI0064 protects. The array holding them is private, so this reads
         // the name set derived from it. A typo there stops the real interface member name being
         // recognised, which is what fails here.
         // Act & Assert

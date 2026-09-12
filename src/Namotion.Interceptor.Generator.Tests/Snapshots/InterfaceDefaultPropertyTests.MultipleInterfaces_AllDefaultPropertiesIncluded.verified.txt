@@ -58,13 +58,13 @@ using System.Text.Json.Serialization;
             new Dictionary<string, SubjectPropertyMetadata>
             {
                     ["Temperature"] = new SubjectPropertyMetadata(
-                        typeof(WeatherStation).GetProperty(nameof(Temperature), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(WeatherStation).GetProperty(nameof(Temperature), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((WeatherStation)o).Temperature,
                         (o, v) => ((WeatherStation)o).Temperature = (double)v,
                         isIntercepted: true,
                         isDynamic: false),
                     ["Humidity"] = new SubjectPropertyMetadata(
-                        typeof(WeatherStation).GetProperty(nameof(Humidity), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(WeatherStation).GetProperty(nameof(Humidity), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((WeatherStation)o).Humidity,
                         (o, v) => ((WeatherStation)o).Humidity = (double)v,
                         isIntercepted: true,

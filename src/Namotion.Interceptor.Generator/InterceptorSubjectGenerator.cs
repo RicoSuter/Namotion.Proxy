@@ -77,8 +77,18 @@ public class InterceptorSubjectGenerator : IIncrementalGenerator
                 .GroupBy(x => x!.TypeName)
                 .Select(g => g.First())); // take only one per type name to avoid duplicates
 
-        context.RegisterSourceOutput(classWithAttributeProvider, (spc, cls) =>
+        // Derived from the compilation rather than read inside the per-class transform, so what the
+        // pipeline caches is a bool and a subject is not re-generated whenever anything else in the
+        // compilation changes. System.Text.Json is in the shared framework from .NET Core 3.0 on, but
+        // it is a separate package on netstandard2.0, where the generator still runs: emitting the
+        // attribute unconditionally there fails the consumer's build with CS0246 inside a file they
+        // did not write.
+        var jsonIgnoreAvailableProvider = context.CompilationProvider.Select((compilation, _) =>
+            compilation.GetTypeByMetadataName("System.Text.Json.Serialization.JsonIgnoreAttribute") is not null);
+
+        context.RegisterSourceOutput(classWithAttributeProvider.Combine(jsonIgnoreAvailableProvider), (spc, pair) =>
         {
+            var (cls, isJsonIgnoreAvailable) = pair;
             if (cls is null) return;
 
             try
@@ -100,7 +110,7 @@ public class InterceptorSubjectGenerator : IIncrementalGenerator
                 }
 
                 var fileName = SubjectCodeGenerator.GetFileName(extraction.Metadata);
-                var generatedCode = SubjectCodeGenerator.Generate(extraction.Metadata);
+                var generatedCode = SubjectCodeGenerator.Generate(extraction.Metadata, isJsonIgnoreAvailable);
 
                 spc.AddSource(fileName, SourceText.From(generatedCode, Encoding.UTF8));
             }
