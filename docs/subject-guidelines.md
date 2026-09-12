@@ -131,7 +131,13 @@ public interface INamed { string Name { get; set; } }
 [InterceptorSubject]
 public partial class Entity : INamed
 {
-    public partial string Name { get; set; }  // implicit, and intercepted
+    // ❌ Explicit implementations cannot be partial (CS0754)
+    // partial string INamed.Name { get; set; }
+
+    // ✅ Implicit implementation supports interception
+    public partial string Name { get; set; }
+
+    public Entity() => Name = string.Empty;
 }
 ```
 
@@ -140,6 +146,20 @@ A **non-partial** explicit implementation is supported and does appear in the su
 ### Abstract Properties
 
 A partial property cannot be `abstract` (CS0750). Declare it `virtual` on the base subject and `override` it below, as under [Virtual and Override](#virtual-and-override). See [Limitations](generator.md#limitations) in the generator reference.
+
+```csharp
+[InterceptorSubject]
+public abstract partial class Entity
+{
+    // ❌ Abstract partial properties are not supported (CS0750)
+    // public abstract partial string Name { get; set; }
+
+    // ✅ The generator supplies accessors that derived subjects can override
+    public virtual partial string Name { get; set; }
+
+    public Entity() => Name = string.Empty;
+}
+```
 
 ## Patterns That Work
 
@@ -150,11 +170,17 @@ A partial property cannot be `abstract` (CS0750). Declare it `virtual` on the ba
 public partial class Animal
 {
     public virtual partial string Name { get; set; }
+
+    public Animal() => Name = string.Empty;
 }
 
 [InterceptorSubject]
 public partial class Dog : Animal
 {
+    // ❌ Hiding an ancestor subject property creates a second slot (NI0065)
+    // public new partial string Name { get; set; }
+
+    // ✅ Override the existing property
     public override partial string Name { get; set; }
 }
 ```
@@ -163,11 +189,55 @@ public partial class Dog : Animal
 
 ### Interface Default Properties
 
-Interface default implementations are automatically included in property tracking. Mark a computed one with `[Derived]` on the interface member, not on your class, because the property metadata reflects the interface member. An adopted default is a fallback, so a property declared anywhere in a hierarchy beats it. See [Interface Default Properties](generator.md#interface-default-properties) for the samples and [Property Precedence Across a Hierarchy](generator.md#property-precedence-across-a-hierarchy) for the resolution worked through on a three-level hierarchy.
+Interface default implementations are automatically included in property metadata. Mark a computed one with `[Derived]` on the interface member to enable dependency tracking when full property tracking is configured:
+
+```csharp
+public interface ITemperatureSensor
+{
+    double Celsius { get; set; }
+
+    [Derived]
+    double Fahrenheit => Celsius * 9.0 / 5.0 + 32;
+}
+
+[InterceptorSubject]
+public partial class Sensor : ITemperatureSensor
+{
+    public partial double Celsius { get; set; }
+
+    public Sensor() => Celsius = 20;
+}
+```
+
+With `WithFullPropertyTracking()`, changing `Celsius` also updates tracking for `Fahrenheit`. An adopted default is a fallback, so a property declared anywhere in a hierarchy beats it. See [Interface Default Properties](generator.md#interface-default-properties) for explicit implementations and attribute limitations, and [Property Precedence Across a Hierarchy](generator.md#property-precedence-across-a-hierarchy) for a three-level example.
 
 ### Required and Init
 
-`required` and `init` work on partial properties. An `init` property is still assignable from the constructor, which is where every property has to be initialized. See [Init-Only and Required Properties](generator.md#init-only-and-required-properties).
+`required` and `init` work on partial properties. Initialize an `init` property in the constructor or an object initializer. A `required` property must be supplied at the construction site:
+
+```csharp
+[InterceptorSubject]
+public partial class Config
+{
+    public required partial string ConnectionString { get; set; }
+    public partial string Environment { get; init; }
+
+    public Config() => Environment = "Development";
+}
+```
+
+```csharp
+// ❌ Missing required property (CS9035)
+// var config = new Config();
+
+// ✅ Supply the required value during construction
+var config = new Config { ConnectionString = "Server=localhost" };
+
+// ❌ An init-only property cannot be assigned after construction
+// config.Environment = "Production";
+```
+
+See [Init-Only and Required Properties](generator.md#init-only-and-required-properties) for use with the generated context constructor.
 
 ### Nullable Reference Types
 
@@ -361,7 +431,7 @@ The event fires only when a property actually changes:
 2. **Initialize in constructors** - No field initializers on partial properties
 3. **Replace collections, don't mutate** - `arr = newArray`, not `arr[0] = x`
 4. **Use `[Derived]`** for computed properties
-5. **Explicit interfaces don't work** - Use implicit implementation
+5. **Explicit implementations are not intercepted** - Use implicit implementation for tracked writes
 6. **Abstract doesn't work** - Use `virtual` instead
 
 Most other C# patterns (nullable, required, init, virtual, override, data annotations) work naturally.
