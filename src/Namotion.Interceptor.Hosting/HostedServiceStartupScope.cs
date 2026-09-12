@@ -5,7 +5,8 @@ namespace Namotion.Interceptor.Hosting;
 /// </summary>
 /// <remarks>
 /// Disposal releases captured starts even when configuration throws.
-/// Do not await a captured service's startup before disposing the scope.
+/// Do not await a captured service's startup, or its detach, before disposing the scope: both wait for
+/// that startup.
 /// Scopes must be disposed in reverse creation order in the creating execution flow.
 /// </remarks>
 public sealed class HostedServiceStartupScope : IDisposable

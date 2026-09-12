@@ -10,5 +10,5 @@ public static class WallboxServiceCollectionExtensions
         this IServiceCollection services,
         Action<WallboxCharger>? configure = null,
         Func<IServiceProvider, IInterceptorSubjectContext?>? contextResolver = null)
-        => services.AddHostedSubject(configure, contextResolver);
+        => services.AddSubject(configure, contextResolver);
 }

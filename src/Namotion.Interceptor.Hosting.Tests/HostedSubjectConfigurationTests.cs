@@ -16,7 +16,7 @@ public class HostedSubjectConfigurationTests
         var context = InterceptorSubjectContext.Create().WithHostedServices(services);
         var handler = Assert.Single(context.GetServices<IHostedService>());
         services.AddSingleton(context);
-        services.AddHostedSubject<ConfiguredHostedSubject>(subject =>
+        services.AddSubject<ConfiguredHostedSubject>(subject =>
         {
             handler.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
             subject.Configuration = "configured";

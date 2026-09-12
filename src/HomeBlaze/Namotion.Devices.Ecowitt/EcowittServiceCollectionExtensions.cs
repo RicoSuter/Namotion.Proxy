@@ -10,5 +10,5 @@ public static class EcowittServiceCollectionExtensions
         this IServiceCollection services,
         Action<EcowittGateway>? configure = null,
         Func<IServiceProvider, IInterceptorSubjectContext?>? contextResolver = null)
-        => services.AddHostedSubject(configure, contextResolver);
+        => services.AddSubject(configure, contextResolver);
 }

@@ -110,7 +110,7 @@ These are critical conventions the implementation MUST follow:
 ### Deliverables
 
 1. **Subject project** — `src/HomeBlaze/Namotion.Devices.{Name}/` (or `src/HomeBlaze/Namotion.{Name}/` for non-device subjects) with all subject classes and `.csproj`
-2. **Service extension** — `{Name}ServiceCollectionExtensions.cs` using `AddHostedSubject` pattern
+2. **Service extension** — `{Name}ServiceCollectionExtensions.cs` using `AddSubject` pattern
 3. **UI project** — `src/HomeBlaze/Namotion.Devices.{Name}.HomeBlaze/` with Blazor components:
    - `.csproj` (Razor SDK, references subject project + `HomeBlaze.Components.Abstractions`, MudBlazor)
    - `_Imports.razor` (standard usings: `Microsoft.AspNetCore.Components`, `MudBlazor`, subject namespace, `HomeBlaze.Components.Abstractions`, `HomeBlaze.Components.Abstractions.Attributes`)

@@ -185,7 +185,23 @@ public partial class Animal
 [InterceptorSubject]
 public partial class Dog : Animal
 {
-    // Override to change accessor visibility
+    // The override repeats the base modifiers
+    public override partial string Name { get; set; }
+}
+```
+
+C# does not allow an override to change accessor visibility, so a restricted setter has to be declared on the base and repeated on the override:
+
+```csharp
+[InterceptorSubject]
+public partial class Bird
+{
+    public virtual partial string Name { get; protected set; }
+}
+
+[InterceptorSubject]
+public partial class Parrot : Bird
+{
     public override partial string Name { get; protected set; }
 }
 ```
@@ -447,11 +463,11 @@ Subjects can receive DI-injected services via constructor parameters alongside `
 
 ```csharp
 [InterceptorSubject]
-public partial class HueBridge
+public partial class ShellyDevice
 {
-    public HueBridge(
+    public ShellyDevice(
         IHttpClientFactory httpClientFactory,
-        ILogger<HueBridge> logger)
+        ILogger<ShellyDevice> logger)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
@@ -461,20 +477,25 @@ public partial class HueBridge
 
 ### How It Works
 
-2. **ActivatorUtilities resolution**: When the subject is instantiated via DI (e.g., through `AddHostedSubject`), `ActivatorUtilities.CreateInstance` resolves all constructor parameters from the service provider. Services like `IHttpClientFactory`, `ILogger<T>`, and any other registered services are injected automatically.
+1. **ActivatorUtilities resolution**: When the subject is instantiated via DI (e.g., through `AddSubject`), `ActivatorUtilities.CreateInstance` resolves all constructor parameters from the service provider. Services like `IHttpClientFactory`, `ILogger<T>`, and any other registered services are injected automatically.
 
-3. **Interaction with AddHostedSubject**: The `AddHostedSubject<T>` method detects whether the subject type has a constructor accepting `IInterceptorSubjectContext`. If it does, the context is passed during construction. The `contextResolver` parameter allows overriding which context is provided.
+2. **Interaction with AddSubject**: `AddSubject<T>` applies the context unconditionally after construction, so the subject is attached regardless of its constructor shape. A constructor taking an `IInterceptorSubjectContext` is still used when one exists, but it confers no advantage: a subject with only DI parameters is attached just the same. The `contextResolver` parameter allows overriding which context is provided, and returning null from it registers the subject without a context.
+
+   `configure` always runs before the attach `AddSubject` itself performs, and a startup scope spans construction and `configure`, so on every constructor shape the subject is fully configured before anything can start it. What differs is interception: a generated context constructor attaches during construction, so `configure` runs against an attached subject and its assignments are intercepted and tracked, while every shape that does not attach during construction, including one that declares an `IInterceptorSubjectContext` parameter and never attaches with it, is still unattached when `configure` runs and those assignments are not intercepted. See [Hosting](hosting.md#addsubjectt) for the full picture.
 
 ### Examples in the Codebase
 
-- **HueBridge** (`Namotion.Devices.Philips.Hue`): Injects `IHttpClientFactory` and `ILogger<HueBridge>` alongside the interceptor context for HTTP communication with the Hue Bridge API.
+- **ShellyDevice** (`Namotion.Devices.Shelly`): Injects `IHttpClientFactory` and `ILogger<ShellyDevice>` for HTTP communication with the device.
+- **HueBridge** (`Namotion.Devices.Philips.Hue`): Injects `ILogger<HueBridge>` only. It creates its own `HttpClient` rather than taking an `IHttpClientFactory`, because the bridge needs a handler that accepts its self-signed certificate.
 - **OpcUaSubjectServer** (`Namotion.Interceptor.OpcUa`): Injects OPC UA server configuration and telemetry services.
 
 ## Implementing Hosted Subjects for DI
 
 > See [Hosting](hosting.md) for foundational concepts on hosted subjects and the hosting lifecycle.
 
-When creating a subject library that extends `BackgroundService`, provide a DI extension method using `AddHostedSubject<T>` from `Namotion.Interceptor.Hosting`.
+When creating a subject library that extends `BackgroundService`, provide a DI extension method using `AddSubject<T>` from `Namotion.Interceptor.Hosting`.
+
+`AddSubject<T>` registers the subject as a singleton, constructs it at host start and attaches it to the context. One instance per type: calling `AddShellyDevice()` twice throws, because the second call's `configure` and `contextResolver` could not take effect. To run several instances of one type, construct them yourself and attach them to the object graph rather than registering them, which is what an application managing devices from configuration does. When that context has hosting enabled, the handler on it starts the subject because the subject entered the graph, and host startup waits for that start. When the resolved context has no hosting handler, `AddSubject<T>` starts an `IHostedService` subject itself and stops that same instance at host shutdown, so the subject runs either way. Do not register the same subject with `AddHostedService<T>` as well, because that is a second owner and a second start.
 
 ### DI Extension Method
 
@@ -488,18 +509,18 @@ namespace MyLibrary;
 public static class MySubjectServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds MySubject as a hosted service.
+    /// Registers MySubject and attaches it to the interceptor context.
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="configure">Optional callback to configure the subject.</param>
     /// <param name="contextResolver">
-    /// Optional context resolver. Only used if subject has a constructor accepting IInterceptorSubjectContext.
+    /// Optional context resolver. When null, the context is resolved from DI.
     /// </param>
     public static IServiceCollection AddMySubject(
         this IServiceCollection services,
         Action<MySubject>? configure = null,
         Func<IServiceProvider, IInterceptorSubjectContext?>? contextResolver = null)
-        => services.AddHostedSubject(configure, contextResolver);
+        => services.AddSubject(configure, contextResolver);
 }
 ```
 
@@ -529,13 +550,20 @@ services.AddMySubject(subject =>
 
 ### Context Support (Optional)
 
-If your subject needs access to the `IInterceptorSubjectContext`, add an optional parameter to the constructor. `AddHostedSubject` will automatically detect and use it:
+No constructor parameter is needed for the context. `AddSubject` applies the resolved context after construction, so a subject whose constructor takes only DI services is attached just the same:
 
 ```csharp
-public MySubject(IInterceptorSubjectContext? context = null, IMyDriver? driver = null)
+public MySubject(IMyDriver driver, ILogger<MySubject> logger)
 {
-    // Context is automatically passed if:
-    // 1. Subject has this constructor parameter, AND
-    // 2. Context is registered in DI or provided via contextResolver
+    // No context parameter. AddSubject attaches the subject after construction,
+    // and runs its configure callback before that attach.
 }
 ```
+
+Declare an `IInterceptorSubjectContext` parameter only when the constructor genuinely needs the context, for example to build child subjects.
+
+What changes if it does is what gets intercepted, not what a start can see. The generated context constructor attaches the subject itself, so by the time `AddSubject` runs `configure` the subject is already in the graph and its assignments are intercepted and tracked. Without such a constructor `AddSubject` attaches after `configure`, so those assignments are not intercepted. No start observes a half written subject either way, because `AddSubject` holds a startup scope across construction and `configure`. A constructor that declares the parameter but never calls `AddFallbackContext` with it behaves like one that never declared it.
+
+### Restart Contract
+
+A subject implementing `IHostedService` is restarted in place, on the same instance, whenever it leaves the graph and re-enters it, so `ExecuteAsync` must tolerate being run more than once. See [Subject as Hosted Service](hosting.md#subject-as-hosted-service) for what that requires of the implementation.

@@ -30,6 +30,39 @@ public class LifecycleInterceptor : IWriteInterceptor, ILifecycleInterceptor
     /// </summary>
     public event Action<SubjectLifecycleChange>? SubjectDetaching;
 
+    /// <summary>
+    /// Runs <paramref name="whenAttached"/> while the subject is provably in this interceptor's object
+    /// graph, holding the lock that serializes graph mutation for the duration, and reports whether it
+    /// ran.
+    /// </summary>
+    /// <remarks>
+    /// A callback rather than a plain predicate, because the answer is only usable while it still
+    /// holds: a caller that reads membership and then acts on it has released the lock in between, and
+    /// a graph mutation that lands in that gap makes the action land on the opposite answer. Anything
+    /// derived from membership therefore has to be written here.
+    /// <para>
+    /// The callback runs under the lock that serializes graph mutation, so it must not block, must not
+    /// mutate the graph, and must not wait on anything that does. It is re-entrant on the calling
+    /// thread, so an <see cref="ILifecycleHandler"/> may reach this while being invoked.
+    /// </para>
+    /// </remarks>
+    /// <param name="subject">The subject.</param>
+    /// <param name="whenAttached">Runs only if the subject is attached.</param>
+    /// <returns>True when the subject was attached and the callback ran.</returns>
+    public bool TryRunWhileAttached(IInterceptorSubject subject, Action whenAttached)
+    {
+        lock (_attachedSubjects)
+        {
+            if (!_attachedSubjects.ContainsKey(subject))
+            {
+                return false;
+            }
+
+            whenAttached();
+            return true;
+        }
+    }
+
     public void AttachSubjectToContext(IInterceptorSubject subject)
     {
         var collectedSubjects = GetList();

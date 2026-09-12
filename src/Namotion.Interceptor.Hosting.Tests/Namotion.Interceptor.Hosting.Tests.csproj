@@ -9,6 +9,13 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <!-- The race tests block on seams another thread has to release, so a bug that strands one hangs
+             the run. xUnit then names the test in the diagnostic output instead of leaving CI to time
+             out the whole job with nothing to point at. It reports only; it does not fail or kill. -->
+        <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+
+    <ItemGroup>
         <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.10" />
         <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.10" />
         <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.0" />
@@ -29,6 +36,7 @@
     <ItemGroup>
       <ProjectReference Include="..\Namotion.Interceptor.Generator\Namotion.Interceptor.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
       <ProjectReference Include="..\Namotion.Interceptor.Hosting\Namotion.Interceptor.Hosting.csproj" />
+      <ProjectReference Include="..\Namotion.Interceptor.Registry\Namotion.Interceptor.Registry.csproj" />
       <ProjectReference Include="..\Namotion.Interceptor.Tracking\Namotion.Interceptor.Tracking.csproj" />
       <ProjectReference Include="..\Namotion.Interceptor.Testing\Namotion.Interceptor.Testing.csproj" />
       <ProjectReference Include="..\Namotion.Interceptor\Namotion.Interceptor.csproj" />

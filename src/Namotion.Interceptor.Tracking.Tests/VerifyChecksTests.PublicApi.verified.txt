@@ -172,6 +172,7 @@ namespace Namotion.Interceptor.Tracking.Lifecycle
         public event System.Action<Namotion.Interceptor.Tracking.Lifecycle.SubjectLifecycleChange>? SubjectDetaching;
         public void AttachSubjectToContext(Namotion.Interceptor.IInterceptorSubject subject) { }
         public void DetachSubjectFromContext(Namotion.Interceptor.IInterceptorSubject subject) { }
+        public bool TryRunWhileAttached(Namotion.Interceptor.IInterceptorSubject subject, System.Action whenAttached) { }
         public void WriteProperty<TProperty>(ref Namotion.Interceptor.Interceptors.PropertyWriteContext<TProperty> context, Namotion.Interceptor.Interceptors.WriteInterceptionDelegate<TProperty> next) { }
     }
     public static class LifecycleInterceptorExtensions

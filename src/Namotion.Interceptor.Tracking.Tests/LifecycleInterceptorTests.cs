@@ -9,6 +9,64 @@ namespace Namotion.Interceptor.Tracking.Tests;
 public class LifecycleInterceptorTests
 {
     [Fact]
+    public void WhenSubjectIsAttached_ThenTryRunWhileAttachedRunsTheCallback()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithLifecycle();
+        var interceptor = context.GetServices<LifecycleInterceptor>().Single();
+        var person = new Person(context);
+
+        // Act
+        var ran = 0;
+        var reported = interceptor.TryRunWhileAttached(person, () => ran++);
+
+        // Assert
+        Assert.True(reported);
+        Assert.Equal(1, ran);
+    }
+
+    [Fact]
+    public void WhenSubjectIsNotAttached_ThenTryRunWhileAttachedRunsNothing()
+    {
+        // Arrange - the callback carries the caller's whole decision, so a subject this interceptor
+        // does not hold must not see it run at all rather than run and be told afterwards.
+        var context = InterceptorSubjectContext.Create().WithLifecycle();
+        var interceptor = context.GetServices<LifecycleInterceptor>().Single();
+        var stranger = new Person();
+
+        // Act
+        var ran = 0;
+        var reported = interceptor.TryRunWhileAttached(stranger, () => ran++);
+
+        // Assert
+        Assert.False(reported);
+        Assert.Equal(0, ran);
+    }
+
+    [Fact]
+    public void WhenSubjectIsDetached_ThenTryRunWhileAttachedStopsRunningTheCallback()
+    {
+        // Arrange
+        var context = InterceptorSubjectContext.Create().WithLifecycle();
+        var interceptor = context.GetServices<LifecycleInterceptor>().Single();
+        var mother = new Person(context);
+        var child = new Person();
+        mother.Children = [child];
+
+        Assert.True(interceptor.TryRunWhileAttached(child, () => { }));
+
+        // Act
+        mother.Children = [];
+
+        var ran = 0;
+        var reported = interceptor.TryRunWhileAttached(child, () => ran++);
+
+        // Assert
+        Assert.False(reported);
+        Assert.Equal(0, ran);
+    }
+
+    [Fact]
     public Task WhenAssigningArray_ThenAllSubjectsAreAttached()
     {
         // Arrange

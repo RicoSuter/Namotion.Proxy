@@ -10,5 +10,5 @@ public static class ShellyServiceCollectionExtensions
         this IServiceCollection services,
         Action<ShellyDevice>? configure = null,
         Func<IServiceProvider, IInterceptorSubjectContext?>? contextResolver = null)
-        => services.AddHostedSubject(configure, contextResolver);
+        => services.AddSubject(configure, contextResolver);
 }

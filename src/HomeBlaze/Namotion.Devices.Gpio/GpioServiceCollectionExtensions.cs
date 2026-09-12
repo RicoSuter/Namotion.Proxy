@@ -24,5 +24,5 @@ public static class GpioServiceCollectionExtensions
         this IServiceCollection services,
         Action<GpioSubject>? configure = null,
         Func<IServiceProvider, IInterceptorSubjectContext?>? contextResolver = null)
-        => services.AddHostedSubject(configure, contextResolver);
+        => services.AddSubject(configure, contextResolver);
 }

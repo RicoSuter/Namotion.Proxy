@@ -20,6 +20,12 @@ namespace Namotion.Interceptor.Connectors.Tests;
 /// source attached to the subject graph is started from a queue that ApplicationStarted does not
 /// wait for, so registration completed while the source had not registered yet and a wait on that
 /// branch completed vacuously against an unsynchronized tree.
+/// <para>
+/// The attach API takes a factory, so the handler owns the instance and a test cannot hold a
+/// reference to one that is still inside StartAsync. The tests therefore drive the services through
+/// a <see cref="StartRelease"/> they own, and reach a started instance through the attachment's
+/// <c>Current</c>.
+/// </para>
 /// </remarks>
 public class SourceRegistrationHostingTests
 {
@@ -37,18 +43,18 @@ public class SourceRegistrationHostingTests
 
         var root = new Person(context);
         var monitor = context.GetSourceMonitor();
-        using var gate = new GatedStartHostedService();
+        using var startRelease = new StartRelease();
 
         // Attached before the host starts, so its start is queued and drains asynchronously while
         // the host's own startup runs to completion.
-        root.AttachHostedService(gate);
+        root.AttachHostedService(() => new GatedStartHostedService(startRelease));
 
         var host = builder.Build();
 
         // Act
         await host.StartAsync();
 
-        // Assert - ApplicationStarted has fired and released the gate's initial hold, but this
+        // Assert - ApplicationStarted has fired and released the monitor's initial hold, but this
         // service is still sitting in StartAsync, so the hold taken when it was attached is still
         // outstanding and registration must not be complete.
         Assert.False(monitor.IsRegistrationComplete);
@@ -56,7 +62,7 @@ public class SourceRegistrationHostingTests
         var wait = root.WaitForSynchronizationAsync(CancellationToken.None);
         Assert.False(wait.IsCompleted);
 
-        gate.ReleaseStart();
+        startRelease.ReleaseStart();
 
         await AsyncTestHelpers.WaitUntilAsync(() => monitor.IsRegistrationComplete);
         await wait.WaitAsync(TimeSpan.FromSeconds(5));
@@ -80,7 +86,11 @@ public class SourceRegistrationHostingTests
 
         var root = new Person(context);
         var monitor = context.GetSourceMonitor();
-        root.AttachHostedService(new ThrowingStartHostedService());
+        using var startRelease = new StartRelease();
+
+        // Gated, then throwing: a start that failed immediately would let this test pass with no
+        // hold ever taken, since registration would simply have completed at host start.
+        root.AttachHostedService(() => new ThrowingStartHostedService(startRelease));
 
         var host = builder.Build();
 
@@ -88,6 +98,10 @@ public class SourceRegistrationHostingTests
         await host.StartAsync();
 
         // Assert
+        Assert.False(monitor.IsRegistrationComplete);
+
+        startRelease.ReleaseStart();
+
         await AsyncTestHelpers.WaitUntilAsync(() => monitor.IsRegistrationComplete);
         await root.WaitForSynchronizationAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -150,16 +164,18 @@ public class SourceRegistrationHostingTests
         await host.StartAsync();
         Assert.True(monitor.IsRegistrationComplete);
 
-        using var gate = new GatedStartHostedService();
+        using var startRelease = new StartRelease();
 
         // Act - the hold is taken synchronously, before the returned task is handed back.
-        var attach = root.AttachHostedServiceAsync(gate, CancellationToken.None);
+        var attach = root.AttachHostedServiceAsync(
+            () => new GatedStartHostedService(startRelease), CancellationToken.None);
 
         // Assert
         Assert.False(monitor.IsRegistrationComplete);
 
-        gate.ReleaseStart();
-        await attach.WaitAsync(TimeSpan.FromSeconds(10));
+        startRelease.ReleaseStart();
+        var attachment = await attach.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.NotNull(attachment.Current);
         await AsyncTestHelpers.WaitUntilAsync(() => monitor.IsRegistrationComplete);
 
         await host.StopAsync();
@@ -183,24 +199,24 @@ public class SourceRegistrationHostingTests
 
         var root = new Person(context);
         var monitor = context.GetSourceMonitor();
-        using var child = new GatedStartHostedService();
-
-        // The parent attaches the child from inside its own StartAsync, so the child's hold must be
-        // taken before the parent's is released.
-        var parent = new ChildAttachingHostedService(root, child);
-        root.AttachHostedService(parent);
-
         var host = builder.Build();
-
-        // Act
         await host.StartAsync();
-        await AsyncTestHelpers.WaitUntilAsync(() => parent.HasStarted);
+        Assert.True(monitor.IsRegistrationComplete);
+
+        using var childRelease = new StartRelease();
+
+        // Act - the awaiting overload returns only once the parent's own start transition has run to
+        // completion, so the parent's hold is provably gone by the time the assertion below reads the
+        // count. The child is attached through the fire-and-forget path from inside that start.
+        await root.AttachHostedServiceAsync(
+            () => new ChildAttachingHostedService(root, () => new GatedStartHostedService(childRelease)),
+            CancellationToken.None);
 
         // Assert - the parent has finished starting and released its hold, but the child is still
         // inside StartAsync, so registration must still be held open by the child's hold.
         Assert.False(monitor.IsRegistrationComplete);
 
-        child.ReleaseStart();
+        childRelease.ReleaseStart();
         await AsyncTestHelpers.WaitUntilAsync(() => monitor.IsRegistrationComplete);
 
         await host.StopAsync();
@@ -235,41 +251,56 @@ public class SourceRegistrationHostingTests
     }
 }
 
-/// <summary>A hosted service whose StartAsync blocks until the test releases it.</summary>
-internal sealed class GatedStartHostedService : IHostedService, IDisposable
+/// <summary>
+/// The signal a gated hosted service waits on inside StartAsync. Owned by the test rather than by
+/// the service, because the attach API takes a factory: the handler constructs the instance, so a
+/// test has no reference to one that is still inside StartAsync.
+/// </summary>
+internal sealed class StartRelease : IDisposable
 {
     private readonly ManualResetEventSlim _release = new(false);
 
     public void ReleaseStart() => _release.Set();
 
-    public Task StartAsync(CancellationToken cancellationToken) =>
-        Task.Run(() => _release.Wait(TimeSpan.FromSeconds(10), cancellationToken), cancellationToken);
-
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public void WaitForRelease(CancellationToken cancellationToken)
+    {
+        // Bounded, so a mechanism that never releases fails the test instead of hanging the run.
+        _release.Wait(TimeSpan.FromSeconds(10), cancellationToken);
+    }
 
     public void Dispose() => _release.Dispose();
 }
 
-/// <summary>A hosted service that attaches another one from inside its own StartAsync.</summary>
-internal sealed class ChildAttachingHostedService(IInterceptorSubject subject, IHostedService child) : IHostedService
+/// <summary>A hosted service whose StartAsync blocks until the test releases it.</summary>
+internal sealed class GatedStartHostedService(StartRelease release) : IHostedService
 {
-    public bool HasStarted { get; private set; }
-
     public Task StartAsync(CancellationToken cancellationToken)
+        => Task.Run(() => release.WaitForRelease(cancellationToken), cancellationToken);
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}
+
+/// <summary>A hosted service whose StartAsync fails once the test releases it.</summary>
+internal sealed class ThrowingStartHostedService(StartRelease release) : IHostedService
+{
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
-        subject.AttachHostedService(child);
-        HasStarted = true;
-        return Task.CompletedTask;
+        await Task.Run(() => release.WaitForRelease(cancellationToken), cancellationToken);
+        throw new InvalidOperationException("start failed");
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
-/// <summary>A hosted service whose StartAsync always fails.</summary>
-internal sealed class ThrowingStartHostedService : IHostedService
+/// <summary>A hosted service that attaches another one from inside its own StartAsync.</summary>
+internal sealed class ChildAttachingHostedService(IInterceptorSubject subject, Func<IHostedService> childFactory)
+    : IHostedService
 {
-    public Task StartAsync(CancellationToken cancellationToken) =>
-        throw new InvalidOperationException("start failed");
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        subject.AttachHostedService(childFactory);
+        return Task.CompletedTask;
+    }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
