@@ -58,13 +58,13 @@ using System.Text.Json.Serialization;
             new Dictionary<string, SubjectPropertyMetadata>
             {
                     ["FirstName"] = new SubjectPropertyMetadata(
-                        typeof(Person).GetProperty(nameof(FirstName), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(Person).GetProperty(nameof(FirstName), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((Person)o).FirstName,
                         (o, v) => ((Person)o).FirstName = (string)v,
                         isIntercepted: true,
                         isDynamic: false),
                     ["LastName"] = new SubjectPropertyMetadata(
-                        typeof(Person).GetProperty(nameof(LastName), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(Person).GetProperty(nameof(LastName), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((Person)o).LastName,
                         (o, v) => ((Person)o).LastName = (string)v,
                         isIntercepted: true,
@@ -193,13 +193,15 @@ using System.Text.Json.Serialization;
             new Dictionary<string, SubjectPropertyMetadata>
             {
                     ["MainCourse"] = new SubjectPropertyMetadata(
-                        typeof(Teacher).GetProperty(nameof(MainCourse), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(Teacher).GetProperty(nameof(MainCourse), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((Teacher)o).MainCourse,
                         (o, v) => ((Teacher)o).MainCourse = (string)v,
                         isIntercepted: true,
                         isDynamic: false),
             }
             .Concat(global::Person.DefaultProperties)
+            .GroupBy(pair => pair.Key)
+            .Select(group => group.First())
             .ToFrozenDictionary();
 
         public Teacher()

@@ -58,7 +58,7 @@ using System.Text.Json.Serialization;
             new Dictionary<string, SubjectPropertyMetadata>
             {
                     ["VirtualProp"] = new SubjectPropertyMetadata(
-                        typeof(BaseClass).GetProperty(nameof(VirtualProp), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(BaseClass).GetProperty(nameof(VirtualProp), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((BaseClass)o).VirtualProp,
                         (o, v) => ((BaseClass)o).VirtualProp = (string)v,
                         isIntercepted: true,

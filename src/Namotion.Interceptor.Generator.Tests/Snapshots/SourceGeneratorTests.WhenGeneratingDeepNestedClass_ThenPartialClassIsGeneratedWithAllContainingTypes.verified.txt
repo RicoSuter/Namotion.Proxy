@@ -64,7 +64,7 @@ namespace TestNamespace
             new Dictionary<string, SubjectPropertyMetadata>
             {
                     ["Value"] = new SubjectPropertyMetadata(
-                        typeof(DeepNestedSubject).GetProperty(nameof(Value), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(DeepNestedSubject).GetProperty(nameof(Value), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((DeepNestedSubject)o).Value,
                         (o, v) => ((DeepNestedSubject)o).Value = (int)v,
                         isIntercepted: true,

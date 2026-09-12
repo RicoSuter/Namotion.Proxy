@@ -58,7 +58,7 @@ using System.Text.Json.Serialization;
             new Dictionary<string, SubjectPropertyMetadata>
             {
                     ["Celsius"] = new SubjectPropertyMetadata(
-                        typeof(TemperatureSensor).GetProperty(nameof(Celsius), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(TemperatureSensor).GetProperty(nameof(Celsius), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((TemperatureSensor)o).Celsius,
                         (o, v) => ((TemperatureSensor)o).Celsius = (double)v,
                         isIntercepted: true,

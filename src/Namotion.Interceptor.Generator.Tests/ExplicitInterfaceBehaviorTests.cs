@@ -51,9 +51,9 @@ public partial class CaseIDerived : CaseIBase
 #region Case AA: two explicit implementations of one generic interface, at different instantiations
 
 // Deduplication (Task 4) keeps this from emitting duplicate dictionary keys once the name
-// resolution below makes both entries resolve to "Kind". NI0008 reports the collision from
+// resolution below makes both entries resolve to "Kind". NI0061 reports the collision from
 // Task 11; the suppression is placed now so that task does not break this file's build.
-#pragma warning disable NI0008
+#pragma warning disable NI0061
 
 public interface ICaseAAFoo<T>
 {
@@ -67,7 +67,7 @@ public partial class CaseAASubject : ICaseAAFoo<int>, ICaseAAFoo<string>
     string ICaseAAFoo<string>.Kind => "string";
 }
 
-#pragma warning restore NI0008
+#pragma warning restore NI0061
 
 #endregion
 
@@ -88,9 +88,9 @@ public partial class CaseZSubject : ICaseZKind
 
 #endregion
 
-#region Case AD: base implements, derived re-declares. Intentional, so NI0005 is suppressed.
+#region Case AD: base implements, derived re-declares. Intentional, so NI0060 is suppressed.
 
-#pragma warning disable NI0005
+#pragma warning disable NI0060
 
 public interface ICaseADHuman
 {
@@ -107,7 +107,7 @@ public partial class CaseADDerived : CaseADBase
     public partial string Origin { get; set; }
 }
 
-#pragma warning restore NI0005
+#pragma warning restore NI0060
 
 #endregion
 
@@ -187,7 +187,7 @@ public class ExplicitInterfaceBehaviorTests
     [Fact]
     public void WhenDerivedRedeclaresBaseImplementedProperty_ThenSubjectAndInterfaceDiffer()
     {
-        // Arrange (case AD): the divergence NI0005 warns about, pinned as behaviour
+        // Arrange (case AD): the divergence NI0060 warns about, pinned as behaviour
         var derived = new CaseADDerived { Origin = "derived" };
 
         // Act

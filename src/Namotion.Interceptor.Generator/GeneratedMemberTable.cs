@@ -55,7 +55,7 @@ internal enum AccessorHelperReturnKind
 /// Contract check only, never the hiding check: C# hides by signature, which excludes the return type.
 /// </param>
 /// <param name="RequiresLeadingString">Whether the first parameter must be a string.</param>
-/// <param name="Declaration">How the member is named in the NI0011 message.</param>
+/// <param name="Declaration">How the member is named in the NI0007 message.</param>
 internal sealed record AccessorHelperShape(
     string Name,
     int TypeParameterCount,
@@ -173,7 +173,7 @@ internal static class GeneratedMemberTable
     /// Deliberately name-only: any arity, no signature reasoning and no per-name exemption. Two
     /// attempts to narrow it, on parameter count and by exempting Context/Data/SyncRoot, each let a
     /// silent capture through. The cost is a false positive on a legitimate wrapper, reported as
-    /// NI0006 and fixed by renaming. Full argument in docs/design/generator-supported-shapes.md.
+    /// NI0040 and fixed by renaming. Full argument in docs/design/generator-supported-shapes.md.
     /// </remarks>
     public static bool CollidesWithGeneratedMember(string memberName)
         => GeneratedHalfMemberNames.Contains(memberName);

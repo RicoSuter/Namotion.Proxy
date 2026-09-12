@@ -58,7 +58,7 @@ using System.Text.Json.Serialization;
             new Dictionary<string, SubjectPropertyMetadata>
             {
                     ["Value"] = new SubjectPropertyMetadata(
-                        typeof(Implementation).GetProperty(nameof(Value), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!,
+                        typeof(Implementation).GetProperty(nameof(Value), BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)!,
                         (o) => ((Implementation)o).Value,
                         (o, v) => ((Implementation)o).Value = (double)v,
                         isIntercepted: true,

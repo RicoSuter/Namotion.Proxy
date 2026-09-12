@@ -118,7 +118,13 @@ internal static class SubjectMetadataExtractor
             location,
             diagnostics);
 
-        ReportPropertiesShadowingABaseImplementation(typeSymbol, classProperties, location, diagnostics);
+        // NI0065 runs first and its names are handed to NI0060, which stands down on them. The two
+        // rules are not mutually exclusive and both can match one declaration.
+        var displacedNames = ReportPropertiesDisplacingAnAncestorSubject(
+            typeSymbol, classProperties, location, diagnostics);
+
+        ReportPropertiesShadowingABaseImplementation(
+            typeSymbol, classProperties, displacedNames, location, diagnostics);
 
         // Collect interface properties with default implementations
         var interfaceProperties = ExtractInterfaceDefaultProperties(
@@ -205,7 +211,7 @@ internal static class SubjectMetadataExtractor
     /// already drifted apart once before, on accessibility.
     /// </summary>
     /// <remarks>
-    /// Neither shape is reported: NI0006 speaks to a member that could plausibly have become a
+    /// Neither shape is reported: NI0040 speaks to a member that could plausibly have become a
     /// subject property and did not, and neither an indexer nor a static member was ever a
     /// candidate. A class-declared indexer has always been ignored in silence (it parses as
     /// <c>IndexerDeclarationSyntax</c>, which the property filter excludes before this guard runs),
@@ -317,6 +323,19 @@ internal static class SubjectMetadataExtractor
                         hasGetter = hasGetter && isGetterAccessible;
                         hasSetter = hasSetter && isSetterAccessible;
                         hasInit = hasInit && isSetterAccessible;
+
+                        // Narrowing can leave both emittable accessors off while hasInit survives,
+                        // which would add a key whose getter and setter lambdas are both null. Same
+                        // outcome as the inaccessible case above, so it is reported the same way.
+                        if (!hasGetter && !hasSetter)
+                        {
+                            diagnostics.Add(Diagnostic.Create(
+                                Diagnostics.MemberSkipped, location,
+                                $"{typeSymbol.Name}.{implementedMember.ContainingType.Name}.{implementedMember.Name}",
+                                "no accessor the generated code can emit remains",
+                                "declare a get or set accessor the subject's generated half can reach"));
+                            continue;
+                        }
                     }
                 }
 
@@ -338,11 +357,32 @@ internal static class SubjectMetadataExtractor
                     getterAccessModifier,
                     setterAccessModifier,
                     InterfaceTypeName: null,
-                    ExplicitInterfaceTypeName: explicitInterfaceTypeName));
+                    ExplicitInterfaceTypeName: explicitInterfaceTypeName,
+                    HasInheritedGetter: isOverride && !hasGetter && HasAccessibleInheritedAccessor(
+                        declaredPropertySymbol?.OverriddenProperty, true, declarationModel.Compilation, typeSymbol),
+                    HasInheritedSetter: isOverride && !hasSetter && !hasInit && HasAccessibleInheritedAccessor(
+                        declaredPropertySymbol?.OverriddenProperty, false, declarationModel.Compilation, typeSymbol)));
             }
         }
 
         return properties;
+    }
+
+    private static bool HasAccessibleInheritedAccessor(
+        IPropertySymbol? property, bool isGetter, Compilation compilation, INamedTypeSymbol subjectType)
+    {
+        // Follow the overridden slot, including plain intermediate classes. A same-named property
+        // elsewhere in the base chain may belong to a different slot.
+        for (; property is not null; property = property.OverriddenProperty)
+        {
+            var accessor = isGetter ? property.GetMethod : property.SetMethod;
+            if (accessor is not null)
+            {
+                return !accessor.IsInitOnly && compilation.IsSymbolAccessibleWithin(accessor, subjectType, subjectType);
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -394,7 +434,7 @@ internal static class SubjectMetadataExtractor
         foreach (var winner in result)
         {
             // Two explicit implementations of one simple name (typically one generic interface at
-            // two instantiations) is the class-declared form of the NI0008 collision: whatever
+            // two instantiations) is the class-declared form of the NI0061 collision: whatever
             // claims the name, at least one interface member is dropped. A class property colliding
             // with a single explicit implementation is not: only one of the two comes from an
             // interface, and the class property is the documented winner.
@@ -508,7 +548,7 @@ internal static class SubjectMetadataExtractor
 
                 // The capture is silent: in derived mode the only compiler signal is a CS0108 that a
                 // consumer without TreatWarningsAsErrors never sees, and an AddProperties wrapper
-                // produces none at all. NI0013 scans declared members rather than emitted ones.
+                // produces none at all. NI0063 scans declared members rather than emitted ones.
                 if (GeneratedMemberTable.CollidesWithGeneratedMember(methodName))
                 {
                     diagnostics.Add(Diagnostic.Create(
@@ -566,6 +606,7 @@ internal static class SubjectMetadataExtractor
         // Keyed by simple name, valued by the member that took it, so a collision can name the
         // winner instead of leaving several identical warnings at one location.
         var winnerByPropertyName = new Dictionary<string, string>();
+        HashSet<ISymbol>? processedSlots = null;
 
         foreach (var interfaceType in typeSymbol.AllInterfaces)
         {
@@ -612,7 +653,14 @@ internal static class SubjectMetadataExtractor
                     continue;
                 }
 
-                // Skip properties already processed from another interface (diamond inheritance)
+                // Explicit interface overrides and their declarations share one dispatch slot.
+                // AllInterfaces visits derived interfaces first, so retain the most-derived entry.
+                if (!(processedSlots ??= new HashSet<ISymbol>(SymbolEqualityComparer.Default)).Add(explicitImplementation ?? property))
+                {
+                    continue;
+                }
+
+                // Distinct slots with the same simple name compete for one metadata entry.
                 if (winnerByPropertyName.TryGetValue(resolvedName, out var winnerDescription))
                 {
                     diagnostics.Add(Diagnostic.Create(
@@ -636,12 +684,20 @@ internal static class SubjectMetadataExtractor
                 var (isGetterAccessible, isSetterAccessible) = GetAccessorAccessibility(
                     compilation, accessibilityMember, typeSymbol, accessorInterface);
 
-                // Skipped in silence. An interface member that generated code cannot see is scoped
-                // by its own author as a helper rather than offered as a property, and the interface
-                // may well be third-party, leaving the subject author with no remedy to follow. The
-                // class-declared explicit implementation in CollectProperties is the opposite case,
-                // written by the subject's own author, and stays reported.
-                if (!isGetterAccessible && !isSetterAccessible)
+                var hasGetter = property.GetMethod != null && isGetterAccessible;
+                var hasSetter = property.SetMethod is { IsInitOnly: false } && isSetterAccessible;
+                var hasInit = property.SetMethod?.IsInitOnly == true && isSetterAccessible;
+
+                // Asked of the accessors that can actually be emitted, not of raw accessibility. An
+                // init accessor is accessible but cannot be called from the emitted lambda, so a
+                // property whose only reachable accessor is init would produce an entry with two null
+                // accessors: a key that exists and does nothing. HasInit does not rescue it, being
+                // consulted only when emitting a partial property's own accessor, which an interface
+                // default never is. Skipped in silence, unlike the class-declared explicit
+                // implementation in CollectProperties: an interface member generated code cannot see
+                // was scoped as a helper by its own author rather than offered as a property, and the
+                // interface may well be third-party, leaving the subject author with no remedy.
+                if (!hasGetter && !hasSetter)
                 {
                     continue;
                 }
@@ -660,10 +716,6 @@ internal static class SubjectMetadataExtractor
                 var fullyQualifiedTypeName = property.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
                 var accessModifier = GetAccessModifierFromAccessibility(property.DeclaredAccessibility);
                 var interfaceTypeName = accessorInterface.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-
-                var hasGetter = property.GetMethod != null && isGetterAccessible;
-                var hasSetter = property.SetMethod is { IsInitOnly: false } && isSetterAccessible;
-                var hasInit = property.SetMethod?.IsInitOnly == true && isSetterAccessible;
 
                 // Interface default properties cannot be partial, virtual is implicit
                 interfaceProperties.Add(new PropertyMetadata(
@@ -691,6 +743,69 @@ internal static class SubjectMetadataExtractor
     }
 
     /// <summary>
+    /// A declaration in the subject's own class that displaces a property an ancestor subject already
+    /// contributes to its DefaultProperties. Reported by effect rather than by the 'new' keyword,
+    /// because omitting the keyword is only CS0108 and the displacement is identical either way.
+    /// </summary>
+    /// <remarks>
+    /// Only ancestors carrying [InterceptorSubject] are scanned, so a declaration displacing a property
+    /// of a hand-written base that satisfies the subject base contract is not reported.
+    /// </remarks>
+    private static HashSet<string>? ReportPropertiesDisplacingAnAncestorSubject(
+        INamedTypeSymbol typeSymbol,
+        IReadOnlyList<PropertyMetadata> classProperties,
+        Location location,
+        List<Diagnostic> diagnostics)
+    {
+        // Allocate nothing before the early return: every root subject reaches this and leaves through
+        // it, and the IDE re-runs the generator on each keystroke.
+        List<INamedTypeSymbol>? subjectAncestors = null;
+        foreach (var ancestor in SymbolExtensions.EnumerateChain(typeSymbol.BaseType))
+        {
+            if (SubjectAncestry.HasInterceptorSubjectAttribute(ancestor))
+            {
+                (subjectAncestors ??= new List<INamedTypeSymbol>()).Add(ancestor);
+            }
+        }
+
+        if (subjectAncestors is null)
+        {
+            return null;
+        }
+
+        HashSet<string>? displacedNames = null;
+
+        foreach (var property in classProperties)
+        {
+            // An override shares the slot it already had, so one accessor pair stays reachable, only
+            // one of the two backing fields is ever used, and it displaces nothing. An explicit
+            // implementation is deliberately NOT skipped here: it lands in the highest precedence tier
+            // and would flip an ancestor's intercepted property to a non-intercepted interface read.
+            if (property.IsOverride)
+            {
+                continue;
+            }
+
+            // Abstract ancestor properties are deliberately NOT filtered out. They reach
+            // DefaultProperties like any other, and a plain class between the two subjects can supply
+            // the override that makes a 'new' declaration below it both legal and silent.
+            var isDisplacing = subjectAncestors.Any(ancestor => ancestor
+                .GetMembers(property.Name)
+                .OfType<IPropertySymbol>()
+                .Any(candidate => !IsNeverASubjectProperty(candidate)));
+
+            if (isDisplacing && (displacedNames ??= []).Add(property.Name))
+            {
+                diagnostics.Add(Diagnostic.Create(
+                    Diagnostics.DisplacesAncestorSubjectProperty, location,
+                    typeSymbol.Name, property.Name));
+            }
+        }
+
+        return displacedNames;
+    }
+
+    /// <summary>
     /// Reports a class-declared property whose name matches an interface member that resolves to an
     /// implementation outside this type, so that reading through the interface and reading through
     /// the subject return different values.
@@ -704,6 +819,7 @@ internal static class SubjectMetadataExtractor
     private static void ReportPropertiesShadowingABaseImplementation(
         INamedTypeSymbol typeSymbol,
         IReadOnlyList<PropertyMetadata> classProperties,
+        HashSet<string>? displacedNames,
         Location location,
         List<Diagnostic> diagnostics)
     {
@@ -716,8 +832,12 @@ internal static class SubjectMetadataExtractor
         foreach (var property in classProperties)
         {
             // An explicit implementation is by definition the implementation, and an override
-            // shares the slot of the base member it overrides.
-            if (property.ExplicitInterfaceTypeName is not null || property.IsOverride)
+            // shares the slot of the base member it overrides. A name NI0065 already reported keeps
+            // only that report: both rules can match one declaration, and re-listing the interface,
+            // this rule's remedy, would leave the displacement in place.
+            if (property.ExplicitInterfaceTypeName is not null ||
+                property.IsOverride ||
+                displacedNames?.Contains(property.Name) == true)
             {
                 continue;
             }

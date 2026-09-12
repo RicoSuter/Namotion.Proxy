@@ -227,7 +227,7 @@ public class SubjectBaseShapeTests
         // Assert: derived mode, no diagnostic, and the only call form that binds.
         Assert.Empty(result.CompilationErrors);
         Assert.Empty(result.CompilationWarnings);
-        Assert.DoesNotContain(result.GeneratorDiagnostics, d => d.Id == "NI0011" || d.Id == "NI0012");
+        Assert.DoesNotContain(result.GeneratorDiagnostics, d => d.Id == "NI0007" || d.Id == "NI0062");
         Assert.Contains("((IRaisePropertyChanged)this).RaisePropertyChanged(nameof(LeafName))", generated);
     }
 
@@ -272,9 +272,9 @@ public class SubjectBaseShapeTests
         var result = GeneratorTestHost.RunWithLibraryReference(librarySource, mainSource);
         var generated = result.SingleSource();
 
-        // Assert: the base only provides DefaultProperties, so it takes the NI0012 root-mode
+        // Assert: the base only provides DefaultProperties, so it takes the NI0062 root-mode
         // fallback and declares the notify members it then calls by simple name.
-        Assert.Contains(result.GeneratorDiagnostics, d => d.Id == "NI0012");
+        Assert.Contains(result.GeneratorDiagnostics, d => d.Id == "NI0062");
         Assert.Empty(result.CompilationErrors);
         Assert.Empty(result.CompilationWarnings);
         Assert.Contains("IInterceptorSubject, INotifyPropertyChanged, IRaisePropertyChanged", generated);
@@ -512,9 +512,9 @@ public class SubjectBaseShapeTests
         var derived = result.SingleSource();
 
         // Assert: the hand-written ancestor exposes a usable DefaultProperties but none of the
-        // helpers, so it takes the NI0012 root-mode fallback. Pinned here because the mode is not
+        // helpers, so it takes the NI0062 root-mode fallback. Pinned here because the mode is not
         // otherwise visible in the emitted shape, and it must not flip back unnoticed.
-        Assert.Contains(result.GeneratorDiagnostics, d => d.Id == "NI0012");
+        Assert.Contains(result.GeneratorDiagnostics, d => d.Id == "NI0062");
         Assert.Contains(".Concat(global::Lib.HandWrittenSubject.DefaultProperties)", derived);
         Assert.DoesNotContain("global::Lib.PlainInBetween", derived);
     }
@@ -719,7 +719,7 @@ public class SubjectBaseShapeTests
         Assert.Contains(writeInterceptor.Writes, write => write.PropertyName == "SerialNumber" && Equals(write.Value, "serial-written"));
         Assert.Contains("SerialNumber", machine.Properties.Keys);
         Assert.Equal(1, CountExecutorFields(machineType));
-        Assert.DoesNotContain(result.GeneratorDiagnostics, diagnostic => diagnostic.Id is "NI0011" or "NI0012");
+        Assert.DoesNotContain(result.GeneratorDiagnostics, diagnostic => diagnostic.Id is "NI0007" or "NI0062");
         Assert.Empty(result.CompilationErrors);
         Assert.Empty(result.CompilationWarnings);
     }
@@ -831,7 +831,7 @@ public class SubjectBaseShapeTests
     }
 
     [Fact]
-    public void WhenReferencedBaseHasPrivateHelpers_ThenItFallsBackToRootModeWithNI0012()
+    public void WhenReferencedBaseHasPrivateHelpers_ThenItFallsBackToRootModeWithNI0062()
     {
         // Arrange: an attributed base built by an older generator, so its helpers are private and it
         // has no GetInstanceProperties at all. Either cause alone fails the contract, so the
@@ -920,7 +920,7 @@ public class SubjectBaseShapeTests
         // Assert: warning, root mode, still compiles, and no stray 'new' that would be CS0109.
         // The private base helpers neither hide nor bind across the assembly boundary, so the
         // warning check is what pins the modifier decision: CS0109 is a warning, not an error.
-        Assert.Contains(result.GeneratorDiagnostics, d => d.Id == "NI0012");
+        Assert.Contains(result.GeneratorDiagnostics, d => d.Id == "NI0062");
         Assert.Empty(result.CompilationErrors);
         Assert.Empty(result.CompilationWarnings);
         Assert.Contains("private IInterceptorExecutor? _context;", result.SingleSource());
@@ -1007,7 +1007,7 @@ public class SubjectBaseShapeTests
         var result = GeneratorTestHost.RunExpectingNoWarnings(source);
 
         // Assert: derived mode, so no interception members of its own, and no contract diagnostic.
-        Assert.DoesNotContain(result.GeneratorDiagnostics, d => d.Id == "NI0011" || d.Id == "NI0012");
+        Assert.DoesNotContain(result.GeneratorDiagnostics, d => d.Id == "NI0007" || d.Id == "NI0062");
         Assert.DoesNotContain("private IInterceptorExecutor? _context;", result.SingleSource());
     }
 
