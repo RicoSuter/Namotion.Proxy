@@ -814,15 +814,25 @@ public class ChangeQueueProcessorTests
             newValue,
             revision);
 
-        GetChanges(processor).Enqueue(change);
+        GetQueueState(processor).Enqueue(change);
     }
 
-    private static ConcurrentQueue<SubjectPropertyChange> GetChanges(ChangeQueueProcessor processor)
+    private static ChangeQueueState GetQueueState(ChangeQueueProcessor processor)
     {
-        var changesField = typeof(ChangeQueueProcessor)
-            .GetField("_changes", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var queueStateField = typeof(ChangeQueueProcessor)
+            .GetField("_queueState", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 
-        return (ConcurrentQueue<SubjectPropertyChange>)changesField!.GetValue(processor)!;
+        return (ChangeQueueState)queueStateField!.GetValue(processor)!;
+    }
+
+    // Keep the Lock type: locking through object uses Monitor and would not synchronize with production code.
+    private static Lock GetOwnershipGate(ChangeQueueProcessor processor)
+    {
+        var queueState = GetQueueState(processor);
+        var gateField = typeof(ChangeQueueState)
+            .GetField("_ownershipGate", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+        return (Lock)gateField!.GetValue(queueState)!;
     }
 
     private static async Task TriggerFlushAsync(ChangeQueueProcessor processor)
@@ -1680,7 +1690,7 @@ public class ChangeQueueProcessorTests
     }
 
     [Fact]
-    public async Task WhenTwoDisposalsOverlap_ThenEachReturnClosesDirectAdmission()
+    public async Task WhenTwoDisposalsOverlap_ThenEachReturnPreventsNewDeliveries()
     {
         // Arrange
         var context = InterceptorSubjectContext.Create()
@@ -1735,7 +1745,7 @@ public class ChangeQueueProcessorTests
 
         var monitorOwner = Task.Run(() =>
         {
-            lock (GetChanges(processor))
+            lock (GetOwnershipGate(processor))
             {
                 monitorHeld.TrySetResult();
                 allowSecondDispose.Task.GetAwaiter().GetResult();
@@ -1748,7 +1758,7 @@ public class ChangeQueueProcessorTests
         var firstDispose = Task.Run(processor.Dispose);
         await AsyncTestHelpers.WaitUntilAsync(
             () => IsDisposed(processor),
-            message: "The first disposer should publish terminal state before admission closes.");
+            message: "The first disposer should publish terminal state before new deliveries are prevented.");
         var cancelling = Task.CompletedTask;
 
         try

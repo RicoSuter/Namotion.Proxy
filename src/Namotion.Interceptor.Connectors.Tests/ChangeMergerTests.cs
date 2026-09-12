@@ -730,7 +730,7 @@ public class ChangeMergerTests
     }
 
     [Fact]
-    public void WhenAdmissionRejectsFilteredSurvivors_ThenMergeReturnsEmptyWithTheExactSurvivorCount()
+    public void WhenDeliveryOfFilteredSurvivorsIsRejected_ThenMergeReturnsEmptyWithTheExactSurvivorCount()
     {
         // Arrange
         using var merger = new ChangeMerger();
@@ -746,7 +746,7 @@ public class ChangeMergerTests
         subject.LastName = "Current";
         Assert.True(lastName.TryGetWriteState(includeSourceCommitsInRevision: false, out var currentRevision, out _));
 
-        var admissionCount = 0;
+        var deliveryCount = 0;
         SubjectPropertyChange[] changes =
         [
             CreateChange(firstName, "Old", "Stale", staleRevision),
@@ -759,13 +759,13 @@ public class ChangeMergerTests
             ChangeDeliveryRule.SourceValuesMayBeStale,
             count =>
             {
-                admissionCount = count;
+                deliveryCount = count;
                 return false;
             });
 
         // Assert
         Assert.True(merged.IsEmpty);
-        Assert.Equal(1, admissionCount);
+        Assert.Equal(1, deliveryCount);
     }
 
     /// <summary>

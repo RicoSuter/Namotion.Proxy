@@ -113,7 +113,7 @@ namespace Repro
             .Single(generated.Sources, generatedSource => generatedSource.HintName.Contains("DerivedSubject"))
             .SourceText.ToString();
 
-        Assert.Contains("public partial class DerivedSubject : IInterceptorSubject\n", derivedSource);
+        Assert.Contains("public partial class DerivedSubject : IInterceptorSubject\n", derivedSource.ReplaceLineEndings("\n"));
         Assert.Contains("public new static IReadOnlyDictionary<string, SubjectPropertyMetadata> DefaultProperties", derivedSource);
         Assert.Contains(".Concat(global::Repro.BaseSubject.DefaultProperties)", derivedSource);
         Assert.DoesNotContain("public event PropertyChangedEventHandler? PropertyChanged;", derivedSource);
