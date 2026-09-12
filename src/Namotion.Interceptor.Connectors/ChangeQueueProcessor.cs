@@ -32,7 +32,7 @@ public class ChangeQueueProcessor : IDisposable
     private Action? _terminalHandler;
     private readonly Func<CancellationToken, ValueTask>? _completionHandler;
 
-    private readonly ChangeQueueDeliveryState _deliveryState;
+    private readonly ChangeQueueState _queueState;
 
     // Competing disposers wait for the callback; same-thread reentry sees the handler already taken.
     private readonly Lock _terminalHandlerGate = new();
@@ -50,14 +50,14 @@ public class ChangeQueueProcessor : IDisposable
     /// Number of changes dropped due to bounded-queue overflow or ordinary write failure, plus changes
     /// whose delivery was still locally unconfirmed when terminal ownership closed.
     /// </summary>
-    public long DropCount => _deliveryState.DropCount;
+    public long DropCount => _queueState.DropCount;
 
     /// <summary>
     /// Gets the number of changes currently buffered. Approximate: read without a lock while the
     /// pump is running. Normally 0 on the immediate path, except while a cancelled delivery is being
     /// handed to terminal accounting during teardown.
     /// </summary>
-    public int QueueDepth => _deliveryState.BufferedCount;
+    public int QueueDepth => _queueState.BufferedCount;
 
     // Scratch state used only while holding the flush gate (single-threaded access)
     private readonly List<SubjectPropertyChange> _flushChanges = [];
@@ -124,7 +124,7 @@ public class ChangeQueueProcessor : IDisposable
         {
             ValidateMaxQueueDepth(maxQueueDepth, _bufferTime);
 
-            _deliveryState = new ChangeQueueDeliveryState(
+            _queueState = new ChangeQueueState(
                 _bufferTime > TimeSpan.Zero ? maxQueueDepth : null,
                 dropHandler, logger, tracksDeliveryOutcomes: true);
             _deliveryRule = ValidateRule(deliveryRule);
@@ -170,7 +170,7 @@ public class ChangeQueueProcessor : IDisposable
 
         ValidateMaxQueueDepth(maxQueueDepth, _bufferTime);
 
-        _deliveryState = new ChangeQueueDeliveryState(
+        _queueState = new ChangeQueueState(
             _bufferTime > TimeSpan.Zero ? maxQueueDepth : null,
             dropHandler, logger, tracksDeliveryOutcomes: !writeHandlerOwnsChanges);
         _subscription = subscription;
@@ -240,8 +240,8 @@ public class ChangeQueueProcessor : IDisposable
                 throw new ObjectDisposedException(nameof(ChangeQueueProcessor));
             }
 
-            var execution = new ChangeQueueProcessorExecution(TeardownFlushBound);
-            var outcome = await execution.RunAsync(() => ProcessCoreAsync(execution), cancellationSignal.Task).ConfigureAwait(false);
+            var execution = new ChangeQueueExecution(TeardownFlushBound);
+            var outcome = await execution.RunAsync(() => RunProcessingLoopAsync(execution), cancellationSignal.Task).ConfigureAwait(false);
             if (outcome.WasAbandoned)
             {
                 // Settle ownership and terminal callbacks before returning or propagating the fault.
@@ -256,7 +256,7 @@ public class ChangeQueueProcessor : IDisposable
         }
     }
 
-    private async Task ProcessCoreAsync(ChangeQueueProcessorExecution execution)
+    private async Task RunProcessingLoopAsync(ChangeQueueExecution execution)
     {
         try
         {
@@ -345,7 +345,7 @@ public class ChangeQueueProcessor : IDisposable
                     }
                     else
                     {
-                        _deliveryState.Enqueue(change);
+                        _queueState.Enqueue(change);
                     }
                 }
             }
@@ -406,7 +406,7 @@ public class ChangeQueueProcessor : IDisposable
         }
 
         var count = changes.Length;
-        if (!deliveryStarted && !_deliveryState.TryBeginDeliveryOrCountAsDropped(count))
+        if (!deliveryStarted && !_queueState.TryBeginDeliveryOrCountAsDropped(count))
         {
             return;
         }
@@ -414,16 +414,16 @@ public class ChangeQueueProcessor : IDisposable
         try
         {
             await _writeHandler(changes, cancellationToken).ConfigureAwait(false);
-            _deliveryState.CompleteDelivery(count);
+            _queueState.CompleteDelivery(count);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            _deliveryState.RequeueCancelledDelivery(changes.Span, count);
+            _queueState.RequeueCancelledDelivery(changes.Span, count);
             throw;
         }
         catch (Exception exception)
         {
-            if (_deliveryState.TryCompleteFailedDelivery(count))
+            if (_queueState.TryCompleteFailedDelivery(count))
             {
                 _logger.LogError(exception, "Failed to write changes.");
             }
@@ -457,7 +457,7 @@ public class ChangeQueueProcessor : IDisposable
 
         try
         {
-            _deliveryState.DrainBufferedChangesInto(_flushChanges);
+            _queueState.DrainBufferedChangesInto(_flushChanges);
             if (_flushChanges.Count == 0)
             {
                 return;
@@ -467,14 +467,14 @@ public class ChangeQueueProcessor : IDisposable
             var mergedChanges = _changeMerger!.Merge(
                 CollectionsMarshal.AsSpan(_flushChanges),
                 _deliveryRule,
-                _deliveryState.TryBeginDeliveryCallback);
+                _queueState.TryBeginDeliveryCallback);
 
             if (mergedChanges.Length > 0)
             {
                 await WriteChangesAsync(
                     mergedChanges,
                     cancellationToken,
-                    deliveryStarted: _deliveryState.TryBeginDeliveryCallback is not null).ConfigureAwait(false);
+                    deliveryStarted: _queueState.TryBeginDeliveryCallback is not null).ConfigureAwait(false);
             }
         }
         finally
@@ -514,7 +514,7 @@ public class ChangeQueueProcessor : IDisposable
             _ownedSubscription?.Dispose();
         }
 
-        _deliveryState.CloseAndCountRemainingAsDropped();
+        _queueState.CloseAndCountRemainingAsDropped();
         if (previousState == IdleState)
         {
             DisposeMerger();

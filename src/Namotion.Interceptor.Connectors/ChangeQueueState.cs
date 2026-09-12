@@ -15,7 +15,7 @@ namespace Namotion.Interceptor.Connectors;
 /// and their drops are tracked here; handed-off changes belong to the handler.
 /// </para>
 /// </remarks>
-internal sealed class ChangeQueueDeliveryState
+internal sealed class ChangeQueueState
 {
     private const int ClosedDelivery = -1;
 
@@ -33,7 +33,7 @@ internal sealed class ChangeQueueDeliveryState
     // 0 = idle, positive = active delivery size, ClosedDelivery = permanently closed.
     private int _deliveryState;
 
-    public ChangeQueueDeliveryState(
+    public ChangeQueueState(
         int? maxQueueDepth,
         Action<long>? dropHandler,
         ILogger logger,

@@ -7,8 +7,8 @@ the code and has been rediscovered more than once.
 ## Processing, accounting, and shutdown
 
 - `ChangeQueueProcessor` dequeues, filters, and batches changes, then calls the write handler.
-- `ChangeQueueDeliveryState` tracks buffered changes, the active delivery, and drops. Its private lock keeps cancellation, failure, and closure from counting the same batch twice.
-- `ChangeQueueProcessorExecution` coordinates one whole `ProcessAsync` call, including all flushes and bounded shutdown. It is not one flush or retry attempt.
+- `ChangeQueueState` tracks buffered changes, the active delivery, and drops. Its private lock keeps cancellation, failure, and closure from counting the same batch twice.
+- `ChangeQueueExecution` coordinates one whole `ProcessAsync` call, including all flushes and bounded shutdown. It is not one flush or retry attempt.
 
 The processor owns the scratch batch between draining and beginning delivery; a merge failure in that window is outside delivery-state accounting. When the write handler owns delivery, handed-off changes belong to that handler instead.
 

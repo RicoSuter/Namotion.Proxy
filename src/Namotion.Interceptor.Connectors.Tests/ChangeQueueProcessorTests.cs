@@ -814,25 +814,25 @@ public class ChangeQueueProcessorTests
             newValue,
             revision);
 
-        GetDeliveryState(processor).Enqueue(change);
+        GetQueueState(processor).Enqueue(change);
     }
 
-    private static ChangeQueueDeliveryState GetDeliveryState(ChangeQueueProcessor processor)
+    private static ChangeQueueState GetQueueState(ChangeQueueProcessor processor)
     {
-        var deliveryStateField = typeof(ChangeQueueProcessor)
-            .GetField("_deliveryState", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var queueStateField = typeof(ChangeQueueProcessor)
+            .GetField("_queueState", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 
-        return (ChangeQueueDeliveryState)deliveryStateField!.GetValue(processor)!;
+        return (ChangeQueueState)queueStateField!.GetValue(processor)!;
     }
 
     // Keep the Lock type: locking through object uses Monitor and would not synchronize with production code.
     private static Lock GetOwnershipGate(ChangeQueueProcessor processor)
     {
-        var deliveryState = GetDeliveryState(processor);
-        var gateField = typeof(ChangeQueueDeliveryState)
+        var queueState = GetQueueState(processor);
+        var gateField = typeof(ChangeQueueState)
             .GetField("_ownershipGate", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 
-        return (Lock)gateField!.GetValue(deliveryState)!;
+        return (Lock)gateField!.GetValue(queueState)!;
     }
 
     private static async Task TriggerFlushAsync(ChangeQueueProcessor processor)

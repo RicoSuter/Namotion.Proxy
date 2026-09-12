@@ -1,6 +1,6 @@
 namespace Namotion.Interceptor.Connectors.Tests;
 
-public class ChangeQueueProcessorExecutionTests
+public class ChangeQueueExecutionTests
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ShortBound = TimeSpan.FromMilliseconds(100);
@@ -16,7 +16,7 @@ public class ChangeQueueProcessorExecutionTests
     public async Task WhenTheCoreCompletesOnItsOwn_ThenNothingIsAbandoned()
     {
         // Arrange
-        var execution = new ChangeQueueProcessorExecution(ShortBound);
+        var execution = new ChangeQueueExecution(ShortBound);
 
         // Act
         var outcome = await execution.RunAsync(() => Task.CompletedTask, NoStopRequested).WaitAsync(TestTimeout);
@@ -30,7 +30,7 @@ public class ChangeQueueProcessorExecutionTests
     public async Task WhenTheCoreThrows_ThenTheExceptionPropagatesToTheCaller()
     {
         // Arrange
-        var execution = new ChangeQueueProcessorExecution(ShortBound);
+        var execution = new ChangeQueueExecution(ShortBound);
         var fault = new InvalidOperationException("core failed");
 
         // Act & Assert
@@ -43,7 +43,7 @@ public class ChangeQueueProcessorExecutionTests
     public async Task WhenTheCoreFaultsAfterReportingTheFault_ThenTheOriginalExceptionStillPropagates()
     {
         // Arrange
-        var execution = new ChangeQueueProcessorExecution(UnreachableBound);
+        var execution = new ChangeQueueExecution(UnreachableBound);
         var fault = new InvalidOperationException("core failed");
 
         // Act & Assert
@@ -60,7 +60,7 @@ public class ChangeQueueProcessorExecutionTests
     public async Task WhenStopIsRequestedAndTheCoreFinishesWithinTheBound_ThenNothingIsAbandoned()
     {
         // Arrange
-        var execution = new ChangeQueueProcessorExecution(UnreachableBound);
+        var execution = new ChangeQueueExecution(UnreachableBound);
         var stopSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var processingCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var executionTask = execution.RunAsync(async () =>
@@ -84,7 +84,7 @@ public class ChangeQueueProcessorExecutionTests
     public async Task WhenStopIsRequestedAndTheCoreHangs_ThenTheCallerIsReleasedWithAbandonment()
     {
         // Arrange
-        var execution = new ChangeQueueProcessorExecution(ShortBound);
+        var execution = new ChangeQueueExecution(ShortBound);
         var stopSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var core = new HungCore();
         var executionTask = execution.RunAsync(() => core.Task, stopSignal.Task);
@@ -103,7 +103,7 @@ public class ChangeQueueProcessorExecutionTests
     public async Task WhenTheCoreFaultsIntoFinalizationAndHangs_ThenTheBoundArmsWithoutAnyStop()
     {
         // Arrange
-        var execution = new ChangeQueueProcessorExecution(ShortBound);
+        var execution = new ChangeQueueExecution(ShortBound);
         using var core = new HungCore();
         var fault = new InvalidOperationException("finalization fault");
         var executionTask = execution.RunAsync(() =>
@@ -125,7 +125,7 @@ public class ChangeQueueProcessorExecutionTests
     public async Task WhenFinalizationWasAlreadyMarkedClean_ThenALaterFaultReportIsIgnored()
     {
         // Arrange
-        var execution = new ChangeQueueProcessorExecution(ShortBound);
+        var execution = new ChangeQueueExecution(ShortBound);
         using var core = new HungCore();
         var executionTask = execution.RunAsync(() =>
         {
@@ -146,7 +146,7 @@ public class ChangeQueueProcessorExecutionTests
     public async Task WhenStopWasObservedBeforeTheFaultReport_ThenAbandonmentCarriesNoFault()
     {
         // Arrange
-        var execution = new ChangeQueueProcessorExecution(ShortBound);
+        var execution = new ChangeQueueExecution(ShortBound);
         var stopSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var processingCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var registration = execution.ProcessingToken

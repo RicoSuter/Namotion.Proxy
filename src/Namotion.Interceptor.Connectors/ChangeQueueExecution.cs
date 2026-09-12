@@ -10,7 +10,7 @@ namespace Namotion.Interceptor.Connectors;
 /// A stop signal or finalization report starts the teardown timeout. Abandoned work is observed in
 /// the background, and token sources are disposed after the core and cancellation callbacks settle.
 /// </remarks>
-internal sealed class ChangeQueueProcessorExecution
+internal sealed class ChangeQueueExecution
 {
     private readonly CancellationTokenSource _processingTokenSource = new();
     private readonly CancellationTokenSource _teardownTokenSource = new();
@@ -18,7 +18,7 @@ internal sealed class ChangeQueueProcessorExecution
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TimeSpan _teardownTimeout;
 
-    public ChangeQueueProcessorExecution(TimeSpan teardownTimeout)
+    public ChangeQueueExecution(TimeSpan teardownTimeout)
     {
         _teardownTimeout = teardownTimeout;
 

@@ -4,7 +4,7 @@ using Namotion.Interceptor.Tracking.Change;
 
 namespace Namotion.Interceptor.Connectors.Tests;
 
-public class ChangeQueueDeliveryStateTests
+public class ChangeQueueStateTests
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(30);
 
@@ -318,7 +318,7 @@ public class ChangeQueueDeliveryStateTests
         Assert.Equal(3, state.DropCount);
     }
 
-    private static ChangeQueueDeliveryState CreateState(
+    private static ChangeQueueState CreateState(
         int? maxQueueDepth = null,
         Action<long>? dropHandler = null,
         bool tracksDeliveryOutcomes = true) =>
