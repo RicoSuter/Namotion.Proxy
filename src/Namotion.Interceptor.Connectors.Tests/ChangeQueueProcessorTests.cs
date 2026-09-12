@@ -814,26 +814,25 @@ public class ChangeQueueProcessorTests
             newValue,
             revision);
 
-        GetLedger(processor).Enqueue(change);
+        GetDeliveryState(processor).Enqueue(change);
     }
 
-    private static OutboundDeliveryLedger GetLedger(ChangeQueueProcessor processor)
+    private static ChangeQueueDeliveryState GetDeliveryState(ChangeQueueProcessor processor)
     {
-        var ledgerField = typeof(ChangeQueueProcessor)
-            .GetField("_ledger", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var deliveryStateField = typeof(ChangeQueueProcessor)
+            .GetField("_deliveryState", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 
-        return (OutboundDeliveryLedger)ledgerField!.GetValue(processor)!;
+        return (ChangeQueueDeliveryState)deliveryStateField!.GetValue(processor)!;
     }
 
-    // Typed as Lock rather than object on purpose: locking a boxed Lock takes a Monitor on the box and
-    // synchronizes with nothing, so the staged overlap below would silently stop being an overlap.
+    // Keep the Lock type: locking through object uses Monitor and would not synchronize with production code.
     private static Lock GetOwnershipGate(ChangeQueueProcessor processor)
     {
-        var ledger = GetLedger(processor);
-        var gateField = typeof(OutboundDeliveryLedger)
-            .GetField("_ownership", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var deliveryState = GetDeliveryState(processor);
+        var gateField = typeof(ChangeQueueDeliveryState)
+            .GetField("_ownershipGate", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 
-        return (Lock)gateField!.GetValue(ledger)!;
+        return (Lock)gateField!.GetValue(deliveryState)!;
     }
 
     private static async Task TriggerFlushAsync(ChangeQueueProcessor processor)
@@ -1691,7 +1690,7 @@ public class ChangeQueueProcessorTests
     }
 
     [Fact]
-    public async Task WhenTwoDisposalsOverlap_ThenEachReturnClosesDirectAdmission()
+    public async Task WhenTwoDisposalsOverlap_ThenEachReturnPreventsNewDeliveries()
     {
         // Arrange
         var context = InterceptorSubjectContext.Create()
@@ -1759,7 +1758,7 @@ public class ChangeQueueProcessorTests
         var firstDispose = Task.Run(processor.Dispose);
         await AsyncTestHelpers.WaitUntilAsync(
             () => IsDisposed(processor),
-            message: "The first disposer should publish terminal state before admission closes.");
+            message: "The first disposer should publish terminal state before new deliveries are prevented.");
         var cancelling = Task.CompletedTask;
 
         try

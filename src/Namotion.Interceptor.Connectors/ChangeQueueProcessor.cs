@@ -32,11 +32,9 @@ public class ChangeQueueProcessor : IDisposable
     private Action? _terminalHandler;
     private readonly Func<CancellationToken, ValueTask>? _completionHandler;
 
-    // Owns every accepted change and its outcome; see OutboundDeliveryLedger for the invariant.
-    private readonly OutboundDeliveryLedger _ledger;
+    private readonly ChangeQueueDeliveryState _deliveryState;
 
-    // Reentrant, and separate from the ledger: a competing Dispose waits here for the callback to
-    // finish, while callback reentry sees the handler already taken and does not recurse.
+    // Competing disposers wait for the callback; same-thread reentry sees the handler already taken.
     private readonly Lock _terminalHandlerGate = new();
 
     private int _flushGate; // 0 = free, 1 = flushing
@@ -52,14 +50,14 @@ public class ChangeQueueProcessor : IDisposable
     /// Number of changes dropped due to bounded-queue overflow or ordinary write failure, plus changes
     /// whose delivery was still locally unconfirmed when terminal ownership closed.
     /// </summary>
-    public long DropCount => _ledger.DropCount;
+    public long DropCount => _deliveryState.DropCount;
 
     /// <summary>
     /// Gets the number of changes currently buffered. Approximate: read without a lock while the
     /// pump is running. Normally 0 on the immediate path, except while a cancelled delivery is being
     /// handed to terminal accounting during teardown.
     /// </summary>
-    public int QueueDepth => _ledger.Depth;
+    public int QueueDepth => _deliveryState.BufferedCount;
 
     // Scratch state used only while holding the flush gate (single-threaded access)
     private readonly List<SubjectPropertyChange> _flushChanges = [];
@@ -126,9 +124,9 @@ public class ChangeQueueProcessor : IDisposable
         {
             ValidateMaxQueueDepth(maxQueueDepth, _bufferTime);
 
-            _ledger = new OutboundDeliveryLedger(
+            _deliveryState = new ChangeQueueDeliveryState(
                 _bufferTime > TimeSpan.Zero ? maxQueueDepth : null,
-                dropHandler, logger, tracksDeliveryOutcome: true);
+                dropHandler, logger, tracksDeliveryOutcomes: true);
             _deliveryRule = ValidateRule(deliveryRule);
 
             _changeMerger = new ChangeMerger();
@@ -172,9 +170,9 @@ public class ChangeQueueProcessor : IDisposable
 
         ValidateMaxQueueDepth(maxQueueDepth, _bufferTime);
 
-        _ledger = new OutboundDeliveryLedger(
+        _deliveryState = new ChangeQueueDeliveryState(
             _bufferTime > TimeSpan.Zero ? maxQueueDepth : null,
-            dropHandler, logger, tracksDeliveryOutcome: !writeHandlerOwnsChanges);
+            dropHandler, logger, tracksDeliveryOutcomes: !writeHandlerOwnsChanges);
         _subscription = subscription;
         _deliveryRule = ValidateRule(deliveryRule);
         _changeMerger = new ChangeMerger();
@@ -217,7 +215,7 @@ public class ChangeQueueProcessor : IDisposable
     {
         var cancellationSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        // The wait handle is signalled before token callbacks run, so a later blocking callback cannot delay teardown.
+        // The wait handle is signalled before token callbacks run, so a blocking callback cannot delay teardown.
         var cancellationWait = ThreadPool.RegisterWaitForSingleObject(
             cancellationToken.WaitHandle,
             static (state, _) => ((TaskCompletionSource)state!).TrySetResult(),
@@ -237,33 +235,28 @@ public class ChangeQueueProcessor : IDisposable
             if (Volatile.Read(ref _lifecycleState) == DisposedState)
             {
                 // Dispose raced the Idle-to-Processing transition before the processing task was created,
-                // so no live run remains to release the merger in its finally block.
+                // so no live execution remains to release the merger in its finally block.
                 DisposeMerger();
                 throw new ObjectDisposedException(nameof(ChangeQueueProcessor));
             }
 
-            var run = new BoundedTeardownRun(TeardownFlushBound);
-            var outcome = await run.RunAsync(() => ProcessCoreAsync(run), cancellationSignal.Task).ConfigureAwait(false);
-            if (outcome.AbandonedAtBound)
+            var execution = new ChangeQueueProcessorExecution(TeardownFlushBound);
+            var outcome = await execution.RunAsync(() => ProcessCoreAsync(execution), cancellationSignal.Task).ConfigureAwait(false);
+            if (outcome.WasAbandoned)
             {
-                // The abandoned core still holds its batch, so everything terminal settles here before
-                // the caller learns anything: Dispose closes admission to claim and count what is
-                // outstanding, releases an owned subscription, and fires the terminal handler once.
+                // Settle ownership and terminal callbacks before returning or propagating the fault.
                 Dispose();
                 outcome.Fault?.Throw();
             }
         }
         finally
         {
-            // The one cleanup path for every exit: the registration pins the caller's token wait
-            // handle, which must stay valid until unregistered, and this finally keeps that inside
-            // ProcessAsync's lifetime. Past the first wait the callback can at most complete a stop
-            // signal that nothing observes any longer.
+            // Keep the wait registration within ProcessAsync's lifetime, while the caller's token handle is valid.
             cancellationWait.Unregister(null);
         }
     }
 
-    private async Task ProcessCoreAsync(BoundedTeardownRun run)
+    private async Task ProcessCoreAsync(ChangeQueueProcessorExecution execution)
     {
         try
         {
@@ -277,12 +270,12 @@ public class ChangeQueueProcessor : IDisposable
                     var flushFailureReported = false;
                     try
                     {
-                        while (await periodicTimer.WaitForNextTickAsync(run.ProcessingToken).ConfigureAwait(false))
+                        while (await periodicTimer.WaitForNextTickAsync(execution.ProcessingToken).ConfigureAwait(false))
                         {
                             // Catch per tick so a consumer callback cannot permanently stop delivery while dequeueing continues.
                             try
                             {
-                                await TryFlushAsync(run.ProcessingToken).ConfigureAwait(false);
+                                await TryFlushAsync(execution.ProcessingToken).ConfigureAwait(false);
                                 flushFailureReported = false;
                             }
                             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -310,7 +303,7 @@ public class ChangeQueueProcessor : IDisposable
 
             try
             {
-                while (_subscription.TryDequeue(out var change, run.ProcessingToken))
+                while (_subscription.TryDequeue(out var change, execution.ProcessingToken))
                 {
                     var wasQueuedBeforeStart = queuedBeforeStart > 0;
                     if (wasQueuedBeforeStart)
@@ -348,33 +341,33 @@ public class ChangeQueueProcessor : IDisposable
                         }
 
                         _immediateBuffer[0] = change;
-                        await WriteChangesAsync(_immediateBuffer, run.ProcessingToken).ConfigureAwait(false);
+                        await WriteChangesAsync(_immediateBuffer, execution.ProcessingToken).ConfigureAwait(false);
                     }
                     else
                     {
-                        _ledger.Enqueue(change);
+                        _deliveryState.Enqueue(change);
                     }
                 }
             }
             catch (Exception exception)
             {
-                run.MarkFinalizationStarted(exception);
+                execution.ReportFinalizationStarted(exception);
                 throw;
             }
             finally
             {
-                run.MarkFinalizationStarted();
+                execution.ReportFinalizationStarted();
                 periodicTimer?.Dispose();
                 await flushTask.ConfigureAwait(false);
                 try
                 {
-                    await TryFlushAsync(run.TeardownToken).ConfigureAwait(false);
+                    await TryFlushAsync(execution.TeardownToken).ConfigureAwait(false);
                 }
                 finally
                 {
                     if (_completionHandler is not null)
                     {
-                        await _completionHandler(run.TeardownToken).ConfigureAwait(false);
+                        await _completionHandler(execution.TeardownToken).ConfigureAwait(false);
                     }
                 }
             }
@@ -393,7 +386,7 @@ public class ChangeQueueProcessor : IDisposable
     private async ValueTask WriteChangesAsync(
         ReadOnlyMemory<SubjectPropertyChange> changes,
         CancellationToken cancellationToken,
-        bool deliveryAdmitted = false)
+        bool deliveryStarted = false)
     {
         if (_writeHandlerOwnsChanges)
         {
@@ -413,7 +406,7 @@ public class ChangeQueueProcessor : IDisposable
         }
 
         var count = changes.Length;
-        if (!deliveryAdmitted && !_ledger.TryAdmitOrCountTerminal(count))
+        if (!deliveryStarted && !_deliveryState.TryBeginDeliveryOrCountAsDropped(count))
         {
             return;
         }
@@ -421,16 +414,16 @@ public class ChangeQueueProcessor : IDisposable
         try
         {
             await _writeHandler(changes, cancellationToken).ConfigureAwait(false);
-            _ledger.CompleteDelivery(count);
+            _deliveryState.CompleteDelivery(count);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            _ledger.ReturnCancelledDelivery(changes.Span, count);
+            _deliveryState.RequeueCancelledDelivery(changes.Span, count);
             throw;
         }
         catch (Exception exception)
         {
-            if (_ledger.TryCountFailedDelivery(count))
+            if (_deliveryState.TryCompleteFailedDelivery(count))
             {
                 _logger.LogError(exception, "Failed to write changes.");
             }
@@ -464,7 +457,7 @@ public class ChangeQueueProcessor : IDisposable
 
         try
         {
-            _ledger.DrainInto(_flushChanges);
+            _deliveryState.DrainBufferedChangesInto(_flushChanges);
             if (_flushChanges.Count == 0)
             {
                 return;
@@ -474,14 +467,14 @@ public class ChangeQueueProcessor : IDisposable
             var mergedChanges = _changeMerger!.Merge(
                 CollectionsMarshal.AsSpan(_flushChanges),
                 _deliveryRule,
-                _ledger.MergedDeliveryAdmission);
+                _deliveryState.TryBeginDeliveryCallback);
 
             if (mergedChanges.Length > 0)
             {
                 await WriteChangesAsync(
                     mergedChanges,
                     cancellationToken,
-                    deliveryAdmitted: _ledger.MergedDeliveryAdmission is not null).ConfigureAwait(false);
+                    deliveryStarted: _deliveryState.TryBeginDeliveryCallback is not null).ConfigureAwait(false);
             }
         }
         finally
@@ -521,7 +514,7 @@ public class ChangeQueueProcessor : IDisposable
             _ownedSubscription?.Dispose();
         }
 
-        _ledger.CloseAndCountTerminalDrops();
+        _deliveryState.CloseAndCountRemainingAsDropped();
         if (previousState == IdleState)
         {
             DisposeMerger();
@@ -533,8 +526,6 @@ public class ChangeQueueProcessor : IDisposable
     {
         lock (_terminalHandlerGate)
         {
-            // Exchange inside the gate: competing threads wait for callback completion, while callback
-            // reentry sees null and does not recurse or retry an exception.
             Interlocked.Exchange(ref _terminalHandler, null)?.Invoke();
         }
     }
