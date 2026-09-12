@@ -97,6 +97,8 @@ internal static class SubjectValueConvert
             if (item is null) continue;
             if (SubjectLookup.TryGetSubjectFromKeyValuePair(item, out var key, out var subject))
                 result[key!] = subject;
+            else if (item is IInterceptorSubject)
+                throw new NotSupportedException("Dictionary subject values must be exposed as key/value pairs through non-generic enumeration to preserve their keys in updates.");
         }
         return result;
     }
@@ -113,6 +115,12 @@ internal static class SubjectValueConvert
 
         if (value is not string && value is IEnumerable enumerable)
         {
+            if (value.GetType().IsSubjectDictionaryType())
+            {
+                throw new NotSupportedException(
+                    "A dictionary cannot be encoded as a positional subject collection. Declare the property as a dictionary type to preserve its keys and values.");
+            }
+
             foreach (var item in enumerable)
             {
                 if (item is IInterceptorSubject subjectItem)

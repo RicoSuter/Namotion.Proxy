@@ -11,12 +11,17 @@
           },
           {
             Index: 0
+          },
+          {
+            Action: Insert,
+            Index: 1,
+            Id: 4
           }
         ],
         Items: [
           {
             Index: 1,
-            Id: 3
+            Id: 4
           }
         ],
         Count: 2
@@ -24,7 +29,7 @@
       father: {
         Kind: Object,
         Timestamp: {Scrubbed},
-        Id: 4
+        Id: 3
       },
       mother: {
         Kind: Object,
@@ -81,8 +86,7 @@
       },
       firstName: {
         Kind: Value,
-        Value: John,
-        Timestamp: {Scrubbed},
+        Value: MyFather,
         Attributes: {
           maxLength: {
             Kind: Value,
@@ -98,7 +102,7 @@
       },
       fullName: {
         Kind: Value,
-        Value: John 
+        Value: MyFather 
       },
       lastName: {
         Kind: Value
@@ -120,7 +124,8 @@
       },
       firstName: {
         Kind: Value,
-        Value: MyFather,
+        Value: John,
+        Timestamp: {Scrubbed},
         Attributes: {
           maxLength: {
             Kind: Value,
@@ -136,7 +141,7 @@
       },
       fullName: {
         Kind: Value,
-        Value: MyFather 
+        Value: John 
       },
       lastName: {
         Kind: Value

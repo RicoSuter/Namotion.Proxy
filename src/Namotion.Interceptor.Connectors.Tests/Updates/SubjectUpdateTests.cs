@@ -239,7 +239,19 @@ public class SubjectUpdateTests
         var partialSubjectUpdate = SubjectUpdate
             .CreatePartialUpdateFromChanges(person, changes.ToArray().AsSpan(), [JsonCamelCasePathProcessor.Instance]);
 
+        var target = new Person(InterceptorSubjectContext.Create().WithRegistry())
+        {
+            Children = [new Person { FirstName = "Child1" }, new Person { FirstName = "Child2" }, new Person { FirstName = "Child3" }]
+        };
+        var roundtripUpdate = SubjectUpdate.CreatePartialUpdateFromChanges(person, changes.ToArray(), []);
+        target.ApplySubjectUpdate(roundtripUpdate, DefaultSubjectFactory.Instance, ChangeOrigin.Local);
+
         // Assert
+        Assert.Equal(2, target.Children.Count);
+        Assert.Equal("Child3", target.Children[0].FirstName);
+        Assert.Equal("John", target.Children[1].FirstName);
+        Assert.Equal("Jane", target.Mother!.FirstName);
+        Assert.Equal("MyFather", target.Father!.FirstName);
         await Verify(partialSubjectUpdate).DisableDateCounting();
     }
 
