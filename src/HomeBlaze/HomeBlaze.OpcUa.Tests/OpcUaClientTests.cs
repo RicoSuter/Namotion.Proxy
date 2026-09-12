@@ -182,7 +182,7 @@ public class OpcUaClientTests
         Assert.Null(client.TotalReconnections);
     }
 
-    [Fact(Skip = "Reproduces PR #440 follow-up item 1: a start cannot clear a fault and Error offers no stop.")]
+    [Fact(Skip = "Reproduces an unfixed defect: only a start clears a fault, the Start operation skips the attach while an attachment exists, and Stop is not offered at Error, so the wrapper cannot leave Error.")]
     public async Task WhenAReAttachFaultedAndTheStartOperationIsInvoked_ThenTheWrapperIsNotStuckAtError()
     {
         // Arrange
@@ -211,7 +211,7 @@ public class OpcUaClientTests
             "The wrapper reports Error, offers Start, and the start cannot clear it.");
     }
 
-    [Fact(Skip = "Reproduces PR #440 follow-up item 2: a reconciliation inside the re-attach window detaches the fresh root and fails the start.")]
+    [Fact(Skip = "Reproduces an unfixed defect: a reconciliation landing between the factory publishing its tree and the handler recording the instance detaches that tree, so the re-attach fails to start.")]
     public async Task WhenAReconciliationLandsInsideAReAttach_ThenTheReAttachStillProducesARunningClient()
     {
         // Arrange
